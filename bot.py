@@ -7,7 +7,6 @@ import asyncio
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID"))
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -16,10 +15,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     try:
-        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print(f"Synced {len(synced)} slash command(s) to dev guild.")
+        synced_global = await bot.tree.sync()
+        print(f"Synced {len(synced_global)} slash command(s) globally.")
     except Exception as e:
-        print(f"Failed to sync: {e}")
+        print(f"Failed to sync slash commands globally: {e}")
 
 async def main():
     async with bot:
