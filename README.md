@@ -1,4 +1,4 @@
-# Developer Setup Guide
+# Oryxie, the Qatari Virtual Bot Setup Guide
 
 ---
 
@@ -62,7 +62,7 @@ git clone https://github.com/Bumyy/Oryxie.git
 - Go back to **Source Control** to see your changes.
 - Click the **+ (plus)** icon next to the changed files to stage them.
 - Write a descriptive **commit message** in the message box.
-- Click the **checkmark (✓)** above to commit your changes and push them to GitHub.
+- Click the **checkmark (✓ Commit)** above to commit your changes and push them to GitHub (Sync Changes).
 - Your changes will now be visible to the whole team.
 
 ---
