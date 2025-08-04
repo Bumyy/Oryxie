@@ -36,6 +36,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.pingpong')
             await self.load_extension('cogs.pireps')
             await self.load_extension('cogs.ayush')
+            await self.load_extension('cogs.cargo_training')
 
             print("All cogs loaded.")
         except Exception as e:
