@@ -46,6 +46,7 @@ class CargoTraining(commands.Cog):
         self.bot = bot
         bot.add_view(CargoApplyView())
 
+    @app_commands.default_permissions(administrator=True) 
     @app_commands.command(name="setup_cargo_panel", description="Sets up the cargo training application panel.")
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_cargo_panel(self, interaction: discord.Interaction):

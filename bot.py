@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from database.manager import DatabaseManager
 from database.pireps_model import PirepsModel
+from api.manager import InfiniteFlightAPIManager
 
 load_dotenv()
 
@@ -18,19 +19,28 @@ intents.message_content = True
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents)
-        self.db_manager = None
-        self.pireps_model = None
+        self.db_manager: DatabaseManager = None
+        self.pireps_model: PirepsModel = None
+        self.if_api_manager: InfiniteFlightAPIManager = None
 
     async def setup_hook(self):
         """
         Called before the bot connects to Discord.
-        Good for initializing things that need the bot instance but don't need to be connected yet.
+        Initialize all managers and models here.
         """
+        # --- Initialize Database Manager ---
         self.db_manager = DatabaseManager(self)
         self.pireps_model = PirepsModel(self.db_manager)
-
         print("DatabaseManager instance created.")
-
+        
+        # --- Initialize API Manager ---
+        try:
+            self.if_api_manager = InfiniteFlightAPIManager(self)
+            await self.if_api_manager.connect()
+            print("Infinite Flight API Manager initialized.")
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            
         print("Loading extensions...")
         try:
             await self.load_extension('cogs.pingpong')
@@ -44,7 +54,6 @@ class MyBot(commands.Bot):
     async def on_ready(self):
         """
         Called when the bot has successfully connected to Discord.
-        This is the ideal place to connect to the database pool.
         """
         print(f'Logged in as {self.user} (ID: {self.user.id})')
 
@@ -63,12 +72,16 @@ class MyBot(commands.Bot):
     async def on_disconnect(self):
         """
         Called when the bot disconnects from Discord.
-        Ensures the database pool is properly closed.
+        Ensures all connections and sessions are properly closed.
         """
-        print("Bot disconnected. Attempting to close database pool...")
+        print("Bot disconnected. Cleaning up resources...")
         if self.db_manager:
             await self.db_manager.close()
-            self.db_manager = None 
+            self.db_manager = None
+        
+        if self.if_api_manager:
+            await self.if_api_manager.close()
+            self.if_api_manager = None
 
 async def start_bot():
     """
