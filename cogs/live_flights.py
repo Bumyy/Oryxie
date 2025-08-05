@@ -4,135 +4,157 @@ import os
 import re
 from datetime import datetime
 import asyncio
+import math
+
+# --- Helper Functions ---
+def format_duration(seconds: int) -> str:
+    if not isinstance(seconds, (int, float)) or seconds <= 0: return "N/A"
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, _ = divmod(remainder, 60)
+    if hours > 0: return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+def calculate_distance_nm(lat1, lon1, lat2, lon2):
+    R = 3440.065
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+def create_progress_bar(percentage: float, length: int = 10) -> str:
+    if not (0 <= percentage <= 100): percentage = max(0, min(100, percentage))
+    filled_length = int(length * percentage // 100)
+    bar = '█' * filled_length + '░' * (length - filled_length)
+    return f"[{bar}] {percentage:.1f}%"
 
 class LiveFlights(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.callsign_pattern = re.compile(r"^(Qatari\s.*VA|.*QR)(?:\s(?:Heavy|Super))?$", re.IGNORECASE)
-        
-        # In-memory cache to track active flights and their corresponding message IDs.
-        # Structure: { "flight_id": {"message_id": 123, "route_str": "OTHH -> EGLL"} }
         self.active_flights_cache = {}
-        
         self.track_flights.start()
 
     def cog_unload(self):
         self.track_flights.cancel()
 
-    # --- Helper function to create the embed ---
-    def _create_flight_embed(self, flight_data: dict, route_str: str, status: str) -> discord.Embed:
-        """Creates a standardized embed for a flight."""
-        
-        color = discord.Color.green() if "En Route" in status else discord.Color.dark_grey()
-        
-        embed = discord.Embed(
-            title=f"✈️ {flight_data['callsign']}",
-            color=color
-        )
-        embed.description = (
-            f"**Pilot:** {flight_data['username']}\n"
-            f"**Route:** {route_str}"
-        )
-        embed.add_field(name="Altitude", value=f"{int(flight_data.get('altitude', 0))} ft")
-        embed.add_field(name="Speed", value=f"{int(flight_data.get('speed', 0))} kts")
-        embed.add_field(name="Status", value=status, inline=False)
-        
+    def _create_flight_embed(self, flight_data, route_str, duration_str, status, progress_percent=0.0, time_left_str="N/A", ground_speed_kts=0) -> discord.Embed:
+        color = discord.Color.green()
+        if "Landed" in status:
+            color = discord.Color.dark_grey()
+            progress_percent = 100.0
+            time_left_str = "Landed"
+        embed = discord.Embed(title=f"✈️ {flight_data['callsign']}", color=color)
+        embed.description = (f"**Pilot:** {flight_data['username']}\n"
+                             f"**Route:** {route_str} | **Est. Duration:** {duration_str}")
+        embed.add_field(name="Altitude", value=f"{int(flight_data.get('altitude', 0)):,} ft")
+        embed.add_field(name="Ground Speed", value=f"{int(ground_speed_kts)} kts")
+        embed.add_field(name="Time Left", value=time_left_str)
+        progress_bar = create_progress_bar(progress_percent)
+        embed.add_field(name=f"Progress ({status})", value=progress_bar, inline=False)
         embed.set_footer(text=f"Flight ID: {flight_data['flightId']}")
         embed.timestamp = datetime.utcnow()
         return embed
 
-    # --- Main Task Loop ---
-    @tasks.loop(minutes=1) # Reduced interval for more "live" updates
+    @tasks.loop(minutes=5)
     async def track_flights(self):
         print("Running live flight tracker task...")
-        
-        channel_id_str = os.getenv("FLIGHT_TRACKER_CHANNEL_ID")
-        if not channel_id_str:
-            return
-            
-        channel = self.bot.get_channel(int(channel_id_str))
-        if not channel:
-            return
+        channel = self.bot.get_channel(int(os.getenv("FLIGHT_TRACKER_CHANNEL_ID")))
+        if not channel: return
 
         try:
-            # 1. Fetch all current flights on the Expert Server
             sessions_data = await self.bot.if_api_manager.get_sessions()
             expert_server_id = next((s['id'] for s in sessions_data['result'] if s['name'] == 'Expert'), None)
             if not expert_server_id: return
 
             flights_data = await self.bot.if_api_manager.get_flights(expert_server_id)
-            if not flights_data or flights_data.get("errorCode") != 0: return
-
-            # Create a map of current flights for easy lookup
             current_flights_map = {f['flightId']: f for f in flights_data['result']}
 
-            # 2. Update existing tracked flights or mark them as ended
-            tracked_flight_ids = list(self.active_flights_cache.keys())
-            for flight_id in tracked_flight_ids:
+            for flight_id in list(self.active_flights_cache.keys()):
+                cache_entry = self.active_flights_cache[flight_id]
                 if flight_id in current_flights_map:
-                    # Flight is still active, update its message
                     flight_data = current_flights_map[flight_id]
-                    cache_entry = self.active_flights_cache[flight_id]
-                    message_id = cache_entry['message_id']
-                    route_str = cache_entry['route_str']
+                    
+                    route_data = await self.bot.if_api_manager.get_flight_route(flight_id)
+                    dist_flown, ground_speed_kts, time_left_str = 0.0, 0.0, "N/A"
+                    
+                    if route_data and route_data.get('result'):
+                        points = route_data['result']
+                        for i in range(len(points) - 1):
+                            p1, p2 = points[i], points[i+1]
+                            dist_flown += calculate_distance_nm(p1['latitude'], p1['longitude'], p2['latitude'], p2['longitude'])
+                        
+                        ground_speed_kts = points[-1]['groundSpeed']
 
-                    try:
-                        message = await channel.fetch_message(message_id)
-                        embed = self._create_flight_embed(flight_data, route_str, "🟢 En Route")
-                        await message.edit(embed=embed)
-                    except discord.NotFound:
-                        # Message was deleted, so stop tracking this flight
-                        del self.active_flights_cache[flight_id]
-                        print(f"Message for flight {flight_id} not found. Removed from cache.")
-                    except Exception as e:
-                        print(f"Error updating message for flight {flight_id}: {e}")
-                else:
-                    # Flight has ended, finalize its message and remove from cache
-                    cache_entry = self.active_flights_cache.pop(flight_id) # Remove and get value
-                    message_id = cache_entry['message_id']
-                    route_str = cache_entry['route_str']
+                        if ground_speed_kts > 50:
+                            dist_remaining = max(0, cache_entry['total_dist_nm'] - dist_flown)
+                            time_left_hours = dist_remaining / ground_speed_kts
+                            time_left_str = format_duration(time_left_hours * 3600)
+                    
+                    progress_percent = (dist_flown / cache_entry['total_dist_nm']) * 100 if cache_entry['total_dist_nm'] > 0 else 0
                     
                     try:
-                        message = await channel.fetch_message(message_id)
-                        # Create a dummy flight_data dict for the final embed
-                        final_flight_data = {'callsign': message.embeds[0].title.split(' ', 1)[1], 'username': 'N/A', 'flightId': flight_id}
-                        embed = self._create_flight_embed(final_flight_data, route_str, "🏁 Flight Ended / Landed")
+                        message = await channel.fetch_message(cache_entry['message_id'])
+                        embed = self._create_flight_embed(flight_data, cache_entry['route_str'], cache_entry['duration_str'], "🟢 En Route", progress_percent, time_left_str, ground_speed_kts)
                         await message.edit(embed=embed)
-                        print(f"Finalized message for ended flight {flight_id}")
-                    except discord.NotFound:
-                        print(f"Message for ended flight {flight_id} was already gone.")
-                    except Exception as e:
-                        print(f"Error finalizing message for flight {flight_id}: {e}")
+                    except discord.NotFound: del self.active_flights_cache[flight_id]
+                else:
+                    try:
+                        message = await channel.fetch_message(cache_entry['message_id'])
+                        final_flight_data = {'callsign': message.embeds[0].title.split(' ', 1)[1], 'username': 'N/A', 'flightId': flight_id}
+                        embed = self._create_flight_embed(final_flight_data, cache_entry['route_str'], cache_entry['duration_str'], "🏁 Landed")
+                        await message.edit(embed=embed)
+                    except discord.NotFound: pass
+                    finally: del self.active_flights_cache[flight_id]
 
-            # 3. Find and post new flights
+            # --- Find and post new flights ---
             for flight_data in flights_data['result']:
                 flight_id = flight_data['flightId']
-                # Check if it's a new flight that matches our callsign pattern
                 if flight_id not in self.active_flights_cache and self.callsign_pattern.match(flight_data['callsign']):
-                    # This is a new flight, let's process it
                     plan_data = await self.bot.if_api_manager.get_flight_plan(flight_id)
+                    if not plan_data or not plan_data['result'].get('flightPlanItems'): continue
+
+                    fpl_items = plan_data['result']['flightPlanItems']
+                    if len(fpl_items) < 2: continue
+
+                    dep_coords, arr_coords = fpl_items[0]['location'], fpl_items[-1]['location']
+                    dep_icao, arr_icao = fpl_items[0]['name'], fpl_items[-1]['name']
+                    route_info = await self.bot.routes_model.find_route_by_icao(dep_icao, arr_icao)
                     
-                    # Skip if no valid flight plan (as requested)
-                    if not plan_data or plan_data.get("errorCode") != 0: continue
-                    waypoints = plan_data['result'].get('waypoints', [])
-                    if len(waypoints) < 2: continue
+                    route_str = f"{dep_icao} → {arr_icao}"
+                    duration_str = "N/A"
+                    if route_info:
+                        route_str += f" ({route_info['fltnum']})"
+                        duration_str = format_duration(route_info['duration'])
+
+                    total_dist_nm = calculate_distance_nm(dep_coords['latitude'], dep_coords['longitude'], arr_coords['latitude'], arr_coords['longitude'])
                     
-                    dep_icao = waypoints[0]
-                    arr_icao = waypoints[-1]
+                    route_data = await self.bot.if_api_manager.get_flight_route(flight_id)
+                    dist_flown, ground_speed_kts, time_left_str = 0.0, 0.0, "N/A"
+
+                    if route_data and route_data.get('result'):
+                        points = route_data['result']
+                        for i in range(len(points) - 1):
+                            p1, p2 = points[i], points[i+1]
+                            dist_flown += calculate_distance_nm(p1['latitude'], p1['longitude'], p2['latitude'], p2['longitude'])
+                        
+                        ground_speed_kts = points[-1]['groundSpeed']
+                        
+                        if ground_speed_kts > 50:
+                            dist_remaining = max(0, total_dist_nm - dist_flown)
+                            time_left_hours = dist_remaining / ground_speed_kts
+                            time_left_str = format_duration(time_left_hours * 3600)
                     
-                    fltnum = await self.bot.routes_model.find_route_by_icao(dep_icao, arr_icao)
-                    route_str = f"{dep_icao} → {arr_icao} ({fltnum})" if fltnum else f"{dep_icao} → {arr_icao} (Unscheduled)"
-                    
-                    # Post the new message
-                    embed = self._create_flight_embed(flight_data, route_str, "🟢 En Route")
+                    initial_progress_percent = (dist_flown / total_dist_nm) * 100 if total_dist_nm > 0 else 0
+
+                    embed = self._create_flight_embed(flight_data, route_str, duration_str, "🟢 En Route", initial_progress_percent, time_left_str, ground_speed_kts)
                     message = await channel.send(embed=embed)
                     
-                    # Add to cache
                     self.active_flights_cache[flight_id] = {
-                        "message_id": message.id,
-                        "route_str": route_str
+                        "message_id": message.id, "route_str": route_str,
+                        "duration_str": duration_str, "total_dist_nm": total_dist_nm
                     }
-                    print(f"Posted new flight {flight_id} with message ID {message.id}")
 
         except Exception as e:
             print(f"An unexpected error occurred in the flight tracker task: {e}")
@@ -142,9 +164,5 @@ class LiveFlights(commands.Cog):
         await self.bot.wait_until_ready()
         print("Live flight tracker is ready and waiting for the first loop.")
 
-
 async def setup(bot: commands.Bot):
-    if not os.getenv("FLIGHT_TRACKER_CHANNEL_ID"):
-        print("WARNING: Flight Tracker cog not loaded because FLIGHT_TRACKER_CHANNEL_ID is not set.")
-        return
     await bot.add_cog(LiveFlights(bot))
