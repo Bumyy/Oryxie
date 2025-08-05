@@ -46,7 +46,7 @@ class InfiniteFlightAPIManager:
                 return await response.text()
         except aiohttp.ClientError as e:
             print(f"An error occurred during API request to {url}: {e}")
-            return None # Or you could return a custom error object
+            return None
 
     async def get_sessions(self) -> Dict:
         return await self._request('GET', '/sessions')

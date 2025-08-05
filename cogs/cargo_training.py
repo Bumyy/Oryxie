@@ -6,8 +6,7 @@ from discord import app_commands
 # --- CONFIGURATION ---
 APPLICATIONS_CHANNEL_ID = 1402016405666398371
 TRAINER_ROLE_ID = 1402015201171083355
-# <<<--- RE-ADDED: Make sure to set this to your 'Cargo Available' role ID ---
-CARGO_AVAILABLE_ROLE_ID = 1402206575422210048 # <<<--- CHANGE THIS!
+CARGO_AVAILABLE_ROLE_ID = 1402206575422210048 
 
 class CargoApplyView(View):
     def __init__(self):
@@ -20,7 +19,6 @@ class CargoApplyView(View):
         guild = interaction.guild
         applicant = interaction.user
         
-        # <<<--- RE-ADDED: Role Restriction Logic ---
         cargo_available_role = guild.get_role(CARGO_AVAILABLE_ROLE_ID)
 
         if not cargo_available_role:
@@ -31,7 +29,6 @@ class CargoApplyView(View):
         if cargo_available_role not in applicant.roles:
             await interaction.followup.send("You are not eligible to apply for cargo training. This might be because you have already applied or do not have the required role.", ephemeral=True)
             return
-        # --- End of Role Restriction Logic ---
 
         applications_channel = guild.get_channel(APPLICATIONS_CHANNEL_ID)
         trainer_role = guild.get_role(TRAINER_ROLE_ID)
@@ -40,7 +37,6 @@ class CargoApplyView(View):
             await interaction.followup.send("Configuration error: Applications channel or Trainer role not found.", ephemeral=True)
             return
             
-        # <<<--- RE-ADDED: Remove the role from the applicant ---
         try:
             await applicant.remove_roles(cargo_available_role, reason="Started cargo training application.")
         except discord.Forbidden:
@@ -49,7 +45,6 @@ class CargoApplyView(View):
         except discord.HTTPException as e:
             await interaction.followup.send(f"An error occurred while updating your roles: {e}", ephemeral=True)
             return
-        # --- End of role removal ---
 
         application_message = await applications_channel.send(
             f"✈️ **Cargo Training for {applicant.mention}**\n"
@@ -59,7 +54,6 @@ class CargoApplyView(View):
         
         thread = await application_message.create_thread(name=f"Cargo Training for {applicant.name}")
         
-        # <<<--- RE-ADDED: The long, detailed welcome message ---
         welcome_message = f"""
 ## Welcome to the Qatari Virtual Cargo Captain Training, {applicant.mention}!
 
@@ -84,7 +78,6 @@ To really show you how the system works we created a little Tutorial Challenge f
 If ready then ping {trainer_role.mention} and say 'I am ready'.
 """
         await thread.send(welcome_message)
-        # --- End of re-added section ---
         
         await interaction.followup.send(f"Application submitted! Your 'Cargo Available' role has been removed. See your training thread: {thread.mention}", ephemeral=True)
 
@@ -112,4 +105,3 @@ class CargoTraining(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CargoTraining(bot)) 
-# the end               #

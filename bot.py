@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from database.manager import DatabaseManager
 from database.pireps_model import PirepsModel
+from database.routes_model import RoutesModel
 from api.manager import InfiniteFlightAPIManager
 
 load_dotenv()
@@ -14,13 +15,14 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
-
+intents.members = True
 
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents)
         self.db_manager: DatabaseManager = None
         self.pireps_model: PirepsModel = None
+        self.routes_model: RoutesModel = None
         self.if_api_manager: InfiniteFlightAPIManager = None
 
     async def setup_hook(self):
@@ -31,6 +33,7 @@ class MyBot(commands.Bot):
         # --- Initialize Database Manager ---
         self.db_manager = DatabaseManager(self)
         self.pireps_model = PirepsModel(self.db_manager)
+        self.routes_model = RoutesModel(self.db_manager)
         print("DatabaseManager instance created.")
         
         # --- Initialize API Manager ---
@@ -45,7 +48,9 @@ class MyBot(commands.Bot):
         try:
             await self.load_extension('cogs.pingpong')
             await self.load_extension('cogs.pireps')
+            await self.load_extension('cogs.pilot_training')
             await self.load_extension('cogs.cargo_training')
+            await self.load_extension('cogs.live_flights')
 
             print("All cogs loaded.")
         except Exception as e:
