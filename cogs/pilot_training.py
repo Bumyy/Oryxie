@@ -66,31 +66,32 @@ class VerificationModal(Modal, title="Infinite Flight Verification"):
                 user_info = data["result"][0]
                 if user_info.get("atcRank") is not None and user_info.get("atcRank") > 1:
                     await interaction.response.send_message(
-                        f"Welcome, {interaction.user.mention}! Your IFATC status has been confirmed.",
-                        ephemeral=True
+                        f"Welcome, {interaction.user.mention}! Since you are IFATC member so you don't have to go for training. \n"
+                        "Please provide **5 callsigns** (in priority order) between **101 - 499** and ping @recruiter.",
+                        ephemeral=False
                     )
                 else:
                     view = View()
                     view.add_item(Button(
                         label="Written Test",
                         style=discord.ButtonStyle.primary,
-                        custom_id="written_test_button"
+                        custom_id="start_persistent_written_test"
                     ))
                     await interaction.response.send_message(
-                        f"Hello {interaction.user.mention}. Your account has been verified, but you are not an active IFATC member. Please proceed to the written test.",
+                        f"Hello {interaction.user.mention}. Your account has been verified, Please proceed to the written test.",
                         view=view,
-                        ephemeral=True
+                        ephemeral=False
                     )
             else:
                 await interaction.response.send_message(
                     "Could not find a user with that Infinite Flight Community username.",
-                    ephemeral=True
+                    ephemeral=False
                 )
         else:
             print(f"API Error during verification: {data}")
             await interaction.response.send_message(
                 "There was an error verifying your account. Please try again later or contact staff.",
-                ephemeral=True
+                ephemeral=False
             )
 
 async def setup(bot: commands.Bot):
