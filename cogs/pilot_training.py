@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 import os
@@ -10,32 +11,65 @@ class PilotTraining(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def _start_training_process(self, member: discord.Member):
+        """
+        A helper method containing the core logic to start a training thread for a member.
+        This can be called by any event or command.
+        """
+        if TRAINING_CHANNEL_ID == 0:
+            print("Error: TRAINING_CHANNEL_ID is not set in environment variables.")
+            return None
+            
+        training_channel = self.bot.get_channel(TRAINING_CHANNEL_ID)
+        if not training_channel:
+            print(f"Error: Training channel with ID {TRAINING_CHANNEL_ID} not found.")
+            return None
+
+        initial_message = await training_channel.send(
+            f"Initial Training for {member.mention}\n- Status: In progress\n- Trainer: Not yet assigned"
+        )
+        training_thread = await initial_message.create_thread(name=f"Training for {member.display_name}")
+        embed = discord.Embed(
+            title=f"Welcome to Qatari Virtual, {member.display_name}!",
+            description="Please click the button below to begin your verification process with your Infinite Flight account.",
+            color=discord.Color.from_rgb(88, 101, 242)
+        )
+        embed.set_footer(text="You have been automatically added to this private training thread.")
+        await training_thread.send(content=member.mention, embed=embed, view=VerificationView())
+        return training_thread
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """
         Handles the event when a new member joins the server.
         """
-        print(f"New member joined: {member.name} ({member.id})")
-        training_channel = self.bot.get_channel(TRAINING_CHANNEL_ID)
-        if not training_channel:
-            print(f"Error: Training channel with ID {TRAINING_CHANNEL_ID} not found.")
-            return
+        print(f"New member joined: {member.name} ({member.id}). Starting training process.")
+        await self._start_training_process(member)
 
-        # 1. Send the initial training message
-        initial_message = await training_channel.send(
-            f"Initial Training for {member.mention}\n- Status: In progress\n- Trainer: @Recruiter"
-        )
+    @app_commands.command(name="start_training", description="Manually start the training process for a user.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def start_training_command(self, interaction: discord.Interaction, member: discord.Member):
+        """Manually triggers the training thread creation for a specified user."""
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        thread = await self._start_training_process(member)
 
-        # 2. Create a thread from the message
-        training_thread = await initial_message.create_thread(name=f"Training for {member.display_name}")
-
-        # 3. Send the welcome embed with a verify button in the thread
-        embed = discord.Embed(
-            title="Welcome to the Qatari Virtual Discord",
-            description="Please click the button below to verify your Infinite Flight account.",
-            color=discord.Color.blue()
-        )
-        await training_thread.send(embed=embed, view=VerificationView())
+        if thread:
+            await interaction.followup.send(f"✅ Successfully created training thread for {member.mention} in {thread.mention}", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Failed to create training thread. Please check the bot's console for errors.", ephemeral=True)
+            
+    @start_training_command.error
+    async def start_training_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        else:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("An unexpected error occurred. The developer has been notified.", ephemeral=True)
+            else:
+                await interaction.followup.send("An unexpected error occurred. The developer has been notified.", ephemeral=True)
+            raise error
 
 class VerificationView(View):
     def __init__(self):
