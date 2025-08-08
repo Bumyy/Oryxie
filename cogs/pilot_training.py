@@ -1,9 +1,10 @@
 import discord
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
+import os
 
 # --- Configuration ---
-TRAINING_CHANNEL_ID = 1402302786175107144
+TRAINING_CHANNEL_ID = int(os.getenv("TRAINING_CHANNEL_ID"))
 
 class PilotTraining(commands.Cog):
     def __init__(self, bot: commands.Bot):

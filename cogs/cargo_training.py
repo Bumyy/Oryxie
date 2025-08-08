@@ -2,11 +2,12 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 from discord import app_commands
+import os
 
 # --- CONFIGURATION ---
-APPLICATIONS_CHANNEL_ID = 1402016405666398371
-TRAINER_ROLE_ID = 1402015201171083355
-CARGO_AVAILABLE_ROLE_ID = 1402206575422210048 
+APPLICATIONS_CHANNEL_ID =  int(os.getenv("CARGO_APPLICATIONS_CHANNEL_ID"))
+RECRUITER_ROLE_ID =  int(os.getenv("RECRUITER_ROLE_ID"))
+CARGO_AVAILABLE_ROLE_ID =  int(os.getenv("CARGO_AVAILABLE_ROLE_ID")) 
 
 class CargoApplyView(View):
     def __init__(self):
@@ -31,7 +32,7 @@ class CargoApplyView(View):
             return
 
         applications_channel = guild.get_channel(APPLICATIONS_CHANNEL_ID)
-        trainer_role = guild.get_role(TRAINER_ROLE_ID)
+        trainer_role = guild.get_role(RECRUITER_ROLE_ID)
 
         if not applications_channel or not trainer_role:
             await interaction.followup.send("Configuration error: Applications channel or Trainer role not found.", ephemeral=True)

@@ -1,16 +1,15 @@
-# cogs/written_test.py
-
 import discord
 from discord.ext import commands
 import asyncio
 import random
 import datetime
+import os
 
 # --- CONFIGURATION ---
-RECRUITER_ROLE_ID = 1402015201171083355      # Role to be pinged with results
-WRITTEN_TEST_ROLE_ID = 1402720341054324912  # Role to be assigned during the test
+RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ID"))
+WRITTEN_TEST_ROLE_ID = int(os.getenv("WRITTEN_TEST_ROLE_ID"))
+
 # --- TEST DATA ---
-# (Full list of 20 questions)
 ALL_QUESTIONS = [
     {"id": 1, "text": "Match the following:", "options": {'A': 'A->1, B->4, C->3, D->2', 'B': 'A->2, B->4, C->3, D->1', 'C': 'A->3, B->4, C->1, D->2', 'D': 'A->3, B->1, C->4, D->2'}, "correct": "D", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402560900484956160/image.png?ex=68945c20&is=68930aa0&hm=53638a6112de9f391db364d3d529fb05a46f3a3b4c0f3d27b173a1a549fae7fc&"},
     {"id": 2, "text": "What are the maximum **preferred speeds** during taxi according to the User Guide?", "options": {'A': 'Straight line -> 15 knots, Turns -> 15 knots', 'B': 'Straight line -> 35 knots, Turns -> 5 knots', 'C': 'Straight line -> 25 knots, Turns -> 10 knots', 'D': 'Straight line -> 25 knots, Turns -> 5 knots'}, "correct": "C", "timeout": 180, "image": None},
@@ -59,17 +58,13 @@ class QuestionView(discord.ui.View):
 # The Persistent View that is ALWAYS listening for the button click
 class TestInitiatorView(discord.ui.View):
     def __init__(self):
-        # `timeout=None` makes this view persistent
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Written Test", style=discord.ButtonStyle.primary, custom_id="start_persistent_written_test")
     async def written_test_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # This function is the ONLY entry point for the test.
         
-        # Step 1: Find the WrittenTest cog instance that is loaded on the bot
         cog = interaction.client.get_cog("WrittenTest")
         if not cog:
-            # This should never happen if the cog is loaded correctly
             await interaction.response.send_message("The test module is not loaded correctly. Please contact an admin.", ephemeral=True)
             return
 
@@ -78,7 +73,6 @@ class TestInitiatorView(discord.ui.View):
             await interaction.response.send_message(content="You already have a test in progress!", ephemeral=True)
             return
 
-        # Step 2: Acknowledge the interaction immediately
         await interaction.response.defer()
 
         # Disable the button on the original message to prevent double-clicks
@@ -86,10 +80,8 @@ class TestInitiatorView(discord.ui.View):
         disabled_view.add_item(discord.ui.Button(label="Test Started", style=discord.ButtonStyle.primary, disabled=True))
         await interaction.edit_original_response(view=disabled_view)
         
-        # Step 3: Run the test logic from the cog
         cog.active_tests.add(user.id)
         try:
-            # We now call the cog's method to handle the test
             await cog.run_test_session(interaction)
         finally:
             cog.active_tests.remove(user.id)
@@ -99,12 +91,10 @@ class WrittenTest(commands.Cog):
         self.bot = bot
         self.active_tests = set()
 
-    # The cog's only job when it loads is to register the persistent view
     async def cog_load(self):
         self.bot.add_view(TestInitiatorView())
         print("WrittenTest Cog loaded and Persistent View registered.")
 
-    # This method contains the actual test logic
     async def run_test_session(self, interaction: discord.Interaction):
         user = interaction.user
         channel = interaction.channel
@@ -174,6 +164,5 @@ class WrittenTest(commands.Cog):
             except discord.Forbidden:
                 await channel.send(content="**Error:** I lack permissions to remove the `Written Test` role.", delete_after=15)
 
-# The setup function that discord.py calls to load the cog
 async def setup(bot: commands.Bot):
     await bot.add_cog(WrittenTest(bot))
