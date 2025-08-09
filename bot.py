@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from database.manager import DatabaseManager
 from database.pireps_model import PirepsModel
 from database.routes_model import RoutesModel
+from database.pilots_model import PilotsModel
 from api.manager import InfiniteFlightAPIManager
 
 load_dotenv()
@@ -23,6 +24,7 @@ class MyBot(commands.Bot):
         self.db_manager: DatabaseManager = None
         self.pireps_model: PirepsModel = None
         self.routes_model: RoutesModel = None
+        self.pilots_model: PilotsModel = None
         self.if_api_manager: InfiniteFlightAPIManager = None
 
     async def setup_hook(self):
@@ -34,6 +36,7 @@ class MyBot(commands.Bot):
         self.db_manager = DatabaseManager(self)
         self.pireps_model = PirepsModel(self.db_manager)
         self.routes_model = RoutesModel(self.db_manager)
+        self.pilots_model = PilotsModel(self.db_manager)
         print("DatabaseManager instance created.")
         
         # --- Initialize API Manager ---
@@ -51,6 +54,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.pilot_training')
             await self.load_extension('cogs.cargo_training')
             await self.load_extension("cogs.written_test")
+            await self.load_extension('cogs.roster')
            
           #  await self.load_extension('cogs.live_flights') #
 
