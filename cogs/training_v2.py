@@ -7,16 +7,18 @@ from discord.ui import View, Button, Modal, TextInput
 import asyncio
 import random
 import datetime
-import re # We need this for the retest logic
+import re
 
 # --- CONFIGURATION ---
 TRAINING_CHANNEL_ID = 1402302786175107144
 RECRUITER_ROLE_ID = 1402015201171083355
 WRITTEN_TEST_ROLE_ID = 1402720341054324912
 CHRO_ROLE_ID = 1401987081814675559
+IFATC_ROLE_ID = 1404107317401747476  # new IFATC role to assign automatically
+BRAND_LOGO_URL = "https://cdn.discordapp.com/attachments/1214282648009056317/1214283143037845534/IMG_7370.PNG?ex=6899920d&is=6898408d&hm=78467d8776c850ac0181a7a8d1ec02613d1bdbc0a1f4a3e612b8bd7edd073424&"  # replace with real logo URL
+BRAND_COLOR_RGB = (100, 0, 49)  # maroon #640031
 
 # --- TEST DATA ---
-# (Full list of 20 questions)
 ALL_QUESTIONS = [
     {"id": 1, "text": "Match the following:", "options": {'A': 'A->1, B->4, C->3, D->2', 'B': 'A->2, B->4, C->3, D->1', 'C': 'A->3, B->4, C->1, D->2', 'D': 'A->3, B->1, C->4, D->2'}, "correct": "D", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402560900484956160/image.png?ex=68945c20&is=68930aa0&hm=53638a6112de9f391db364d3d529fb05a46f3a3b4c0f3d27b173a1a549fa7fc&"},
     {"id": 2, "text": "What are the maximum **preferred speeds** during taxi according to the User Guide?", "options": {'A': 'Straight line -> 15 knots, Turns -> 15 knots', 'B': 'Straight line -> 35 knots, Turns -> 5 knots', 'C': 'Straight line -> 25 knots, Turns -> 10 knots', 'D': 'Straight line -> 25 knots, Turns -> 5 knots'}, "correct": "C", "timeout": 180, "image": None},
@@ -24,8 +26,8 @@ ALL_QUESTIONS = [
     {"id": 4, "text": "If an airport's elevation is 1,500 feet, what would typically be the pattern work altitude for jet aircraft and propeller aircraft (props) in MSL?", "options": {'A': 'Jet: 2,500 ft | Prop: 2,000 ft', 'B': 'Jet: 2,000 ft | Prop: 1,500 ft', 'C': 'Jet: 3,000 ft | Prop: 2,500 ft', 'D': 'Jet: 2,000 ft | Prop: 2,000 ft'}, "correct": "C", "timeout": 300, "image": None},
     {"id": 5, "text": "You are flying eastbound (heading between 000° and 179°) under IFR rules. According to standard semicircular rules for cruising altitudes, which of the following is the correct flight level?", "options": {'A': 'FL320', 'B': 'FL335', 'C': 'FL330', 'D': 'FL340'}, "correct": "C", "timeout": 180, "image": None},
     {"id": 6, "text": "Match the aircrafts with the correct Cruise speeds:", "options": {'A': 'A->1, B->2, C->3, D->3', 'B': 'A->3, B->1, C->2, D->1', 'C': 'A->3, B->1, C->1, D->2', 'D': 'A->2, B->3, C->1, D->1'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402584441423007815/image.png?ex=6894720d&is=6893208d&hm=a66941af60509a03451c3014139304b08eead24ad3500ed3a8fceb8b069614b9&"},
-    {"id": 7, "text": "You are approaching OERK runway 33R as shown in the figure above and ATC is not present there. What will be the order of your UNICOM announcements according to the figure?", "options": {'A': 'Inbound -> right base -> Right downwind -> final', 'B': 'Inbound -> left base -> left downwind -> final', 'C': 'Inbound -> right Downwind -> Right base -> final', 'D': 'right downwind -> right base -> Inbound -> final'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402591034558517248/IMG_20250806_152120.jpg?ex=68947831&is=689326b1&hm=806f1988cba4b4085e5dc99f2931189df980267d5bc9a71caedbcfaecc60738b&"},
-    {"id": 8, "text": "To ensure safe and realistic operation in Infinite Flight, at what speed should you typically disengage reverse thrust?", "options": {'A': '30 knots', 'B': '45 knots', 'C': '50 knots', 'D': '60 knots'}, "correct": "D", "timeout": 180, "image": None},
+    {"id": 7, "text": "You are approaching OERK runway 33R as shown in the figure and ATC is not present there. What will be the order of your UNICOM announcements according to the figure?", "options": {'A': 'Inbound -> right base -> Right downwind -> final', 'B': 'Inbound -> left base -> left downwind -> final', 'C': 'Inbound -> right Downwind -> Right base -> final', 'D': 'right downwind -> right base -> Inbound -> final'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402591034558517248/IMG_20250806_152120.jpg?ex=68947831&is=689326b1&hm=806f1988cba4b4085e5dc99f2931189df980267d5bc9a71caedbcfaecc60738b&"},
+    {"id": 8, "text": "To ensure safe and realistic operation in Infinite Flight, at what ground speed should you typically disengage reverse thrust?", "options": {'A': '30 knots', 'B': '45 knots', 'C': '50 knots', 'D': '60 knots'}, "correct": "D", "timeout": 180, "image": None},
     {"id": 9, "text": "Based on the diagram, choose the option that correctly identifies the numbered positions of the traffic pattern.", "options": {'A': '1-Downwind, 2-Base, 3-Upwind, 4-Final', 'B': '1-Upwind, 2-Downwind, 3-Crosswind, 5-Base', 'C': '1-Upwind, 2-Crosswind, 3-Downwind, 4-Base', 'D': '2-Final, 3-Base, 4-Downwind, 5-Crosswind'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402637387200335952/atc-traffic-pattern-1.jpg?ex=6894a35c&is=689351dc&hm=6d0596e3675292f64869f721d4a4a6d84c62d0301bfab954547d8329f6a66ae4&"},
     {"id": 10, "text": 'The "Check In" command should only be used for which of the following frequencies?', "options": {'A': 'Center, Approach', 'B': 'Approach, Tower', 'C': 'Tower, Departure', 'D': 'Center, Departure'}, "correct": "D", "timeout": 180, "image": None},
     {"id": 11, "text": "When approaching an airport with an Approach frequency open, which one is the right procedure assuming flying IFR? (Without prior Center hand-off)", "options": {'A': 'When at or below 18000 ft and within 50 nm to destination, tune into approach...', 'B': 'When at or below 10000 ft and within 40 nm to destination, tune into approach...', 'C': 'When at or below 15000 ft and within 60 nm to destination, tune into approach...', 'D': 'When at or below 12000 ft and within 40 nm to destination, tune into approach...'}, "correct": "A", "timeout": 180, "image": None},
@@ -50,7 +52,7 @@ class QuestionView(View):
         self.add_item(Button(label="Skip to Results", style=discord.ButtonStyle.danger, custom_id="chro_skip_test"))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        custom_id = interaction.data["custom_id"]
+        custom_id = interaction.data.get("custom_id", "")
         if custom_id == "chro_skip_test":
             chro_role = interaction.guild.get_role(CHRO_ROLE_ID)
             if chro_role and chro_role in interaction.user.roles:
@@ -72,18 +74,68 @@ class VerificationModal(Modal, title="Infinite Flight Verification"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True, ephemeral=False)
+        await interaction.response.defer(thinking=True)
         username = self.ifc_username.value
         data = await self.cog.bot.if_api_manager.get_user_stats(discourse_names=[username])
         if data and data.get("errorCode") == 0 and data.get("result"):
             user_info = data["result"][0]
+            # IFATC flow: assign IFATC role and skip test
             if user_info.get("atcRank", 0) > 1:
-                await interaction.followup.send(f"Welcome, {interaction.user.mention}! As an IFATC member, you do not need the written test.")
-            else:
-                embed = discord.Embed(title="Qatari Virtual - Written Test Briefing", color=discord.Color.blue(), description="Before you begin, you must study the following guides.")
-                embed.add_field(name="Required Reading", value="• [Qatari Virtual Pilot Guidelines](https://drive.google.com/file/d/1FoyWliMfZ6AromV3qoqxbmy2RN_YU-WL/view?usp=share_link)\n• [A320 Family Aircraft Guide](https://drive.google.com/file/d/1W3ROBvPRvBHwS6zGETGKjUidtvqf7QPY/view?usp=sharing)\n• [Infinite Flight Flying Guide](https://infiniteflight.com/guide/flying-guide)", inline=False)
-                embed.add_field(name="Test Rules", value="• **Total Questions:** 20\n• **Passing Score:** 16\n• **Time Limit:** 3-5 minutes per question.", inline=False)
-                await interaction.followup.send(f"Hello {interaction.user.mention}. Your account has been verified.", embed=embed, view=StartTestView(cog=self.cog, author_id=interaction.user.id))
+                # assign IFATC role if available
+                ifatc_role = interaction.guild.get_role(IFATC_ROLE_ID)
+                try:
+                    if ifatc_role and ifatc_role not in interaction.user.roles:
+                        await interaction.user.add_roles(ifatc_role)
+                except Exception:
+                    # fail silently if role assignment doesn't work (permissions)
+                    pass
+                # send the IFATC-specific welcome message
+                msg = (
+                    f"Welcome, {interaction.user.mention}! Your IFATC status has been confirmed and the IFATC role has been assigned to you. "
+                    "You do not need to enter the Qatari Virtual Cadet Training Program. "
+                    "To get started, please Provide **5 Callsigns** in priority order between ** 101-499 ** and ping @recruiter."
+                )
+                await interaction.followup.send(msg)
+                return
+            # Non-IFATC: send briefing embed
+            color = discord.Color.from_rgb(*BRAND_COLOR_RGB)
+            embed = discord.Embed(
+                title="Pilot Entry Test Briefing",
+                description=(
+                    "Welcome to Qatari Virtual. Before you begin the written test, please study the following resources carefully."
+                ),
+                color=color
+            )
+            embed.add_field(
+                name="Required Reading",
+                value=( "• [Qatari Virtual Pilot Guidelines](https://drive.google.com/file/d/1FoyWliMfZ6AromV3qoqxbmy2RN_YU-WL/view?usp=share_link)\n"
+                        "• [A320 Family Aircraft Guide](https://drive.google.com/file/d/1W3ROBvPRvBHwS6zGETGKjUidtvqf7QPY/view?usp=sharing)\n"
+                        "• [Infinite Flight Flying Guide](https://infiniteflight.com/guide/flying-guide)"
+                                ),
+                 inline=False
+)
+            embed.add_field(
+                name="📖 TEST RULES:",
+                value=( "• 20 multiple choice questions\n"
+                        "• Each question has a time limit\n"
+                        "• You need 16/20 (80%) to pass\n"
+                        "• Questions cover aviation knowledge\n"
+                        "• No external help allowed\n"
+                        "• You can retake if you fail (with recruiter approval)"
+                                ),
+                 inline=False
+)
+            embed.add_field(
+                name="Questions?",
+                value="If you have any questions about the test or the materials, please ping a recruiter.",
+                inline=False
+            )
+            # attach start button view
+            await interaction.followup.send(
+                f"Hello {interaction.user.mention}. Your account has been verified. Your next step is the written test.",
+                embed=embed,
+                view=StartTestView(cog=self.cog, author_id=interaction.user.id)
+            )
         else:
             await interaction.followup.send("Could not find a user with that IFC username.")
 
@@ -92,29 +144,29 @@ class InitialVerificationView(View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Verify", style=discord.ButtonStyle.green, custom_id="v2_final_verify")
+    @discord.ui.button(label="Verify Account", style=discord.ButtonStyle.green, custom_id="v2_final_verify")
     async def verify_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(VerificationModal(cog=self.cog))
 
 class StartTestView(View):
     def __init__(self, cog: "TrainingCogV2", author_id: int):
-        super().__init__(timeout=86400) # Button is valid for 1 day
+        super().__init__(timeout=86400)
         self.cog = cog
         self.author_id = author_id
 
     @discord.ui.button(label="Start Written Test", style=discord.ButtonStyle.primary, custom_id="v2_final_start_test")
     async def start_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        button.disabled = True
-        await interaction.edit_original_response(view=self)
-        asyncio.create_task(self.cog.run_test_session(interaction))
+        await self.cog.handle_start_test(interaction)
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.author_id
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This is not your test button.", ephemeral=True)
+            return False
+        return True
 
 class AuthorizeRetestView(View):
     def __init__(self, cog: "TrainingCogV2", trainee_id: int):
-        super().__init__(timeout=None) # Persistent
+        super().__init__(timeout=None)
         self.cog = cog
         self.trainee_id = trainee_id
     
@@ -130,15 +182,33 @@ class AuthorizeRetestView(View):
             await interaction.followup.send("Could not find the original trainee.", ephemeral=True)
             return
         
+        # Edit the original message to indicate authorization
         await interaction.edit_original_response(content=f"Retest authorized by {interaction.user.mention}.", view=None)
+
+        # Create persistent TakeRetestView and register it so it stays active while bot runs
+        retest_view = TakeRetestView(cog=self.cog, author_id=self.trainee_id)
+        try:
+            # register the view so the button callback is available
+            self.cog.bot.add_view(retest_view)
+        except Exception:
+            pass
+
+        # Inform the trainee with recruiter mention and a clear instruction
         await interaction.followup.send(
-            content=f"{trainee.mention}, you have been authorized for a retest.",
-            view=TakeRetestView(cog=self.cog, author_id=self.trainee_id)
+            content=f"{trainee.mention}, you have been authorized for a retest by {interaction.user.mention}. You may begin whenever you are ready. Click the button below to start.",
+            view=retest_view
         )
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
+        if recruiter_role and recruiter_role in interaction.user.roles:
+            return True
+        await interaction.response.send_message("Only recruiters can authorize a retest.", ephemeral=True)
+        return False
 
 class TakeRetestView(View):
     def __init__(self, cog: "TrainingCogV2", author_id: int):
-        super().__init__(timeout=86400) # Valid for 1 day
+        super().__init__(timeout=86400)
         self.cog = cog
         self.author_id = author_id
 
@@ -157,9 +227,8 @@ class TrainingCogV2(commands.Cog, name="Training V2"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.active_tests = {}
-        # The bot will re-register the views every time it starts up
+        # Register persistent views that must be available while bot runs
         self.bot.add_view(InitialVerificationView(self))
-        self.bot.add_view(AuthorizeRetestView(self, trainee_id=0)) # trainee_id is a placeholder
 
     @app_commands.command(name="forcetest", description="Manually start the training flow for a user.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -174,14 +243,49 @@ class TrainingCogV2(commands.Cog, name="Training V2"):
     async def start_training_flow(self, member: discord.Member):
         training_channel = self.bot.get_channel(TRAINING_CHANNEL_ID)
         if not training_channel: return
-        initial_message = await training_channel.send(f"Initial Training for {member.mention}")
+
+        # New multi-line initial message with status and trainer mention
+        recruiter_role = training_channel.guild.get_role(RECRUITER_ROLE_ID) if training_channel.guild else None
+        trainer_mention = recruiter_role.mention if recruiter_role else "@Recruiter"
+        initial_text = (
+            f"✈️ Initial Training for {member.mention}\n"
+            f"Status: In progress\n"
+            f"Trainer: {trainer_mention}"
+        )
+        initial_message = await training_channel.send(initial_text)
         thread = await initial_message.create_thread(name=f"Training for {member.display_name}")
-        embed = discord.Embed(title="Welcome to Qatari Virtual", description="Please click below to verify your account.", color=discord.Color.blue())
+        color = discord.Color.from_rgb(*BRAND_COLOR_RGB)
+        embed = discord.Embed(
+            title="Welcome to the Qatari Virtual Discord Server!",
+            description="Please click below to verify your account.",
+            color=color
+        )
+        if BRAND_LOGO_URL:
+            embed.set_thumbnail(url=BRAND_LOGO_URL)
         await thread.send(embed=embed, view=InitialVerificationView(self))
+
+    async def handle_start_test(self, interaction: discord.Interaction):
+        user = interaction.user
+        if user.id in self.active_tests:
+            await interaction.response.send_message("You already have a test in progress!", ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        # disable the start button on the original message
+        try:
+            view = View.from_message(interaction.message)
+            button = discord.utils.get(view.children, custom_id=interaction.data.get("custom_id", ""))
+            if button:
+                button.disabled = True
+                await interaction.edit_original_response(view=view)
+        except Exception:
+            pass
+        
+        asyncio.create_task(self.run_test_session(interaction))
 
     async def run_test_session(self, interaction: discord.Interaction):
         user = interaction.user; channel = interaction.channel
-        if user.id in self.active_tests: return
         try:
             self.active_tests[user.id] = {"score": 0, "wrong_answers": [], "messages": []}
             written_test_role = interaction.guild.get_role(WRITTEN_TEST_ROLE_ID)
@@ -204,43 +308,76 @@ class TrainingCogV2(commands.Cog, name="Training V2"):
                 await q_view.wait()
                 if q_view.value == "skipped":
                     await q_view.interaction.response.send_message("Test has been ended by a staff member.", ephemeral=True)
-                    for rem_q in questions[i:]: self.active_tests[user.id]["wrong_answers"].append(rem_q["id"])
+                    for j, rem_q in enumerate(questions[i:], start=i+1): 
+                        self.active_tests[user.id]["wrong_answers"].append((j, rem_q["id"]))
                     break
+                
                 if q_view.value == q_data["correct"]:
-                    self.active_tests[user.id]["score"] += 1; res_msg = await channel.send("✅ Correct!")
+                    self.active_tests[user.id]["score"] += 1
+                    res_msg = await channel.send("✅ Correct!")
                 else:
-                    self.active_tests[user.id]["wrong_answers"].append(q_data["id"])
+                    # Store tuple: (question_order, original_question_id)
+                    self.active_tests[user.id]["wrong_answers"].append((i + 1, q_data["id"]))
                     correct_ans = q_data['options'][q_data['correct']]
                     res_msg = await channel.send(f"❌ Incorrect. The correct answer was **{q_data['correct']}**: {correct_ans}")
+                
                 self.active_tests[user.id]["messages"].append(res_msg)
                 await asyncio.sleep(3)
+            
             await self.finalize_test(interaction, self.active_tests[user.id])
+     
         except Exception:
             print(f"--- CRITICAL ERROR IN TEST SESSION FOR {user.name} ---"); import traceback; traceback.print_exc()
-            await channel.send(f"An unexpected error occurred during the test for {user.mention}. The test has been aborted.")
+            await channel.send(f"An unexpected error occurred for {user.mention}. The test has been aborted.")
         finally:
             if user.id in self.active_tests: del self.active_tests[user.id]
 
     async def finalize_test(self, interaction: discord.Interaction, test_data: dict):
-        user = interaction.user; channel = interaction.channel
+        user = interaction.user
+        channel = interaction.channel
+        
         passed = test_data["score"] >= 16
         recruiter_ping = f"<@&{RECRUITER_ROLE_ID}>"
+        
         embed = discord.Embed(title="Written Test Results", color=discord.Color.green() if passed else discord.Color.red())
         embed.add_field(name="Examinee", value=user.mention, inline=False)
         embed.add_field(name="Score", value=f"{test_data['score']}/{len(ALL_QUESTIONS)}", inline=True)
         embed.add_field(name="Status", value="PASSED" if passed else "FAILED", inline=True)
+       
+        
         if test_data["wrong_answers"]:
-            test_data["wrong_answers"].sort()
-            embed.add_field(name="Incorrect Questions", value=", ".join([f"#{qid}" for qid in test_data["wrong_answers"]]), inline=False)
+            test_data["wrong_answers"].sort(key=lambda x: x[0])  # Sort by order
+            embed.add_field(name="Incorrect Questions", value=", ".join([f"Q{order} (#{qid})" for order, qid in test_data["wrong_answers"]]), inline=False)
+
         await channel.send(content=recruiter_ping, embed=embed)
+
         written_test_role = interaction.guild.get_role(WRITTEN_TEST_ROLE_ID)
         if passed and written_test_role and written_test_role in user.roles:
             await user.remove_roles(written_test_role)
+            # FOLLOW-UP PASS MESSAGE
+            follow_msg = (
+                f"Congratulations, {user.mention}! You have passed the written test. "
+                "Your next step is to choose your callsign and please provide us 5 callsigns in priority order . "
+                "between  ** 101 - 499 ** , A recruiter will assign you one of callsign shortly ."
+            )
+            await channel.send(follow_msg)
         elif not passed:
-            await channel.send("A recruiter can authorize a retest.", view=AuthorizeRetestView(self, trainee_id=user.id))
-        await asyncio.sleep(300)
-        try: await channel.delete_messages(test_data["messages"])
-        except: pass
+            # FAIL MESSAGE and retest prompt (recruiter will authorize)
+            fail_msg = (
+                f"Unfortunately, you did not meet the passing score. Please take some time to review the guides and discuss with a recruiter before attempting a retest. "
+                "If you need help, ping a recruiter or request guidance."
+            )
+            await channel.send(fail_msg, view=AuthorizeRetestView(cog=self, trainee_id=user.id))
+        
+        # schedule cleanup in background
+        async def cleanup_messages(messages, delay):
+            await asyncio.sleep(delay)
+            try:
+                await channel.delete_messages(messages)
+            except:
+                pass
+
+        asyncio.create_task(cleanup_messages(test_data["messages"], 300))
 
 async def setup(bot: commands.Bot):
     if not hasattr(bot, 'if_api_manager'):
