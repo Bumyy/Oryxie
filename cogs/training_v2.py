@@ -1,4 +1,4 @@
-# cogs/Training_V2.py
+# cogs/Training_V2.py created by Ayush 
 
 import discord
 from discord.ext import commands
