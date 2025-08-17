@@ -8,6 +8,7 @@ import asyncio
 import random
 import datetime
 import re
+import os
 
 # --- CONFIGURATION ---
 TRAINING_CHANNEL_ID = int(os.getenv("TRAINING_CHANNEL_ID"))
