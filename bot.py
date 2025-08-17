@@ -51,9 +51,9 @@ class MyBot(commands.Bot):
         try:
             await self.load_extension('cogs.pingpong')
             await self.load_extension('cogs.pireps')
-            await self.load_extension('cogs.pilot_training')
+            await self.load_extension('cogs.training_v2')
             await self.load_extension('cogs.cargo_training')
-            await self.load_extension("cogs.written_test")
+            # await self.load_extension("cogs.written_test")
             await self.load_extension('cogs.roster')
            
           #  await self.load_extension('cogs.live_flights') #
