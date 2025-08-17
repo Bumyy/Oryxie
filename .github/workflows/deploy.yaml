@@ -1,0 +1,39 @@
+name: Deploy Discord Bot
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Copy files to VPS
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: oryxie
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: 22
+          source: "."
+          target: "~/bot"
+          rm: true
+
+      - name: Restart bot with pm2
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: oryxie
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: 22
+          script: |
+            cd ~/bot
+            pm2 stop oryxie || true
+            pm2 delete oryxie || true
+            pm2 start bot.py --name oryxie --interpreter ~/bot/venv/bin/python
+            pm2 save
