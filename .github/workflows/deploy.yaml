@@ -23,6 +23,7 @@ jobs:
           source: "."
           target: "~/bot"
           rm: false
+          overwrite: true
 
       - name: Restart bot with pm2
         uses: appleboy/ssh-action@v0.1.7
