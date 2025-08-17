@@ -12,6 +12,7 @@ venv/
 
 # dotenv file
 .env
+.env.production
 
 # IDEs
 .vscode/
