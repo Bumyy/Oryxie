@@ -13,6 +13,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Remove .git directory
+        run: rm -rf .git
+
+      - name: Backup remote .env file
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: oryxie
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: 22
+          script: |
+            if [ -f ~/bot/.env ]; then
+              echo ".env file found, backing it up."
+              cp ~/bot/.env ~/.env.bak
+            else
+              echo ".env file not found, skipping backup. (This is normal on first deploy)"
+            fi
+
       - name: Copy files to VPS
         uses: appleboy/scp-action@v0.1.4
         with:
@@ -22,9 +40,9 @@ jobs:
           port: 22
           source: "."
           target: "~/bot"
-          rm: true
+          overwrite: true
 
-      - name: Restart bot with pm2
+      - name: Restore .env, Install Dependencies & Restart
         uses: appleboy/ssh-action@v0.1.7
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -33,7 +51,22 @@ jobs:
           port: 22
           script: |
             cd ~/bot
+
+            if [ -f ~/.env.bak ]; then
+              echo "Restoring .env file."
+              mv ~/.env.bak ~/bot/.env
+            fi
+
+            echo "Creating Python virtual environment..."
+            python3 -m venv venv
+
+            echo "Installing dependencies..."
+            venv/bin/pip install -r requirements.txt
+
+            echo "Restarting application with PM2..."
             pm2 stop oryxie || true
             pm2 delete oryxie || true
+
             pm2 start bot.py --name oryxie --interpreter ~/bot/venv/bin/python
+
             pm2 save
