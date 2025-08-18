@@ -81,3 +81,6 @@ class InfiniteFlightAPIManager:
 
     async def get_oceanic_tracks(self) -> Dict:
         return await self._request('GET', '/tracks')
+
+    async def get_aircraft(self) -> Dict:
+        return await self._request('GET', '/aircraft')

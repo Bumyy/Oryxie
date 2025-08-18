@@ -45,3 +45,17 @@ class PilotsModel:
         
         rows_affected = await self.db.execute(query, args)
         return rows_affected
+
+    async def get_pilot_by_ifuserid(self, ifuserid: str) -> Optional[Dict]:
+        """
+        Retrieves a pilot's data using their Infinite Flight User ID.
+
+        Args:
+            ifuserid: The user's unique ID from the Infinite Flight API.
+
+        Returns:
+            A dictionary of the pilot's data if found, otherwise None.
+        """
+        query = "SELECT discordid FROM pilots WHERE ifuserid = %s"
+        args = (ifuserid,)
+        return await self.db.fetch_one(query, args)

@@ -26,6 +26,7 @@ class MyBot(commands.Bot):
         self.routes_model: RoutesModel = None
         self.pilots_model: PilotsModel = None
         self.if_api_manager: InfiniteFlightAPIManager = None
+        self.aircraft_name_map = {}
 
     async def setup_hook(self):
         """
@@ -46,6 +47,18 @@ class MyBot(commands.Bot):
             print("Infinite Flight API Manager initialized.")
         except ValueError as e:
             print(f"ERROR: {e}")
+
+         # --- Populate the aircraft name map ---
+        print("Fetching aircraft data from Infinite Flight API...")
+        aircraft_data = await self.if_api_manager.get_aircraft()
+        if aircraft_data and aircraft_data.get('result'):
+            self.aircraft_name_map = {
+                aircraft['id']: aircraft['name'] 
+                for aircraft in aircraft_data['result']
+            }
+            print(f"Successfully loaded {len(self.aircraft_name_map)} aircraft names.")
+        else:
+            print("WARNING: Could not load aircraft names from the API. Aircraft will show as 'Unknown'.")
             
         print("Loading extensions...")
         try:
@@ -53,10 +66,8 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.pireps')
             await self.load_extension('cogs.training_v2')
             await self.load_extension('cogs.cargo_training')
-            # await self.load_extension("cogs.written_test")
             await self.load_extension('cogs.roster')
-           
-          #  await self.load_extension('cogs.live_flights') #
+            await self.load_extension('cogs.live_flights')
 
             print("All cogs loaded.")
         except Exception as e:

@@ -23,7 +23,6 @@ class DatabaseManager:
         if self.pool is None:
             try:
                 self.pool = await aiomysql.create_pool(
-                    loop=self.bot.loop,
                     **self.db_config,
                     minsize=1,
                     maxsize=10
