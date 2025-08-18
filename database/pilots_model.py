@@ -59,3 +59,42 @@ class PilotsModel:
         query = "SELECT discordid FROM pilots WHERE ifuserid = %s"
         args = (ifuserid,)
         return await self.db.fetch_one(query, args)
+
+    async def get_pilot_by_ifc_username(self, username: str) -> Optional[Dict]:
+        """
+        Retrieves a pilot's data using their IFC username as a fallback.
+        This method is designed to find a match even if the stored URL has
+        trailing slashes or paths like '/summary'.
+
+        Args:
+            username: The clean IFC username (e.g., 'bumy').
+
+        Returns:
+            A dictionary of the pilot's data if found, otherwise None.
+        """
+        query = "SELECT discordid FROM pilots WHERE ifc LIKE %s"
+        
+        pattern = f"%/{username}%"
+        args = (pattern,)
+        return await self.db.fetch_one(query, args)
+
+    async def update_ifuserid_by_ifc_username(self, username: str, ifuserid: str) -> int:
+        """
+        Updates the ifuserid for a pilot found via their IFC username.
+        This makes future lookups faster and more reliable.
+
+        Args:
+            username: The clean IFC username (e.g., 'bumy').
+            ifuserid: The Infinite Flight User ID to set.
+
+        Returns:
+            The number of rows affected.
+        """
+        query = """
+            UPDATE pilots
+            SET ifuserid = %s
+            WHERE ifc LIKE %s
+        """
+        pattern = f"%/{username}%"
+        args = (ifuserid, pattern)
+        return await self.db.execute(query, args)

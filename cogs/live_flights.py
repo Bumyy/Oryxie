@@ -244,9 +244,22 @@ class LiveFlights(commands.Cog):
                         duration_str = "N/A"
                         fltnum = flight_data['callsign']
 
+                    pilot_discord_id = None
                     try:
                         pilot_db_entry = await self.bot.pilots_model.get_pilot_by_ifuserid(flight_data['userId'])
-                        pilot_discord_id = pilot_db_entry['discordid'] if pilot_db_entry else None
+                        
+                        if not pilot_db_entry:
+                            ifc_username = flight_data.get('username')
+                            if ifc_username:
+                                print(f"Fallback: Searching for pilot by IFC username: {ifc_username}")
+                                pilot_db_entry = await self.bot.pilots_model.get_pilot_by_ifc_username(ifc_username)
+                                
+                                if pilot_db_entry:
+                                    print(f"Fallback successful for {ifc_username}. Updating record with ifuserid: {flight_data['userId']}")
+                                    await self.bot.pilots_model.update_ifuserid_by_ifc_username(ifc_username, flight_data['userId'])
+
+                        if pilot_db_entry:
+                            pilot_discord_id = pilot_db_entry['discordid']
 
                     except Exception as e:
                         print(f"Database error getting pilot info: {e}")
@@ -277,8 +290,6 @@ class LiveFlights(commands.Cog):
         await self.bot.wait_until_ready()
     
         print("Initial flight check complete. The loop will now run every 2 minutes.")
-
-
 
 async def setup(bot):
     await bot.add_cog(LiveFlights(bot))
