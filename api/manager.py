@@ -5,7 +5,8 @@ from typing import Optional, List, Dict, Any
 class InfiniteFlightAPIManager:
     """
     An asynchronous wrapper for the Infinite Flight Live API.
-    Handles creating and closing a single aiohttp session for the bot's lifetime.
+    Handles creating and closing a single aiohttp session for the bot's lifetime,
+    with automatic reconnection logic.
     """
     def __init__(self, bot):
         self.bot = bot
@@ -16,36 +17,48 @@ class InfiniteFlightAPIManager:
         self.base_url = "https://api.infiniteflight.com/public/v2"
         self._session: Optional[aiohttp.ClientSession] = None
 
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """
+        Gets the current session, creating a new one if it doesn't exist or is closed.
+        This is the core of the self-healing logic.
+        """
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+            print("Infinite Flight API session created or re-created.")
+        return self._session
+
     async def connect(self):
-        """Creates the aiohttp ClientSession."""
-        if self._session is None:
-            self._session = aiohttp.ClientSession(loop=self.bot.loop)
-            print("Infinite Flight API session created.")
+        """Creates the initial aiohttp ClientSession."""
+        await self._get_session()
+        print("Initial Infinite Flight API session checked/created.")
+
 
     async def close(self):
-        """Closes the aiohttp ClientSession."""
-        if self._session:
+        """Closes the aiohttp ClientSession if it exists and is open."""
+        if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
             print("Infinite Flight API session closed.")
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> Any:
         """Helper function to make API requests."""
-        if self._session is None:
-            raise RuntimeError("APIManager is not connected. Call connect() first.")
+        session = await self._get_session()
+        if session is None:
+            print("ERROR: Failed to create or retrieve an API session.")
+            return None
 
         url = f"{self.base_url}{endpoint}?apikey={self.api_key}"
         
         try:
-            async with self._session.request(method, url, **kwargs) as response:
-                response.raise_for_status() # Raises an exception for 4xx/5xx status codes
+            async with session.request(method, url, **kwargs) as response:
+                response.raise_for_status()
                 
-                # Check content type to decide whether to parse as JSON or return as text
                 if 'application/json' in response.headers.get('Content-Type', ''):
                     return await response.json()
                 return await response.text()
         except aiohttp.ClientError as e:
             print(f"An error occurred during API request to {url}: {e}")
+            await self.close() 
             return None
 
     async def get_sessions(self) -> Dict:
