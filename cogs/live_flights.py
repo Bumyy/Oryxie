@@ -103,12 +103,24 @@ class LiveFlights(commands.Cog):
     def _get_flight_status_note(self, flight_data: dict) -> str:
         altitude = flight_data.get('altitude', 0)
         vspeed = flight_data.get('verticalSpeed', 0)
-        if altitude < 3000 and vspeed > 300: return "Takeoff"
-        if altitude < 15000 and vspeed > 300: return "Climbing"
-        if altitude > 15000: return f"Cruising at {altitude:.0f}ft"
-        if altitude < 15000 and vspeed < -300: return "Descending"
-        if altitude < 3000 and vspeed < -200: return "Approach"
-        return "on Ground"
+        
+        if altitude < 3000 and vspeed > 300:
+            return "Takeoff"
+        
+        if altitude < 15000 and vspeed > 300:
+            return f"Climbing at {altitude:,.0f}ft"
+        
+        if altitude > 15000:
+            flight_level = round(altitude / 100)
+            return f"Cruising at FL{flight_level}"
+            
+        if altitude < 15000 and vspeed < -300:
+            return f"Descending at {altitude:,.0f}ft"
+            
+        if altitude < 3000 and vspeed < -200:
+            return f"On approach at {altitude:,.0f}ft"
+            
+        return "On Ground"
 
     def _create_flight_embed(self, flight_data: dict, dep_icao: str, arr_icao: str, duration_str: str, status: str, progress_percent: float, fltnum: str, pilot_discord_id: int = None, note: str = "") -> discord.Embed:
         color = discord.Color.green() if status != "Landed" else discord.Color.dark_grey()
@@ -135,9 +147,8 @@ class LiveFlights(commands.Cog):
 
     @tasks.loop(minutes=2)
     async def track_flights(self):
+        print("Starting flight tracking...")
         # Check if bot is ready and database is connected
-        if not self.bot.is_ready() or not self.bot.db_manager or not self.bot.db_manager.pool:
-            return
             
         channel = self.bot.get_channel(int(os.getenv("FLIGHT_TRACKER_CHANNEL_ID")))
         if not channel: return
@@ -233,9 +244,22 @@ class LiveFlights(commands.Cog):
                         duration_str = "N/A"
                         fltnum = flight_data['callsign']
 
+                    pilot_discord_id = None
                     try:
                         pilot_db_entry = await self.bot.pilots_model.get_pilot_by_ifuserid(flight_data['userId'])
-                        pilot_discord_id = pilot_db_entry['discordid'] if pilot_db_entry else None
+                        
+                        if not pilot_db_entry:
+                            ifc_username = flight_data.get('username')
+                            if ifc_username:
+                                print(f"Fallback: Searching for pilot by IFC username: {ifc_username}")
+                                pilot_db_entry = await self.bot.pilots_model.get_pilot_by_ifc_username(ifc_username)
+                                
+                                if pilot_db_entry:
+                                    print(f"Fallback successful for {ifc_username}. Updating record with ifuserid: {flight_data['userId']}")
+                                    await self.bot.pilots_model.update_ifuserid_by_ifc_username(ifc_username, flight_data['userId'])
+
+                        if pilot_db_entry:
+                            pilot_discord_id = pilot_db_entry['discordid']
 
                     except Exception as e:
                         print(f"Database error getting pilot info: {e}")
@@ -264,8 +288,8 @@ class LiveFlights(commands.Cog):
     @track_flights.before_loop
     async def before_track_flights(self):
         await self.bot.wait_until_ready()
-
-
+    
+        print("Initial flight check complete. The loop will now run every 2 minutes.")
 
 async def setup(bot):
     await bot.add_cog(LiveFlights(bot))
