@@ -232,8 +232,11 @@ class TrainingCogV2(commands.Cog, name="Training V2"):
         self.bot.add_view(InitialVerificationView(self))
 
     @app_commands.command(name="forcetest", description="Manually start the training flow for a user.")
-    @app_commands.checks.has_permissions(administrator=True)
     async def forcetest(self, interaction: discord.Interaction, user: discord.Member):
+        recruiter_role = interaction.guild.get_role(RECRUITER_ROLE_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.response.send_message("Only recruiters can use this command.", ephemeral=True)
+            return
         await interaction.response.send_message(f"Forcing training flow for {user.mention}...", ephemeral=True)
         await self.start_training_flow(user)
 
