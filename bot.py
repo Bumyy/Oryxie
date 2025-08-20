@@ -70,6 +70,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.roster')
             await self.load_extension('cogs.live_flights')
+            # await self.load_extension('cogs.member_verification')
 
             print("All cogs loaded.")
         except Exception as e:

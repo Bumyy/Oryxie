@@ -1,4 +1,4 @@
-from typing import Optional, Dict
+from typing import Optional, Dict, Set
 from .manager import DatabaseManager
 
 class PilotsModel:
@@ -98,3 +98,14 @@ class PilotsModel:
         pattern = f"%/{username}%"
         args = (ifuserid, pattern)
         return await self.db.execute(query, args)
+
+    async def get_all_verified_discord_ids(self) -> Set[str]:
+        """
+        Retrieves a set of all unique, non-empty Discord IDs from the pilots table.
+
+        Returns:
+            A set of Discord IDs as strings, for efficient lookup.
+        """
+        query = "SELECT DISTINCT discordid FROM pilots WHERE discordid IS NOT NULL AND discordid != ''"
+        records = await self.db.fetch_all(query)
+        return {str(row['discordid']) for row in records}
