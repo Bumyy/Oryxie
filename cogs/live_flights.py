@@ -147,8 +147,11 @@ class LiveFlights(commands.Cog):
 
     @tasks.loop(minutes=2)
     async def track_flights(self):
+        if not self.bot.if_api_manager:
+            print("Flight Tracking: API manager not available yet. Skipping this cycle.")
+            return
+
         print("Starting flight tracking...")
-        # Check if bot is ready and database is connected
             
         channel = self.bot.get_channel(int(os.getenv("FLIGHT_TRACKER_CHANNEL_ID")))
         if not channel: return
@@ -230,7 +233,6 @@ class LiveFlights(commands.Cog):
                     dep_coords, arr_coords = fpl_items[0]['location'], fpl_items[-1]['location']
                     total_dist_nm = calculate_distance_nm(dep_coords['latitude'], dep_coords['longitude'], arr_coords['latitude'], arr_coords['longitude'])
                     
-                    # --- FIX: This block now safely handles when a route is not found ---
                     try:
                         route_info = await self.bot.routes_model.find_route_by_icao(dep_icao, arr_icao)
                         if route_info:

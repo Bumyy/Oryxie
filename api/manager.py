@@ -23,6 +23,8 @@ class InfiniteFlightAPIManager:
         This is the core of the self-healing logic.
         """
         if self._session is None or self._session.closed:
+            if self._session is not None: 
+                await asyncio.sleep(1)
             self._session = aiohttp.ClientSession()
             print("Infinite Flight API session created or re-created.")
         return self._session
@@ -32,21 +34,18 @@ class InfiniteFlightAPIManager:
         await self._get_session()
         print("Initial Infinite Flight API session checked/created.")
 
-
     async def close(self):
         """Closes the aiohttp ClientSession if it exists and is open."""
         if self._session and not self._session.closed:
             await self._session.close()
-            self._session = None
+            self._session = None 
             print("Infinite Flight API session closed.")
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> Any:
-        """Helper function to make API requests."""
+        """
+        Helper function to make API requests with improved, resilient error handling.
+        """
         session = await self._get_session()
-        if session is None:
-            print("ERROR: Failed to create or retrieve an API session.")
-            return None
-
         url = f"{self.base_url}{endpoint}?apikey={self.api_key}"
         
         try:
@@ -56,9 +55,19 @@ class InfiniteFlightAPIManager:
                 if 'application/json' in response.headers.get('Content-Type', ''):
                     return await response.json()
                 return await response.text()
-        except aiohttp.ClientError as e:
-            print(f"An error occurred during API request to {url}: {e}")
+                
+        except aiohttp.ClientResponseError as e:
+            print(f"API Request Error to {url}: {e.status}, message='{e.message}'")
+            return None
+
+        except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as e:
+            print(f"API Connection Error to {url}: {e}. Closing session and will retry.")
             await self.close() 
+            return None
+
+        except Exception as e:
+            print(f"An unexpected error occurred during API request to {url}: {e}")
+            await self.close()
             return None
 
     async def get_sessions(self) -> Dict:

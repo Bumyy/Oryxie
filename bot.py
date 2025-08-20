@@ -3,6 +3,8 @@ from discord.ext import commands
 import os
 import asyncio
 from dotenv import load_dotenv
+import logging
+import logging.handlers
 
 from database.manager import DatabaseManager
 from database.pireps_model import PirepsModel
@@ -68,6 +70,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.roster')
             await self.load_extension('cogs.live_flights')
+            # await self.load_extension('cogs.member_verification')
 
             print("All cogs loaded.")
         except Exception as e:
@@ -79,7 +82,7 @@ class MyBot(commands.Bot):
         """
         print(f'Logged in as {self.user} (ID: {self.user.id})')
 
-        if self.db_manager and self.db_manager.pool is None:
+        if self.db_manager and self.db_manager._pool is None:
             await self.db_manager.connect()
 
         print("Database connection pool established.")
@@ -99,16 +102,16 @@ class MyBot(commands.Bot):
         print("Bot disconnected. Cleaning up resources...")
         if self.db_manager:
             await self.db_manager.close()
-            self.db_manager = None
         
         if self.if_api_manager:
             await self.if_api_manager.close()
-            self.if_api_manager = None
 
 async def start_bot():
     """
     Function to create and run the bot.
     """
+    handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+
     bot = MyBot()
 
     if TOKEN is None:
@@ -119,4 +122,27 @@ async def start_bot():
         await bot.start(TOKEN)
 
 if __name__ == '__main__':
-    asyncio.run(start_bot())
+    logger = logging.getLogger('discord')
+    logger.setLevel(logging.INFO)
+
+    oryxie_logger = logging.getLogger('oryxie')
+    oryxie_logger.setLevel(logging.INFO)
+    
+    handler = logging.handlers.RotatingFileHandler(
+        filename='discord.log',
+        encoding='utf-8',
+        maxBytes=5 * 1024 * 1024,  # 5 MB
+        backupCount=5,
+    )
+
+    dt_fmt = '%Y-%m-%d %H:%M:%S'
+    formatter = logging.Formatter('[{asctime}] [{levelname:<8}] {name}: {message}', dt_fmt, style='{')
+    
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    oryxie_logger.addHandler(handler)
+
+    try:
+        asyncio.run(start_bot())
+    except KeyboardInterrupt:
+        print("Bot shut down by user.")
