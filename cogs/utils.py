@@ -23,13 +23,13 @@ def get_country_flag(icao: str) -> str:
     icao_upper = icao.upper()
     country_code = None
 
-    # Check for single-letter prefixes (covers K, C, F, Y, etc.)
-    if icao_upper[0] in ICAO_COUNTRY_PREFIX_MAP:
-        country_code = ICAO_COUNTRY_PREFIX_MAP.get(icao_upper[0])
-
-    # If not found, check for two-letter prefixes (most common)
-    if not country_code and len(icao_upper) >= 2:
+    # Check for two-letter prefixes first (more specific)
+    if len(icao_upper) >= 2:
         country_code = ICAO_COUNTRY_PREFIX_MAP.get(icao_upper[:2])
+
+    # If not found, check for single-letter prefixes (less specific)
+    if not country_code and icao_upper[0] in ICAO_COUNTRY_PREFIX_MAP:
+        country_code = ICAO_COUNTRY_PREFIX_MAP.get(icao_upper[0])
 
     if country_code:
         # Convert country code (e.g., "US") to flag emoji (e.g., 🇺🇸)
