@@ -109,3 +109,38 @@ class PilotsModel:
         query = "SELECT DISTINCT discordid FROM pilots WHERE discordid IS NOT NULL AND discordid != ''"
         records = await self.db.fetch_all(query)
         return {str(row['discordid']) for row in records}
+    
+    async def get_all_callsigns(self) -> Set[str]:
+        """
+        Retrieves a set of all unique callsigns from the pilots table.
+        A set is used for highly efficient 'in' checks (O(1) average time complexity).
+
+        Returns:
+            A set of all callsigns as uppercase strings.
+        """
+        query = "SELECT callsign FROM pilots"
+        records = await self.db.fetch_all(query)
+        return {str(row['callsign']).upper() for row in records if row['callsign']}
+
+    async def get_all_pilot_records(self) -> list:
+        """
+        Retrieves a list of all pilot records containing their callsign and discordid.
+        This is used for database auditing purposes.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a pilot.
+        """
+        query = "SELECT callsign, discordid FROM pilots WHERE callsign IS NOT NULL AND callsign != ''"
+        return await self.db.fetch_all(query)
+
+    def get_html_template(self):
+        """Returns HTML template for pilot documentation"""
+        import os
+        try:
+            html_path = os.path.join(os.path.dirname(__file__), '..', 'flight-briefing-template-qatar.html')
+            with open(html_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            return 'HTML template file not found'
+        except Exception as e:
+            return f'Error reading HTML template: {e}'
