@@ -10,6 +10,7 @@ from database.manager import DatabaseManager
 from database.pireps_model import PirepsModel
 from database.routes_model import RoutesModel
 from database.pilots_model import PilotsModel
+from database.flight_data import FlightData
 from api.manager import InfiniteFlightAPIManager
 
 load_dotenv()
@@ -27,6 +28,7 @@ class MyBot(commands.Bot):
         self.pireps_model: PirepsModel = None
         self.routes_model: RoutesModel = None
         self.pilots_model: PilotsModel = None
+        self.flightdata: FlightData = None
         self.if_api_manager: InfiniteFlightAPIManager = None
         self.aircraft_name_map = {}
 
@@ -40,7 +42,10 @@ class MyBot(commands.Bot):
         self.pireps_model = PirepsModel(self.db_manager)
         self.routes_model = RoutesModel(self.db_manager)
         self.pilots_model = PilotsModel(self.db_manager)
-        print("DatabaseManager instance created.")
+        
+        # --- Initialize Flight Data ---
+        self.flightdata = FlightData()
+        print("DatabaseManager and FlightData instances created.")
         
         # --- Initialize API Manager ---
         try:
@@ -66,12 +71,9 @@ class MyBot(commands.Bot):
         try:
             await self.load_extension('cogs.pingpong')
             await self.load_extension('cogs.pireps')
-            await self.load_extension('cogs.training_v2')
-            await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.roster')
-            await self.load_extension('cogs.live_flights')
-            # await self.load_extension('cogs.member_verification')
-
+            await self.load_extension('cogs.flight_generator_pdf')
+            await self.load_extension('cogs.utils')
             print("All cogs loaded.")
         except Exception as e:
             print(f"Failed to load one or more cogs: {e}")
