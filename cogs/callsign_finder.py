@@ -8,12 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 CALLSIGN_PREFIX = "QRV"
-RECRUITER_ID_STR = os.getenv("RECRUITER_ROLE_ID")
-
-if not RECRUITER_ID_STR:
-    RECRUITER_ID = None
-else:
-    RECRUITER_ID = int(RECRUITER_ID_STR)
+RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ROLE_ID"))
 
 async def is_recruiter_or_has_admin_perm(interaction: discord.Interaction) -> bool:
     user = interaction.user
@@ -22,7 +17,7 @@ async def is_recruiter_or_has_admin_perm(interaction: discord.Interaction) -> bo
         return True
 
     for role in user.roles:
-        if 'recruiter' in role.name.lower():
+        if role.id == RECRUITER_ROLE_ID:
             return True
     
     return False
@@ -59,7 +54,7 @@ class CallsignFinderCog(commands.Cog):
     @app_commands.check(is_recruiter_or_has_admin_perm)
     async def callsign(self, interaction: discord.Interaction):
         view = CallsignSearchView(self)
-        await interaction.response.send_message("**Choose your callsign search type:**", view=view, ephemeral=False)
+        await interaction.response.send_message("**Choose your callsign search type:**", view=view, ephemeral=True)
 
 
 class CallsignSearchView(discord.ui.View):
