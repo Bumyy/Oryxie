@@ -5,10 +5,8 @@ from typing import Optional, Set, List
 import os
 from dotenv import load_dotenv
 
-# --- Load Environment Variables ---
 load_dotenv()
 
-# --- Configuration ---
 CALLSIGN_PREFIX = "QRV"
 RECRUITER_ID_STR = os.getenv("RECRUITER_ROLE_ID")
 
@@ -17,20 +15,15 @@ if not RECRUITER_ID_STR:
 else:
     RECRUITER_ID = int(RECRUITER_ID_STR)
 
-
-# This function checks for an "OR" condition: Is the user a Recruiter OR an Administrator?
 async def is_recruiter_or_has_admin_perm(interaction: discord.Interaction) -> bool:
-    """Checks if the user has the Recruiter role or Administrator permission."""
     user = interaction.user
     
-    # 1. Check for Administrator permission
     if user.guild_permissions.administrator:
         return True
 
-    if RECRUITER_ID:
-        for role in user.roles:
-            if role.id == RECRUITER_ID:
-                return True
+    for role in user.roles:
+        if 'recruiter' in role.name.lower():
+            return True
     
     return False
 
@@ -39,7 +32,7 @@ class CallsignFinderCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # Updated error handler to catch the new check failure
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CheckFailure):
             await interaction.response.send_message(
@@ -54,7 +47,6 @@ class CallsignFinderCog(commands.Cog):
                 await interaction.followup.send(response_message, ephemeral=True)
 
     async def _find_available_in_range(self, start: int, end: int, taken_callsigns: Set[str]) -> List[str]:
-        """Helper function to find available callsigns within a numeric range."""
         available = []
         for i in range(start, end + 1):
             formatted_callsign = f"{CALLSIGN_PREFIX}{i:03d}"
@@ -66,7 +58,6 @@ class CallsignFinderCog(commands.Cog):
     @app_commands.command(name="callsign", description="Check callsign availability")
     @app_commands.check(is_recruiter_or_has_admin_perm)
     async def callsign(self, interaction: discord.Interaction):
-        """Show callsign search options."""
         view = CallsignSearchView(self)
         await interaction.response.send_message("**Choose your callsign search type:**", view=view, ephemeral=False)
 
@@ -80,6 +71,7 @@ class CallsignSearchView(discord.ui.View):
         placeholder="Choose search type...",
         options=[
             discord.SelectOption(label="Check Single Callsign", value="single", description="Check if one specific callsign is available"),
+            discord.SelectOption(label="Check Multiple Callsigns", value="multiple", description="Check up to 5 callsigns at once"),
             discord.SelectOption(label="Quick Categories", value="category", description="Browse preset callsign ranges"),
             discord.SelectOption(label="Custom Range", value="range", description="Define your own number range")
         ]
@@ -87,6 +79,9 @@ class CallsignSearchView(discord.ui.View):
     async def search_type_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         if select.values[0] == "single":
             modal = SingleCallsignModal(self.cog)
+            await interaction.response.send_modal(modal)
+        elif select.values[0] == "multiple":
+            modal = MultipleCallsignModal(self.cog)
             await interaction.response.send_modal(modal)
         elif select.values[0] == "category":
             view = CategorySelectView(self.cog)
@@ -159,6 +154,55 @@ class SingleCallsignModal(discord.ui.Modal):
             message = f"❌ **{callsign_to_check}** is **TAKEN**"
         else:
             message = f"✅ **{callsign_to_check}** is **AVAILABLE**"
+            
+        await interaction.followup.send(message)
+
+
+class MultipleCallsignModal(discord.ui.Modal):
+    def __init__(self, cog):
+        super().__init__(title="Check Multiple Callsigns")
+        self.cog = cog
+        
+    callsigns = discord.ui.TextInput(
+        label="Callsign Numbers (comma separated)",
+        placeholder="e.g., 005, 012, 025, 030, 045 (max 5)",
+        required=True,
+        max_length=50,
+        style=discord.TextStyle.paragraph
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        callsign_numbers = [num.strip() for num in self.callsigns.value.split(',')]
+        
+        if len(callsign_numbers) > 5:
+            await interaction.followup.send("❌ Maximum 5 callsigns allowed at once.")
+            return
+            
+        results = []
+        for num in callsign_numbers:
+            if not num:
+                continue
+                
+            try:
+                clean_number = num.zfill(3)
+                callsign_to_check = f"{CALLSIGN_PREFIX}{clean_number}"
+                
+                result = await self.cog.bot.pilots_model.get_pilot_by_callsign(callsign_to_check)
+                
+                if result:
+                    results.append(f"❌ **{callsign_to_check}** - TAKEN")
+                else:
+                    results.append(f"✅ **{callsign_to_check}** - AVAILABLE")
+                    
+            except ValueError:
+                results.append(f"❌ **{num}** - Invalid number")
+        
+        if results:
+            message = "**Multiple Callsign Check Results:**\n\n" + "\n".join(results)
+        else:
+            message = "❌ No valid callsigns provided."
             
         await interaction.followup.send(message)
 
