@@ -73,6 +73,8 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.pireps')
             await self.load_extension('cogs.roster')
             await self.load_extension('cogs.flight_generator_pdf')
+            await self.load_extension('cogs.training_v2')
+            await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.utils')
             print("All cogs loaded.")
         except Exception as e:
