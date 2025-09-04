@@ -49,7 +49,7 @@ class FlightData:
     def _load_airport_data(self):
         """Load airport database from CSV file"""
         try:
-            df = pd.read_csv("Assests/airport_database_processed.csv")
+            df = pd.read_csv("assets/airport_database_processed.csv")
             df.rename(columns={df.columns[0]: 'ident'}, inplace=True)
             self.airports_db = df.set_index('ident')
             self.airports_db = self.airports_db[self.airports_db.index.str.len() == 4]
@@ -203,10 +203,10 @@ class FlightData:
             
             # Add logos
             logo_paths = {
-                "amiri": "Assests/Amiri  flight logo.png",
-                "executive": "Assests/Qatar_Executive_Logo.png"
+                "amiri": "assets/Amiri  flight logo.png",
+                "executive": "assets/Qatar_Executive_Logo.png"
             }
-            qatari_virtual_logo = "Assests/Qatar_Virtual_logo.PNG"
+            qatari_virtual_logo = "assets/Qatar_Virtual_logo.PNG"
             
             # Left logo (flight type)
             logo_path = logo_paths.get(flight_type)
