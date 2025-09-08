@@ -1,0 +1,22 @@
+{
+  "Ruby": {
+    "amiri_aircraft": ["A319"],
+    "executive_aircraft": []
+  },
+  "Sapphire": {
+    "amiri_aircraft": ["A319", "A346", "B748"],
+    "executive_aircraft": []
+  },
+  "Emerald": {
+    "amiri_aircraft": ["A319", "A346", "B748"],
+    "executive_aircraft": []
+  },
+  "OWD": {
+    "amiri_aircraft": ["A319", "A346", "B748"],
+    "executive_aircraft": []
+  },
+  "Oryx": {
+    "amiri_aircraft": ["A319", "A346", "B748"],
+    "executive_aircraft": ["A318", "B737", "C350"]
+  }
+}
