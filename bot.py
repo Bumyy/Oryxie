@@ -89,9 +89,9 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.utils')
             await self.load_extension('cogs.callsign_finder')
-            await self.load_extension('cogs.event_handler')
-            await self.load_extension('cogs.remainder')
-            await self.load_extension('cogs.restart')
+         #   await self.load_extension('cogs.event_handler')
+         #   await self.load_extension('cogs.remainder')
+         #   await self.load_extension('cogs.restart') ##
             
             # Load flight generator with dependency injection
             from cogs.flight_generator_pdf import FlightGeneratorPDF
