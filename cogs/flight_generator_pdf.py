@@ -3,15 +3,13 @@ from discord.ext import commands
 from discord import app_commands
 import os
 import random
-import google.generativeai as genai
 from .utils import get_country_flag
 from database.flight_data import FlightData
+from services.ai_service import AIService
+from services.flight_generation_service import FlightService
+from services.pdf_service import PDFService
+from models.flight_details import FlightDetails
 import io
-
-# Flight generator cog for Amiri and Executive flights with AI scenario generation
-GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY")
-if GOOGLE_AI_KEY:
-    genai.configure(api_key=GOOGLE_AI_KEY)
 
 # Channel configuration
 FLIGHT_REQUEST_CHANNEL_ID = int(os.getenv("FLIGHT_REQUEST_CHANNEL_ID"))
@@ -115,7 +113,7 @@ class DispatchClaimView(discord.ui.View):
 
 # UI view for pilots to claim generated flights
 class FlightClaimView(discord.ui.View):
-    def __init__(self, flight_data: dict, flight_type: str, flight_brain: FlightData):
+    def __init__(self, flight_data, flight_type: str, flight_brain: FlightData):
         super().__init__(timeout=None)
         self.flight_data = flight_data
         self.flight_type = flight_type
@@ -126,7 +124,8 @@ class FlightClaimView(discord.ui.View):
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
 
-            aircraft_code = self.flight_brain.get_aircraft_code_from_name(self.flight_data['aircraft_name'])
+            aircraft_name = self.flight_data.aircraft_name if isinstance(self.flight_data, FlightDetails) else self.flight_data['aircraft_name']
+            aircraft_code = self.flight_brain.get_aircraft_code_from_name(aircraft_name)
             error_msg = self.flight_brain.check_permissions(interaction.user.roles, self.flight_type, aircraft_code)
             if error_msg:
                 return await interaction.followup.send(error_msg, ephemeral=True)
@@ -137,10 +136,11 @@ class FlightClaimView(discord.ui.View):
 
             # Generate AI scenario now when flight is claimed
             cog = interaction.client.get_cog("FlightGeneratorPDF")
-            if cog and cog.model:
+            if cog:
                 dep_data = self.flight_brain.get_airport_data("OTHH")
                 # Parse destination from route format
-                route_parts = self.flight_data['route'].split()
+                route = self.flight_data.route if isinstance(self.flight_data, FlightDetails) else self.flight_data['route']
+                route_parts = route.split()
                 if len(route_parts) >= 4:
                     dest_icao = route_parts[3]  # "OTHH 🇶🇦 to DEST"
                 else:
@@ -149,18 +149,23 @@ class FlightClaimView(discord.ui.View):
                 dest_data = self.flight_brain.get_airport_data(dest_icao)
                 
                 if dep_data is not None and dest_data is not None:
-                    aircraft_name = self.flight_data['aircraft_name']
-                    passengers = self.flight_data['passengers']
-                    cargo = self.flight_data['cargo']
-                    deadline = self.flight_data['deadline']
+                    aircraft_name = self.flight_data.aircraft_name if isinstance(self.flight_data, FlightDetails) else self.flight_data['aircraft_name']
+                    passengers = self.flight_data.passengers if isinstance(self.flight_data, FlightDetails) else self.flight_data['passengers']
+                    cargo = self.flight_data.cargo if isinstance(self.flight_data, FlightDetails) else self.flight_data['cargo']
+                    deadline = self.flight_data.deadline if isinstance(self.flight_data, FlightDetails) else self.flight_data['deadline']
                     
-                    scenario_data = await cog._generate_ai_scenario(aircraft_name, dep_data, dest_data, passengers, cargo, self.flight_type, deadline)
-                    self.flight_data.update(scenario_data)
+                    scenario_data = await cog.ai_service.generate_ai_scenario(aircraft_name, dep_data, dest_data, passengers, cargo, self.flight_type, deadline)
+                    if isinstance(self.flight_data, FlightDetails):
+                        for key, value in scenario_data.items():
+                            setattr(self.flight_data, key, value)
+                    else:
+                        self.flight_data.update(scenario_data)
 
-            pdf_output = self.flight_brain.generate_professional_pdf(self.flight_data, self.flight_type, interaction.user)
+            pdf_output = cog.pdf_service.generate_flight_pdf(self.flight_data, self.flight_type, interaction.user)
             if pdf_output:
                 pdf_buffer = io.BytesIO(pdf_output)
-                await interaction.channel.send(f"✈️ Here are the flight documents for **{self.flight_data.get('flight_number', 'Unknown')}** claimed by {interaction.user.mention}.", file=discord.File(pdf_buffer, f"flight_{self.flight_data['flight_number']}.pdf"))
+                flight_number = self.flight_data.flight_number if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('flight_number', 'Unknown')
+                await interaction.channel.send(f"✈️ Here are the flight documents for **{flight_number}** claimed by {interaction.user.mention}.", file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"))
                 await interaction.followup.send("✅ Flight claimed! The documents have been posted in the channel.", ephemeral=True)
             else:
                 await interaction.followup.send("✅ Flight claimed! (But PDF generation failed).", ephemeral=True)
@@ -249,7 +254,7 @@ class AmiriApprovalView(discord.ui.View):
             item.disabled = True
         await self.message.edit(view=self)
 
-        flight_data = await self.cog._generate_flight(
+        flight_data = await self.cog.flight_service.generate_flight(
             self.aircraft, 
             "amiri", 
             departure=self.departure, 
@@ -264,9 +269,9 @@ class AmiriApprovalView(discord.ui.View):
             return
 
         embed = discord.Embed(title="🇶🇦 New Amiri Flight Order", color=discord.Color.blue())
-        embed.add_field(name="Flight Number", value=flight_data['flight_number'], inline=True)
-        embed.add_field(name="Aircraft", value=flight_data['aircraft_name'], inline=True)
-        embed.add_field(name="Route", value=flight_data['route'], inline=False)
+        embed.add_field(name="Flight Number", value=flight_data.flight_number, inline=True)
+        embed.add_field(name="Aircraft", value=flight_data.aircraft_name, inline=True)
+        embed.add_field(name="Route", value=flight_data.route, inline=False)
         
         amiri_channel = self.cog.bot.get_channel(AMIRI_CHANNEL_ID)
         if amiri_channel:
@@ -286,27 +291,14 @@ class AmiriApprovalView(discord.ui.View):
 
 
 class FlightGeneratorPDF(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot, ai_service: AIService = None, flight_service: FlightService = None, pdf_service: PDFService = None):
         self.bot = bot
-        try:
-            self.model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        except Exception as e:
-            self.model = None
+        self.ai_service = ai_service or AIService()
+        self.flight_service = flight_service or FlightService(bot.flightdata)
+        self.pdf_service = pdf_service or PDFService()
         self.bot.add_view(FlightRequestView())
 
-    def get_dates_with_fuel_logic(self, flight_type: str, fuel_stop_required: bool) -> tuple:
-        """Generate current date and deadline based on fuel stop requirements"""
-        from datetime import datetime, timedelta
-        current_date = datetime.now()
-        
-        # Amiri flights with fuel stop get 6 days, otherwise 4 days
-        if flight_type == "amiri" and fuel_stop_required:
-            deadline_days = 6
-        else:
-            deadline_days = 4
-            
-        deadline_date = current_date + timedelta(days=deadline_days)
-        return current_date.strftime("%d %B %Y"), deadline_date.strftime("%d %B %Y")
+
 
     # FLIGHT REQUEST COMMANDS & LOGIC
     
@@ -414,14 +406,14 @@ class FlightGeneratorPDF(commands.Cog):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
         
         await interaction.response.defer()
-        flight_data = await self._generate_custom_flight(aircraft, "executive", departure.upper(), arrival.upper())
+        flight_data = await self.flight_service.generate_custom_flight(aircraft, "executive", departure.upper(), arrival.upper())
         if not flight_data:
             return await interaction.followup.send("❌ Failed to generate flight.")
         
         embed = discord.Embed(title="🏢 New Charter Request", color=discord.Color.gold())
-        embed.add_field(name="Flight Number", value=flight_data['flight_number'], inline=True)
-        embed.add_field(name="Aircraft", value=flight_data['aircraft_name'], inline=True)
-        embed.add_field(name="Route", value=flight_data['route'], inline=False)
+        embed.add_field(name="Flight Number", value=flight_data.flight_number, inline=True)
+        embed.add_field(name="Aircraft", value=flight_data.aircraft_name, inline=True)
+        embed.add_field(name="Route", value=flight_data.route, inline=False)
         
         exec_channel = self.bot.get_channel(EXECUTIVE_CHANNEL_ID)
         if exec_channel:
@@ -430,153 +422,7 @@ class FlightGeneratorPDF(commands.Cog):
         
         await interaction.followup.send("✅ Executive flight posted!")
 
-    # AMIRI FLIGHT GENERATION - Core logic for Amiri flights
-   
-    async def _generate_flight(self, aircraft: str, flight_type: str, departure: str = None, destination: str = None, passengers: int = None, cargo: int = None):
-        try:
-            if departure is None:
-                departure = "OTHH"
 
-            aircraft_data = self.bot.flightdata.AIRCRAFT_DATA[flight_type][aircraft]
-            
-            if passengers is None:
-                passengers = random.randint(aircraft_data['pax_range'][0], aircraft_data['pax_range'][1])
-            if cargo is None:
-                cargo = random.randint(aircraft_data['cargo_kg_range'][0], aircraft_data['cargo_kg_range'][1])
-            
-            dep_data = self.bot.flightdata.get_airport_data(departure)
-            if dep_data is None: return None
-            
-            if destination is None:
-                destination = self.bot.flightdata.get_random_suitable_airport(aircraft)
-                if not destination: return None
-
-            dest_data = self.bot.flightdata.get_airport_data(destination)
-            if dest_data is None: return None
-
-            # Calculate distance and fuel stop requirement
-            distance = self.bot.flightdata.calculate_distance(departure, destination)
-            fuel_stop_required = self.bot.flightdata.needs_fuel_stop(distance, aircraft, flight_type, passengers, cargo)
-            
-            # Generate dates with fuel stop logic
-            current_date, deadline = self.get_dates_with_fuel_logic(flight_type, fuel_stop_required)
-            
-            # No AI scenario generation here - only basic dignitary selection
-            scenario_data = {'dignitary': self.bot.flightdata.select_dignitary() if flight_type == 'amiri' else 'Business Client'}
-            
-            route_format = f"{departure} {get_country_flag(departure)} to {destination} {get_country_flag(destination)} to {departure} {get_country_flag(departure)}"
-
-            return {
-                'flight_number': self.bot.flightdata.generate_flight_number(flight_type),
-                'aircraft_name': aircraft_data['name'],
-                'passengers': passengers,
-                'cargo': cargo,
-                'route': route_format,
-                'fuel_stop_required': fuel_stop_required,
-                'current_date': current_date,
-                'deadline': deadline,
-                **scenario_data
-            }
-        except Exception as e:
-            return None
-    
-    # EXECUTIVE FLIGHT GENERATION - Core logic for charter flights
-   
-    async def _generate_custom_flight(self, aircraft: str, flight_type: str, departure: str, arrival: str):
-        try:
-            dep_data = self.bot.flightdata.get_airport_data(departure)
-            dest_data = self.bot.flightdata.get_airport_data(arrival)
-            if dep_data is None or dest_data is None: return None
-            
-            aircraft_data = self.bot.flightdata.AIRCRAFT_DATA[flight_type][aircraft]
-            route_format = f"{departure} {get_country_flag(departure)} - {arrival} {get_country_flag(arrival)}"
-            
-            distance = self.bot.flightdata.calculate_distance(departure, arrival)
-            passengers = random.randint(aircraft_data['pax_range'][0], aircraft_data['pax_range'][1])
-            cargo = random.randint(aircraft_data['cargo_kg_range'][0], aircraft_data['cargo_kg_range'][1])
-            fuel_stop_required = self.bot.flightdata.needs_fuel_stop(distance, aircraft, flight_type, passengers, cargo)
-            
-            # Executive flights always get 4 days (no special fuel stop logic)
-            current_date, deadline = self.get_dates_with_fuel_logic(flight_type, fuel_stop_required)
-            
-            # No AI scenario generation here - only basic client info
-            scenario_data = {'client': 'Business Client'}
-
-            return {
-                'flight_number': self.bot.flightdata.generate_flight_number(flight_type),
-                'aircraft_name': aircraft_data['name'],
-                'passengers': passengers,
-                'cargo': cargo,
-                'route': route_format,
-                'fuel_stop_required': fuel_stop_required,
-                'current_date': current_date,
-                'deadline': deadline,
-                **scenario_data
-            }
-        except Exception as e:
-            return None
-    
-    # AI SCENARIO GENERATION - Create realistic flight scenarios
- 
-    async def _generate_ai_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo, flight_type, deadline):
-        if flight_type == "amiri":
-            dignitary = self.bot.flightdata.select_dignitary()
-            if not self.model:
-                return { "dignitary": dignitary, "dignitary_intro": "Intro unavailable.", "mission_briefing": "Briefing unavailable.", "deadline_rationale": "Rationale unavailable.", "mission_type": "Official Mission"}
-            try:
-                prompt = f"""
-                    Generate a detailed, multi-part briefing for a Qatari Amiri flight. The response must be structured with the specified separators.
-
-                    Flight Details:
-                    - Dignitary: {dignitary}
-                    - Destination: {dest_data['municipality']}, {dest_data.get('iso_country', '')}
-                    - Aircraft: {aircraft_name}
-
-                    Task:
-                    Write three distinct sections for the flight plan. Avoide conflict or high tension tone.
-
-                    1.  **DIGNITARY INTRODUCTION:** (Approx. 5 words) Provide positive background for the dignitary, {dignitary}. 
-                    2.  **MISSION BRIEFING:** (Approx. 30 - 45 words) Detail the primary purpose of the flight. This should be a comprehensive scenario involving activities like establishing trade relations, attending a cultural summit, overseeing a humanitarian aid delivery, or fostering educational partnerships. Be specific about the goals at the destination.
-                    3.  **DEADLINE RATIONALE:** (Approx. 10 words) Explain why the flight must be completed by {deadline}. This should relate to the mission's timing.
-
-                    Output Format: Use '|||' as a separator between each section. Do not include section titles. The response must contain exactly two '|||' separators.
-                    """
-                response = self.model.generate_content(prompt)
-                if response and response.text and response.text.count('|||') == 2:
-                    intro, briefing, deadline_rationale = [part.strip() for part in response.text.strip().split('|||', 2)]
-                    return {"dignitary": dignitary, "dignitary_intro": intro, "mission_briefing": briefing, "deadline_rationale": deadline_rationale, "mission_type": "Official Mission"}
-            except Exception as e:
-                pass
-            return {"dignitary": dignitary, "dignitary_intro": "Default intro.", "mission_briefing": "Default briefing.", "deadline_rationale": "Default rationale.", "mission_type": "Official Mission"}
-        else:
-            if not self.model:
-                return {"client": "Business Client", "client_intro": "Intro unavailable.", "mission_briefing": "Briefing unavailable.", "deadline_rationale": "Rationale unavailable.", "purpose": "Executive Travel"}
-            try:
-                prompt = f"""
-                    Generate a detailed, multi-part briefing for a Qatar Executive charter flight. The response must be structured with the specified separators.
-
-                    Flight Details:
-                    - Route: {dep_data.get('municipality', 'Unknown')} to {dest_data.get('municipality', 'Unknown')}
-                    - Aircraft: {aircraft_name}
-                    - Load: {passengers} passengers, {cargo}kg cargo
-
-                    Task:
-                    Write four distinct sections for the flight plan.
-
-                    1.  **CLIENT NAME:** Create a realistic, fictional company or individual's name.
-                    2.  **CLIENT INTRODUCTION:** (Approx. 8 words) Provide a brief background on the client.
-                    3.  **MISSION BRIEFING:** (Approx. 30-45 words) Detail the specific business purpose of the flight.
-                    4.  **DEADLINE RATIONALE:** (Approx. 20 words) Explain the urgency of the flight and why it must be completed by {deadline}.
-
-                    Output Format: Use '|||' as a separator between each section. Do not include section titles. The response must contain exactly three '|||' separators.
-                    """
-                response = self.model.generate_content(prompt)
-                if response and response.text and response.text.count('|||') == 3:
-                    client, intro, briefing, deadline_rationale = [part.strip().replace('"', '').replace("'", '') for part in response.text.strip().split('|||', 3)]
-                    return {"client": client, "client_intro": intro, "mission_briefing": briefing, "deadline_rationale": deadline_rationale, "purpose": "Executive Travel"}
-            except Exception as e:
-                pass
-            return {"client": "Default Client", "client_intro": "Default intro.", "mission_briefing": "Default briefing.", "deadline_rationale": "Default rationale.", "purpose": "Executive Travel"}
 
 
 async def setup(bot: commands.Bot):

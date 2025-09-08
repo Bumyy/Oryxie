@@ -12,6 +12,9 @@ from database.routes_model import RoutesModel
 from database.pilots_model import PilotsModel
 from database.flight_data import FlightData
 from api.manager import InfiniteFlightAPIManager
+from services.ai_service import AIService
+from services.flight_generation_service import FlightService
+from services.pdf_service import PDFService
 
 load_dotenv()
 
@@ -20,6 +23,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.guild_scheduled_events = True
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -31,6 +35,10 @@ class MyBot(commands.Bot):
         self.flightdata: FlightData = None
         self.if_api_manager: InfiniteFlightAPIManager = None
         self.aircraft_name_map = {}
+        # Services
+        self.ai_service: AIService = None
+        self.flight_service: FlightService = None
+        self.pdf_service: PDFService = None
 
     async def setup_hook(self):
         """
@@ -45,7 +53,12 @@ class MyBot(commands.Bot):
         
         # --- Initialize Flight Data ---
         self.flightdata = FlightData()
-        print("DatabaseManager and FlightData instances created.")
+        
+        # --- Initialize Services ---
+        self.ai_service = AIService()
+        self.flight_service = FlightService(self.flightdata)
+        self.pdf_service = PDFService()
+        print("DatabaseManager, FlightData, and Services instances created.")
         
         # --- Initialize API Manager ---
         try:
@@ -72,10 +85,18 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.pingpong')
             await self.load_extension('cogs.pireps')
             await self.load_extension('cogs.roster')
-            await self.load_extension('cogs.flight_generator_pdf')
-            await self.load_extension('cogs.training_v2')
+            await self.load_extension('cogs.training')
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.utils')
+            await self.load_extension('cogs.callsign_finder')
+            await self.load_extension('cogs.event_handler')
+            await self.load_extension('cogs.remainder')
+            await self.load_extension('cogs.restart')
+            
+            # Load flight generator with dependency injection
+            from cogs.flight_generator_pdf import FlightGeneratorPDF
+            await self.add_cog(FlightGeneratorPDF(self, self.ai_service, self.flight_service, self.pdf_service))
+            
             print("All cogs loaded.")
         except Exception as e:
             print(f"Failed to load one or more cogs: {e}")
