@@ -89,6 +89,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.utils')
             await self.load_extension('cogs.callsign_finder')
+            await self.load_extension('cogs.live_flights')
          #   await self.load_extension('cogs.event_handler')
          #   await self.load_extension('cogs.remainder')
          #   await self.load_extension('cogs.restart') ##
