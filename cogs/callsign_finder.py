@@ -122,6 +122,21 @@ class CategorySelectView(discord.ui.View):
         else:
             output_str = ", ".join(f"`{c}`" for c in available_list)
             message += f"\n\n{output_str}"
+        
+        # Add taken callsigns list for Staff category only
+        if category == "staff":
+            taken_in_range = []
+            for i in range(start_range, end_range + 1):
+                callsign = f"{CALLSIGN_PREFIX}{i:03d}"
+                if callsign in taken_callsigns:
+                    query = "SELECT name, callsign FROM pilots WHERE callsign = %s"
+                    pilot = await self.cog.bot.db_manager.fetch_one(query, (callsign,))
+                    if pilot:
+                        name = pilot.get('name', 'Unknown')
+                        taken_in_range.append(f"{callsign}: {name}")
+            
+            if taken_in_range:
+                message += "\n\n**Taken Staff Callsigns:**\n" + "\n".join(taken_in_range)
             
         await interaction.followup.send(message)
 
