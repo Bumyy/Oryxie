@@ -90,13 +90,13 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.utils')
             await self.load_extension('cogs.callsign_finder')
             await self.load_extension('cogs.live_flights')
+         #   await self.load_extension('cogs.gate_assignment')
+         #   await self.load_extension('cogs.database_audit')
          #   await self.load_extension('cogs.event_handler')
          #   await self.load_extension('cogs.remainder')
          #   await self.load_extension('cogs.restart') ##
             
-            # Load flight generator with dependency injection
-            from cogs.flight_generator_pdf import FlightGeneratorPDF
-            await self.add_cog(FlightGeneratorPDF(self, self.ai_service, self.flight_service, self.pdf_service))
+            await self.load_extension('cogs.flight_generator_pdf')
             
             print("All cogs loaded.")
         except Exception as e:
