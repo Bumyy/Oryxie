@@ -291,11 +291,11 @@ class AmiriApprovalView(discord.ui.View):
 
 
 class FlightGeneratorPDF(commands.Cog):
-    def __init__(self, bot: commands.Bot, ai_service: AIService = None, flight_service: FlightService = None, pdf_service: PDFService = None):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.ai_service = ai_service or AIService()
-        self.flight_service = flight_service or FlightService(bot.flightdata)
-        self.pdf_service = pdf_service or PDFService()
+        self.ai_service = bot.ai_service
+        self.flight_service = bot.flight_service
+        self.pdf_service = bot.pdf_service
         self.bot.add_view(FlightRequestView())
 
 
