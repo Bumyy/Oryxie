@@ -26,6 +26,7 @@ class Roster(commands.Cog):
         no_db_match_count = 0
         skipped_count = 0
         total_members = guild.member_count
+        failed_members = []
 
         status_message = await interaction.followup.send(f"🚀 Starting sync for **{total_members}** members... This may take a moment.")
         
@@ -43,8 +44,10 @@ class Roster(commands.Cog):
 
                 if pilot_data is None:
                     no_db_match_count += 1
+                    failed_members.append(member)
                 elif pilot_data.get('status') != 1:
                     skipped_count += 1
+                    failed_members.append(member)
                 else:
                     current_discord_id = pilot_data.get('discordid')
                     
@@ -55,6 +58,7 @@ class Roster(commands.Cog):
                         updated_count += 1
             else:
                 skipped_count += 1
+                failed_members.append(member)
         
         embed = discord.Embed(
             title="✅ Discord ID Sync Report",
@@ -68,6 +72,10 @@ class Roster(commands.Cog):
         embed.set_footer(text=f"Total members checked: {total_members}")
         
         await status_message.edit(content="Sync complete!", embed=embed)
+        
+        if failed_members:
+            mentions = " ".join([member.mention for member in failed_members])
+            await interaction.followup.send(f"**⚠️ Could not update Discord IDs for:** {mentions}", ephemeral=True)
 
     @sync_discord_ids.error
     async def on_sync_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
