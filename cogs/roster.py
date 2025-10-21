@@ -43,6 +43,8 @@ class Roster(commands.Cog):
 
                 if pilot_data is None:
                     no_db_match_count += 1
+                elif pilot_data.get('status') != 1:
+                    skipped_count += 1
                 else:
                     current_discord_id = pilot_data.get('discordid')
                     
