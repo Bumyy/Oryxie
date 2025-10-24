@@ -36,6 +36,7 @@ class PirepsModel:
                 p.pilotid,
                 p.fuelused,
                 p.date,
+                p.multi,
                 pi.name AS pilot_name,
                 a.name AS aircraft_name
             FROM
@@ -57,3 +58,46 @@ class PirepsModel:
             report['formatted_flighttime'] = self._format_flight_time(report.get('flighttime'))
 
         return pending_reports
+
+    async def get_accepted_pireps(self) -> list[dict]:
+        """
+        Fetches all PIREPs with a status of 1 (accepted), joining with the pilots
+        and aircraft tables to get their names.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents an accepted PIREP
+            with pilot and aircraft information included.
+        """
+
+        query = """
+            SELECT
+                p.id AS pirep_id,
+                p.flightnum,
+                p.departure,
+                p.arrival,
+                p.flighttime,
+                p.pilotid,
+                p.fuelused,
+                p.date,
+                p.multi,
+                pi.name AS pilot_name,
+                a.name AS aircraft_name
+            FROM
+                pireps AS p
+            INNER JOIN
+                pilots AS pi ON p.pilotid = pi.id
+            INNER JOIN
+                aircraft AS a ON p.aircraftid = a.id
+            WHERE
+                p.status = %s
+            ORDER BY
+                p.date DESC
+        """
+        args = (1,)
+        
+        accepted_reports = await self.db.fetch_all(query, args)
+        
+        for report in accepted_reports:
+            report['formatted_flighttime'] = self._format_flight_time(report.get('flighttime'))
+
+        return accepted_reports

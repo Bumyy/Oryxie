@@ -10,7 +10,7 @@ class PilotsModel:
 
     async def get_pilot_by_callsign(self, callsign: str) -> Optional[Dict]:
         """
-        Retrieves a pilot's data using their callsign.
+        Retrieves a pilot's data using their callsign (only active pilots).
 
         Args:
             callsign: The pilot's callsign (e.g., 'QRV001').
@@ -19,7 +19,7 @@ class PilotsModel:
             A dictionary of the pilot's data if found, otherwise None.
         """
         query = """
-            SELECT discordid FROM pilots WHERE callsign = %s
+            SELECT id, callsign, discordid FROM pilots WHERE callsign = %s AND status = 1
         """
         args = (callsign,)
         return await self.db.fetch_one(query, args)
@@ -132,6 +132,76 @@ class PilotsModel:
         """
         query = "SELECT callsign, discordid FROM pilots WHERE callsign IS NOT NULL AND callsign != ''"
         return await self.db.fetch_all(query)
+
+    async def get_pilot_by_id(self, pilot_id: int) -> Optional[Dict]:
+        """
+        Retrieves a pilot's data using their ID (only active pilots).
+
+        Args:
+            pilot_id: The pilot's ID.
+
+        Returns:
+            A dictionary of the pilot's data if found, otherwise None.
+        """
+        query = "SELECT id, callsign, discordid FROM pilots WHERE id = %s AND status = 1"
+        args = (pilot_id,)
+        return await self.db.fetch_one(query, args)
+        
+    async def get_pilot_by_discord_id(self, discord_id: str) -> Optional[Dict]:
+        """
+        Retrieves a pilot's data using their Discord ID (only active pilots).
+
+        Args:
+            discord_id: The pilot's Discord ID.
+
+        Returns:
+            A dictionary of the pilot's data if found, otherwise None.
+        """
+        query = "SELECT id, callsign, discordid FROM pilots WHERE discordid = %s AND status = 1"
+        args = (discord_id,)
+        return await self.db.fetch_one(query, args)
+        
+    async def identify_pilot(self, discord_user) -> Dict:
+        """
+        Central pilot identification system - tries multiple methods to find pilot.
+        
+        Args:
+            discord_user: Discord user object with .display_name and .id
+            
+        Returns:
+            Dict with 'success', 'pilot_data', 'method', and 'error_message' keys
+        """
+        import re
+        
+        # Method 1: Try to extract callsign from nickname
+        callsign_match = re.search(r'QRV\d{3,}', discord_user.display_name, re.IGNORECASE)
+        if callsign_match:
+            extracted_callsign = callsign_match.group(0).upper()
+            pilot_data = await self.get_pilot_by_callsign(extracted_callsign)
+            if pilot_data:
+                return {
+                    'success': True,
+                    'pilot_data': pilot_data,
+                    'method': 'callsign_from_nickname',
+                    'extracted_callsign': extracted_callsign
+                }
+        
+        # Method 2: Try Discord ID lookup
+        pilot_data = await self.get_pilot_by_discord_id(str(discord_user.id))
+        if pilot_data:
+            return {
+                'success': True,
+                'pilot_data': pilot_data,
+                'method': 'discord_id_lookup'
+            }
+        
+        # Both methods failed
+        return {
+            'success': False,
+            'pilot_data': None,
+            'method': 'none',
+            'error_message': 'Your Discord ID and callsign are not matching. Please contact Ayush or any staff.'
+        }
 
     def get_html_template(self):
         """Returns HTML template for pilot documentation"""
