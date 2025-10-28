@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 import logging
 from typing import List
+import asyncio
 
 from database.routes_model import RoutesModel
 
@@ -42,38 +43,129 @@ class FlightDetailsModal(discord.ui.Modal):
         self.add_item(self.message_content)
         self.add_item(self.gates)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        gate_lines = [line.strip() for line in self.gates.value.strip().split('\n') if line.strip()]
-        
-        assignable_gates = []
-        for line in gate_lines:
-            if len(line) <= 6 and any(c.isdigit() or c.isalpha() for c in line):
-                if not any(word in line.lower() for word in ['terminal', 'concourse', 'pier', 'gate']):
-                    assignable_gates.append(line)
-
-        if len(assignable_gates) < len(self.sorted_attendees):
-            await interaction.response.send_message(
-                f"**Error:** You provided {len(assignable_gates)} assignable gates, but there are {len(self.sorted_attendees)} attendees.\n\nFound gates: {assignable_gates}",
-                ephemeral=True
-            )
-            return
-
-        gate_assignment_text = "\n\n**📍 Gate Assignments:**\n"
-        attendee_index = 0
-        
-        for line in gate_lines:
-            if any(word in line.lower() for word in ['terminal', 'concourse', 'pier']) or len(line) > 6:
-                gate_assignment_text += f"\n**{line}**\n"
-            else:
-                if attendee_index < len(self.sorted_attendees):
-                    attendee = self.sorted_attendees[attendee_index]
-                    gate_assignment_text += f"- {line.upper()}: {attendee.mention}\n"
-                    attendee_index += 1
+    async def send_with_retry(self, interaction: discord.Interaction, content: str, max_retries: int = 3):
+        """Send message with retry logic for rate limiting"""
+        for attempt in range(max_retries):
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(content)
                 else:
-                    gate_assignment_text += f"- {line.upper()}: Vacant\n"
+                    await interaction.followup.send(content)
+                return True
+            except discord.HTTPException as e:
+                if e.status == 429:  # Rate limited
+                    retry_after = getattr(e, 'retry_after', 2 ** attempt)
+                    logger.warning(f"Rate limited, retrying after {retry_after}s (attempt {attempt + 1})")
+                    await asyncio.sleep(retry_after)
+                    continue
+                else:
+                    raise e
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                await asyncio.sleep(1)
+        return False
+
+    def split_message(self, message: str, max_length: int = 2000) -> List[str]:
+        """Split long messages into chunks"""
+        if len(message) <= max_length:
+            return [message]
         
-        final_message = self.message_content.value + gate_assignment_text
-        await interaction.response.send_message(final_message)
+        chunks = []
+        current_chunk = ""
+        
+        for line in message.split('\n'):
+            if len(current_chunk) + len(line) + 1 > max_length:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = line + '\n'
+                else:
+                    # Single line too long, force split
+                    while len(line) > max_length:
+                        chunks.append(line[:max_length])
+                        line = line[max_length:]
+                    current_chunk = line + '\n'
+            else:
+                current_chunk += line + '\n'
+        
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            gate_lines = [line.strip() for line in self.gates.value.strip().split('\n') if line.strip()]
+            
+            assignable_gates = []
+            for line in gate_lines:
+                if len(line) <= 6 and any(c.isdigit() or c.isalpha() for c in line):
+                    if not any(word in line.lower() for word in ['terminal', 'concourse', 'pier', 'gate']):
+                        assignable_gates.append(line)
+
+            if len(assignable_gates) < len(self.sorted_attendees):
+                error_msg = f"**Error:** You provided {len(assignable_gates)} assignable gates, but there are {len(self.sorted_attendees)} attendees.\n\nFound gates: {assignable_gates}"
+                await self.send_with_retry(interaction, error_msg)
+                return
+
+            gate_assignment_text = "\n\n**📍 Gate Assignments:**\n"
+            attendee_index = 0
+            
+            for line in gate_lines:
+                if any(word in line.lower() for word in ['terminal', 'concourse', 'pier']) or len(line) > 6:
+                    gate_assignment_text += f"\n**{line}**\n"
+                else:
+                    if attendee_index < len(self.sorted_attendees):
+                        attendee = self.sorted_attendees[attendee_index]
+                        gate_assignment_text += f"- {line.upper()}: {attendee.mention}\n"
+                        attendee_index += 1
+                    else:
+                        gate_assignment_text += f"- {line.upper()}: Vacant\n"
+            
+            final_message = self.message_content.value + gate_assignment_text
+            
+            # Handle long messages by splitting
+            message_chunks = self.split_message(final_message)
+            
+            if len(message_chunks) == 1:
+                await self.send_with_retry(interaction, message_chunks[0])
+            else:
+                # Send first chunk as response
+                await self.send_with_retry(interaction, message_chunks[0])
+                
+                # Send remaining chunks as followups with delay
+                for i, chunk in enumerate(message_chunks[1:], 1):
+                    await asyncio.sleep(0.5)  # Prevent rate limiting
+                    try:
+                        await interaction.followup.send(f"**Part {i + 1}:**\n{chunk}")
+                    except discord.HTTPException as e:
+                        if e.status == 429:
+                            await asyncio.sleep(2)
+                            await interaction.followup.send(f"**Part {i + 1}:**\n{chunk}")
+                        else:
+                            logger.error(f"Failed to send message part {i + 1}: {e}")
+            
+        except discord.HTTPException as e:
+            logger.error(f"Discord API error in FlightDetailsModal.on_submit: {e}")
+            error_msg = "Discord API error occurred. Please try again in a moment."
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(error_msg, ephemeral=True)
+                else:
+                    await interaction.followup.send(error_msg, ephemeral=True)
+            except:
+                pass
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in FlightDetailsModal.on_submit: {e}")
+            error_msg = "An unexpected error occurred. Please try again."
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(error_msg, ephemeral=True)
+                else:
+                    await interaction.followup.send(error_msg, ephemeral=True)
+            except:
+                pass
 
 class GateAssignmentView(discord.ui.View):
     def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str):
@@ -85,8 +177,28 @@ class GateAssignmentView(discord.ui.View):
 
     @discord.ui.button(label="Assign Gates", style=discord.ButtonStyle.primary)
     async def assign_gates_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = FlightDetailsModal(self.event_name, self.sorted_attendees, self.default_message, self.flight_number)
-        await interaction.response.send_modal(modal)
+        try:
+            modal = FlightDetailsModal(self.event_name, self.sorted_attendees, self.default_message, self.flight_number)
+            await interaction.response.send_modal(modal)
+        except discord.HTTPException as e:
+            logger.error(f"Failed to send modal: {e}")
+            if e.status == 429:
+                await asyncio.sleep(2)
+                try:
+                    await interaction.response.send_message("Rate limited. Please try again in a moment.", ephemeral=True)
+                except:
+                    pass
+            else:
+                try:
+                    await interaction.response.send_message("Failed to open gate assignment form. Please try again.", ephemeral=True)
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"Unexpected error opening modal: {e}")
+            try:
+                await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+            except:
+                pass
 
 class GateAssignment(commands.Cog):
     def __init__(self, bot: commands.Bot):
