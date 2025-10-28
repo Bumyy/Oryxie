@@ -43,12 +43,9 @@ class MissionModal(ui.Modal):
         view = MissionTypeView(self.bot, mission_data, self.mission_id)
         
         if self.mission_id:
-            try:
-                existing_mission = await interaction.client.mission_db.get_mission_by_id(self.mission_id)
-                if existing_mission:
-                    view.existing_flight_data = existing_mission
-            except Exception:
-                pass
+            existing_mission = await interaction.client.mission_db.get_mission_by_id(self.mission_id)
+            if existing_mission:
+                view.existing_flight_data = existing_mission
         
         await interaction.followup.send("Choose mission type:", view=view, ephemeral=True)
 
@@ -71,12 +68,9 @@ class FlightModal(ui.Modal):
             self.deadline_hours.default = str(existing_data['deadline_hours']) if existing_data['deadline_hours'] else "24"
             
             if existing_data['post_time']:
-                try:
-                    post_dt = datetime.fromisoformat(existing_data['post_time'])
-                    self.post_date.default = f"{post_dt.day:02d}:{post_dt.month:02d}:{post_dt.year}"
-                    self.post_time.default = f"{post_dt.hour:02d}:{post_dt.minute:02d}"
-                except:
-                    pass
+                post_dt = datetime.fromisoformat(existing_data['post_time'])
+                self.post_date.default = f"{post_dt.day:02d}:{post_dt.month:02d}:{post_dt.year}"
+                self.post_time.default = f"{post_dt.hour:02d}:{post_dt.minute:02d}"
         
         for item in [self.flight_numbers, self.multiplier, self.post_date, self.post_time, self.deadline_hours]:
             self.add_item(item)
@@ -246,27 +240,53 @@ class Mission(commands.Cog):
         self.bot = bot
         self.tasks_started = False
         self.mission_db = bot.mission_db
+        self.current_interval = 3600  # Start with 1 hour (3600 seconds)
 
     def cog_unload(self):
         self.tasks_started = False
         if self.check_missions_task.is_running():
             self.check_missions_task.cancel()
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(seconds=3600)  # Start with 1 hour
     async def check_missions_task(self):
         if not self.tasks_started:
             return
         
+        missions = await self.mission_db.get_pending_missions()
+        
+        for mission in missions:
+            await self._post_mission(mission)
+            await self.mission_db.mark_mission_posted(mission['id'])
+        
+        await self._adjust_polling_interval()
+    
+    async def _adjust_polling_interval(self):
         try:
-            missions = await self.mission_db.get_pending_missions()
-            for mission in missions:
-                try:
-                    await self._post_mission(mission)
-                    await self.mission_db.mark_mission_posted(mission['id'])
-                except Exception as e:
-                    print(f"Error posting mission {mission['id']}: {e}")
-        except Exception as e:
-            print(f"Error in mission polling: {e}")
+            now_utc = datetime.now(timezone.utc)
+            
+            next_mission = await self.mission_db.db.fetch_one(
+                "SELECT post_time FROM scheduled_events WHERE is_posted = 0 AND post_time > %s ORDER BY post_time ASC LIMIT 1",
+                (now_utc,)
+            )
+            
+            if not next_mission:
+                new_interval = 3600  # 1 hour
+            else:
+                next_time = next_mission['post_time']
+                if isinstance(next_time, str):
+                    next_time = datetime.fromisoformat(next_time)
+                elif next_time.tzinfo is None:
+                    next_time = next_time.replace(tzinfo=timezone.utc)
+                
+                time_diff = (next_time - now_utc).total_seconds()
+                new_interval = 300 if time_diff <= 3600 else 3600  # 5 min if within 1 hour, else 1 hour
+            
+            if new_interval != self.current_interval:
+                self.current_interval = new_interval
+                self.check_missions_task.change_interval(seconds=new_interval)
+                
+        except Exception:
+            pass
 
     @check_missions_task.before_loop
     async def before_check_missions(self):
@@ -328,25 +348,26 @@ class Mission(commands.Cog):
             emoji = self.bot.get_emoji(emoji_ids[i]) if i < len(emoji_ids) else "✈️"
             
             if hasattr(self.bot, 'routes_model'):
-                try:
-                    route_data = await self.bot.routes_model.find_route_by_fltnum(flight)
-                    if route_data:
-                        aircraft = route_data['aircraft'][0]['icao'] if route_data['aircraft'] else "Unknown"
-                        duration_seconds = route_data['duration']
-                        hours = duration_seconds // 3600
-                        minutes = (duration_seconds % 3600) // 60
-                        duration_formatted = f"{hours:02d}:{minutes:02d}"
-                        routes_text += f"{emoji} | {route_data['dep']} - {route_data['arr']} | {aircraft} | {duration_formatted}\n"
-                    else:
-                        routes_text += f"{emoji} | {flight} | Route not found\n"
-                except:
-                    routes_text += f"{emoji} | {flight}\n"
+                route_data = await self.bot.routes_model.find_route_by_fltnum(flight)
+                if route_data:
+                    aircraft = route_data['aircraft'][0]['icao'] if route_data['aircraft'] else "Unknown"
+                    duration_seconds = route_data['duration']
+                    hours = duration_seconds // 3600
+                    minutes = (duration_seconds % 3600) // 60
+                    duration_formatted = f"{hours:02d}:{minutes:02d}"
+                    routes_text += f"{emoji} | {route_data['dep']} - {route_data['arr']} | {aircraft} | {duration_formatted}\n"
+                else:
+                    routes_text += f"{emoji} | {flight} | Route not found\n"
             else:
                 routes_text += f"{emoji} | {flight}\n"
         
         embed.add_field(name="Routes", value=routes_text, inline=False)
         
-        post_time = datetime.fromisoformat(mission_data['post_time'])
+        post_time = mission_data['post_time']
+        if isinstance(post_time, str):
+            post_time = datetime.fromisoformat(post_time)
+        elif post_time.tzinfo is None:
+            post_time = post_time.replace(tzinfo=timezone.utc)
         deadline = int(post_time.timestamp() + (mission_data['deadline_hours'] if mission_data['deadline_hours'] else 24) * 3600)
         
         embed.add_field(name="", value=f"You can fly any of these routes with a **{mission_data['multiplier']}x** multiplier!", inline=False)
@@ -364,11 +385,8 @@ class Mission(commands.Cog):
 
 
     async def title_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        try:
-            titles = await self.mission_db.get_mission_titles(current)
-            return [app_commands.Choice(name=title, value=title) for title in titles]
-        except Exception:
-            return []
+        titles = await self.mission_db.get_mission_titles(current)
+        return [app_commands.Choice(name=title, value=title) for title in titles]
 
     async def channel_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         choices = []
@@ -386,6 +404,7 @@ class Mission(commands.Cog):
         app_commands.Choice(name="Edit Mission", value="edit"),
         app_commands.Choice(name="Delete Mission", value="delete"),
         app_commands.Choice(name="Preview Mission", value="preview"),
+        app_commands.Choice(name="Force Post Mission", value="force_post"),
         app_commands.Choice(name="Start Polling", value="start_polling"),
         app_commands.Choice(name="Stop Polling", value="stop_polling")
     ])
@@ -418,47 +437,51 @@ class Mission(commands.Cog):
             await self._handle_delete_by_title(interaction, title)
         elif action == "preview":
             await self._handle_preview_by_title(interaction, title)
+        elif action == "force_post":
+            await self._handle_force_post(interaction, title)
 
     async def _handle_edit_by_title(self, interaction, title):
-        try:
-            mission = await self.mission_db.get_mission_by_title(title)
-            if not mission:
-                await interaction.response.send_message(f"❌ Mission '{title}' not found.", ephemeral=True)
-                return
+        mission = await self.mission_db.get_mission_by_title(title)
+        if not mission:
+            await interaction.response.send_message(f"❌ Mission '{title}' not found.", ephemeral=True)
+            return
 
-            modal = MissionModal(self.bot, mission['channel_id'], mission_id=mission['id'], default_title=mission['title'])
-            modal.description.default = mission['description']
-            modal.image_url.default = mission['image_url'] or ""
-            modal.footer_text.default = mission['footer_text'] or ""
-            modal.color.default = mission['color'] or "gold"
-            
-            await interaction.response.send_modal(modal)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        modal = MissionModal(self.bot, mission['channel_id'], mission_id=mission['id'], default_title=mission['title'])
+        modal.description.default = mission['description']
+        modal.image_url.default = mission['image_url'] or ""
+        modal.footer_text.default = mission['footer_text'] or ""
+        modal.color.default = mission['color'] or "gold"
+        
+        await interaction.response.send_modal(modal)
 
     async def _handle_delete_by_title(self, interaction, title):
         await interaction.response.defer(ephemeral=True)
-        try:
-            deleted_count = await self.mission_db.delete_mission_by_title(title)
-            if deleted_count > 0:
-                await interaction.followup.send(f"🗑️ Mission '{title}' deleted!", ephemeral=True)
-            else:
-                await interaction.followup.send(f"❌ Mission '{title}' not found.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        deleted_count = await self.mission_db.delete_mission_by_title(title)
+        if deleted_count > 0:
+            await interaction.followup.send(f"🗑️ Mission '{title}' deleted!", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Mission '{title}' not found.", ephemeral=True)
 
     async def _handle_preview_by_title(self, interaction, title):
         await interaction.response.defer(ephemeral=True)
-        try:
-            mission = await self.mission_db.get_mission_by_title(title)
-            if not mission:
-                await interaction.followup.send(f"❌ Mission '{title}' not found.", ephemeral=True)
-                return
+        mission = await self.mission_db.get_mission_by_title(title)
+        if not mission:
+            await interaction.followup.send(f"❌ Mission '{title}' not found.", ephemeral=True)
+            return
 
-            embed = await self._create_mission_embed(mission)
-            await interaction.followup.send(content="**PREVIEW** (will include @everyone ping when posted):", embed=embed, ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        embed = await self._create_mission_embed(mission)
+        await interaction.followup.send(content="**PREVIEW** (will include @everyone ping when posted):", embed=embed, ephemeral=True)
+
+    async def _handle_force_post(self, interaction, title):
+        await interaction.response.defer(ephemeral=True)
+        mission = await self.mission_db.get_mission_by_title(title)
+        if not mission:
+            await interaction.followup.send(f"❌ Mission '{title}' not found.", ephemeral=True)
+            return
+
+        await self._post_mission(mission)
+        await self.mission_db.mark_mission_posted(mission['id'])
+        await interaction.followup.send(f"✅ Mission '{title}' posted immediately!", ephemeral=True)
 
 
 
@@ -466,8 +489,6 @@ async def setup(bot: commands.Bot):
     cog = Mission(bot)
     await bot.add_cog(cog)
     
-    # Auto-start mission polling
     if not cog.check_missions_task.is_running():
         cog.tasks_started = True
         cog.check_missions_task.start()
-        print("📅 Mission polling started")

@@ -24,6 +24,22 @@ class PilotsModel:
         args = (callsign,)
         return await self.db.fetch_one(query, args)
 
+    async def get_pilot_by_callsign_any_status(self, callsign: str) -> Optional[Dict]:
+        """
+        Retrieves a pilot's data using their callsign (any status - for roster sync).
+
+        Args:
+            callsign: The pilot's callsign (e.g., 'QRV001').
+
+        Returns:
+            A dictionary of the pilot's data if found, otherwise None.
+        """
+        query = """
+            SELECT id, callsign, discordid, status FROM pilots WHERE callsign = %s
+        """
+        args = (callsign,)
+        return await self.db.fetch_one(query, args)
+
     async def update_discord_id(self, callsign: str, discord_id: str) -> int:
         """
         Updates the discordid for a pilot with a given callsign.
