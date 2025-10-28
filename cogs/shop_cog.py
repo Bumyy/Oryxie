@@ -253,7 +253,7 @@ class ItemModal(discord.ui.Modal):
 class ShopCog(commands.Cog, name="Shop"):
     def __init__(self, bot):
         self.bot = bot
-        self.shop_model = ShopModel()
+        self.shop_model = bot.shop_model
         self.db_lock = asyncio.Lock()
         self.bot.add_view(ShopView(self, "halloween_2025"))
 
