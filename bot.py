@@ -10,7 +10,10 @@ from database.manager import DatabaseManager
 from database.pireps_model import PirepsModel
 from database.routes_model import RoutesModel
 from database.pilots_model import PilotsModel
+from database.event_transaction_model import EventTransactionModel
 from database.flight_data import FlightData
+from database.shop_model import ShopModel
+from database.mission_module import MissionDB
 from api.manager import InfiniteFlightAPIManager
 from services.ai_service import AIService
 from services.flight_generation_service import FlightService
@@ -32,6 +35,9 @@ class MyBot(commands.Bot):
         self.pireps_model: PirepsModel = None
         self.routes_model: RoutesModel = None
         self.pilots_model: PilotsModel = None
+        self.event_transaction_model: EventTransactionModel = None
+        self.shop_model: ShopModel = None
+        self.mission_db: MissionDB = None
         self.flightdata: FlightData = None
         self.if_api_manager: InfiniteFlightAPIManager = None
         self.aircraft_name_map = {}
@@ -50,6 +56,9 @@ class MyBot(commands.Bot):
         self.pireps_model = PirepsModel(self.db_manager)
         self.routes_model = RoutesModel(self.db_manager)
         self.pilots_model = PilotsModel(self.db_manager)
+        self.event_transaction_model = EventTransactionModel(self.db_manager)
+        self.shop_model = ShopModel(self.db_manager)
+        self.mission_db = MissionDB(self.db_manager)
         
         # --- Initialize Flight Data ---
         self.flightdata = FlightData()
@@ -89,14 +98,14 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.utils')
             await self.load_extension('cogs.flight_generator_pdf')
-
+            await self.load_extension('cogs.special_events')
+            await self.load_extension('cogs.shop_cog')
+            await self.load_extension('cogs.mission')
+            await self.load_extension('cogs.gate_assignment')
+            
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.callsign_finder')
-            #await self.load_extension('cogs.gate_assignment')
-            #await self.load_extension('cogs.database_audit')
-            #await self.load_extension('cogs.event_handler')
             #await self.load_extension('cogs.remainder')
-            #await self.load_extension('cogs.restart')
             
             
             print("All cogs loaded.")
