@@ -247,7 +247,9 @@ class ItemModal(discord.ui.Modal):
             msg = f"✅ Added item '{name}' to shop." if success else "❌ Failed to add item."
         
         if success:
-            await self.cog.refresh_shop_embed(interaction.guild, self.shop_name)
+            refresh_success = await self.cog.refresh_shop_embed(interaction.guild, self.shop_name)
+            if not refresh_success:
+                msg += " (Warning: Could not update shop display)"
         await interaction.response.send_message(msg, ephemeral=True)
 
 class ShopCog(commands.Cog, name="Shop"):
@@ -295,15 +297,20 @@ class ShopCog(commands.Cog, name="Shop"):
     async def refresh_shop_embed(self, guild: discord.Guild, shop_name: str):
         shop = await self.shop_model.get_shop(shop_name)
         if not shop or not shop['message_id']:
-            return
+            return False
         try:
             channel = guild.get_channel(shop['channel_id'])
+            if not channel:
+                return False
             message = await channel.fetch_message(shop['message_id'])
             new_embed = await self.build_shop_embed(shop_name)
             if new_embed:
-                await message.edit(embed=new_embed)
-        except (discord.NotFound, discord.Forbidden):
-            pass
+                view = ShopView(self, shop_name)
+                await message.edit(embed=new_embed, view=view)
+                return True
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+            print(f"Failed to refresh shop embed: {e}")
+        return False
 
     async def log_to_thread(self, guild: discord.Guild, user: discord.User, item: dict):
         shop = await self.shop_model.get_shop(item['shop_name'])
