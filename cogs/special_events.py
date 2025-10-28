@@ -271,11 +271,17 @@ class SpecialEventsCog(commands.Cog):
                         if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model):
                             pilot_data = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
                             if pilot_data:
+                                # Calculate actual candy amount
+                                flight_time_seconds = pirep.get('flighttime', 0)
+                                multiplier = float(pirep.get('multi', 1) or 1)
+                                raw_flight_time_seconds = flight_time_seconds / multiplier if multiplier > 0 else flight_time_seconds
+                                candy_amount = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+                                
                                 flight_info = {
                                     'departure': pirep.get('departure', 'Unknown'),
                                     'arrival': pirep.get('arrival', 'Unknown')
                                 }
-                                await self.log_candy_transaction(pilot_data, 1, f"PIREP Reward: #{pirep['pirep_id']}", flight_info=flight_info)
+                                await self.log_candy_transaction(pilot_data, candy_amount, f"PIREP Reward: #{pirep['pirep_id']}", flight_info=flight_info)
                                 rewards_given += 1
                                 
                 await interaction.followup.send(f"✅ PIREP polling complete! Awarded {rewards_given} Halloween PIREP rewards.", ephemeral=True)
@@ -339,11 +345,17 @@ class SpecialEventsCog(commands.Cog):
                     if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model):
                         pilot_data = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
                         if pilot_data:
+                            # Calculate actual candy amount
+                            flight_time_seconds = pirep.get('flighttime', 0)
+                            multiplier = float(pirep.get('multi', 1) or 1)
+                            raw_flight_time_seconds = flight_time_seconds / multiplier if multiplier > 0 else flight_time_seconds
+                            candy_amount = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+                            
                             flight_info = {
                                 'departure': pirep.get('departure', 'Unknown'),
                                 'arrival': pirep.get('arrival', 'Unknown')
                             }
-                            await self.log_candy_transaction(pilot_data, 1, f"PIREP Reward: #{pirep['pirep_id']}", flight_info=flight_info)
+                            await self.log_candy_transaction(pilot_data, candy_amount, f"PIREP Reward: #{pirep['pirep_id']}", flight_info=flight_info)
                             processed_count += 1
                             
                 if processed_count >= 10:
