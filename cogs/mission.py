@@ -252,14 +252,13 @@ class Mission(commands.Cog):
         if not self.tasks_started:
             return
         
-        try:
-            missions = await self.mission_db.get_pending_missions()
-            
-            for mission in missions:
-                await self._post_mission(mission)
-                await self.mission_db.mark_mission_posted(mission['id'])
-            
-            await self._adjust_polling_interval()
+        missions = await self.mission_db.get_pending_missions()
+        
+        for mission in missions:
+            await self._post_mission(mission)
+            await self.mission_db.mark_mission_posted(mission['id'])
+        
+        await self._adjust_polling_interval()
     
     async def _adjust_polling_interval(self):
         try:
