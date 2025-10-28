@@ -17,7 +17,7 @@ class MissionDB:
 
     async def get_pending_missions(self) -> List[Dict[str, Any]]:
         now_utc = datetime.now(timezone.utc)
-        return await self.db.fetch_all("SELECT * FROM scheduled_events WHERE is_posted = 0 AND post_time <= %s", (now_utc.isoformat(),))
+        return await self.db.fetch_all("SELECT * FROM scheduled_events WHERE is_posted = 0 AND post_time <= %s", (now_utc,))
 
     async def get_mission_titles(self, search: str = "") -> List[str]:
         if search:
@@ -37,7 +37,7 @@ class MissionDB:
             mission_data["color"], mission_data.get("author_name"),
             mission_data["flight_numbers"], mission_data.get("custom_emojis"),
             mission_data.get("multiplier", 0), mission_data.get("deadline_hours", 0),
-            mission_data["channel_id"], mission_data["post_time"].isoformat(), 
+            mission_data["channel_id"], mission_data["post_time"], 
             mission_data["creator_id"]
         ))
 
@@ -53,7 +53,7 @@ class MissionDB:
             mission_data["color"], mission_data.get("author_name"),
             mission_data["flight_numbers"], mission_data.get("custom_emojis"),
             mission_data.get("multiplier", 0), mission_data.get("deadline_hours", 0),
-            mission_data["post_time"].isoformat(), mission_id
+            mission_data["post_time"], mission_id
         ))
 
     async def delete_mission_by_title(self, title: str) -> int:
