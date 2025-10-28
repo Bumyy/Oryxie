@@ -26,11 +26,14 @@ class FlightDetailsModal(discord.ui.Modal):
         super().__init__(title=f"Details for {event_name}")
         self.sorted_attendees = sorted_attendees
 
+        # Ensure default message fits in modal
+        safe_default = default_message[:1800] if len(default_message) > 1800 else default_message
+        
         self.message_content = discord.ui.TextInput(
             label="Event Message (Edit as needed)",
             style=discord.TextStyle.paragraph,
-            default=default_message,
-            max_length=2000
+            default=safe_default,
+            max_length=1800
         )
         
         self.gates = discord.ui.TextInput(
@@ -178,27 +181,26 @@ class GateAssignmentView(discord.ui.View):
     @discord.ui.button(label="Assign Gates", style=discord.ButtonStyle.primary)
     async def assign_gates_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            modal = FlightDetailsModal(self.event_name, self.sorted_attendees, self.default_message, self.flight_number)
+            # Truncate default message if too long for modal
+            truncated_message = self.default_message[:1800] if len(self.default_message) > 1800 else self.default_message
+            
+            modal = FlightDetailsModal(self.event_name, self.sorted_attendees, truncated_message, self.flight_number)
             await interaction.response.send_modal(modal)
+        except discord.InteractionResponded:
+            logger.warning("Interaction already responded to")
+            return
         except discord.HTTPException as e:
             logger.error(f"Failed to send modal: {e}")
-            if e.status == 429:
-                await asyncio.sleep(2)
-                try:
-                    await interaction.response.send_message("Rate limited. Please try again in a moment.", ephemeral=True)
-                except:
-                    pass
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Failed to open gate assignment form. Please try again.", ephemeral=True)
             else:
-                try:
-                    await interaction.response.send_message("Failed to open gate assignment form. Please try again.", ephemeral=True)
-                except:
-                    pass
+                await interaction.followup.send("Failed to open gate assignment form. Please try again.", ephemeral=True)
         except Exception as e:
             logger.error(f"Unexpected error opening modal: {e}")
-            try:
+            if not interaction.response.is_done():
                 await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
-            except:
-                pass
+            else:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
 
 class GateAssignment(commands.Cog):
     def __init__(self, bot: commands.Bot):
