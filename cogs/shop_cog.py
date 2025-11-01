@@ -135,13 +135,17 @@ class ShopView(discord.ui.View):
 
     @discord.ui.button(label="🛒 Buy Item", style=discord.ButtonStyle.success, custom_id="shop_buy")
     async def buy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        items = await self.cog.shop_model.get_available_items(self.shop_name)
-        if not items:
-            return await interaction.response.send_message("The shop is currently empty or all items are sold out.", ephemeral=True)
-        
-        view = discord.ui.View(timeout=180)
-        view.add_item(ItemSelect(self.cog, items))
-        await interaction.response.send_message("Please select an item from the menu below.", view=view, ephemeral=True)
+        try:
+            items = await self.cog.shop_model.get_available_items(self.shop_name)
+            if not items:
+                return await interaction.response.send_message("The shop is currently empty or all items are sold out.", ephemeral=True)
+            
+            view = discord.ui.View(timeout=180)
+            view.add_item(ItemSelect(self.cog, items))
+            await interaction.response.send_message("Please select an item from the menu below.", view=view, ephemeral=True)
+        except Exception as e:
+            print(f"Shop buy error: {e}")
+            await interaction.response.send_message("❌ Shop temporarily unavailable. Please try again.", ephemeral=True)
     
     @discord.ui.button(label="ℹ️ Item Info", style=discord.ButtonStyle.secondary, custom_id="shop_info")
     async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -257,7 +261,21 @@ class ShopCog(commands.Cog, name="Shop"):
         self.bot = bot
         self.shop_model = bot.shop_model
         self.db_lock = asyncio.Lock()
-        self.bot.add_view(ShopView(self, "halloween_2025"))
+        
+    async def cog_load(self):
+        """Called when cog is loaded - restore persistent views"""
+        await self.restore_persistent_views()
+        
+    async def restore_persistent_views(self):
+        """Restore all shop views after bot restart"""
+        try:
+            shops = await self.shop_model.get_all_shops()
+            for shop in shops:
+                if shop.get('message_id'):
+                    view = ShopView(self, shop['shop_name'])
+                    self.bot.add_view(view)
+        except Exception as e:
+            print(f"Error restoring shop views: {e}")
 
     async def build_shop_embed(self, shop_name: str):
         shop = await self.shop_model.get_shop(shop_name)
@@ -371,8 +389,15 @@ class ShopCog(commands.Cog, name="Shop"):
             await interaction.followup.send(msg, ephemeral=True)
         
         elif action == "delete":
-            success = await self.shop_model.delete_shop(shop_name)
-            msg = f"✅ Deleted shop '{shop_name}'." if success else "❌ Failed to delete shop."
+            try:
+                success = await self.shop_model.delete_shop(shop_name)
+                if success:
+                    msg = f"✅ Deleted shop '{shop_name}' successfully."
+                else:
+                    msg = f"❌ Shop '{shop_name}' not found or already deleted."
+            except Exception as e:
+                print(f"Error deleting shop {shop_name}: {e}")
+                msg = f"❌ Error deleting shop: {str(e)}"
             await interaction.response.send_message(msg, ephemeral=True)
 
     @shop_command.error
@@ -383,4 +408,3 @@ class ShopCog(commands.Cog, name="Shop"):
 async def setup(bot):
     cog = ShopCog(bot)
     await bot.add_cog(cog)
-    bot.add_view(ShopView(cog, "halloween_2025"))
