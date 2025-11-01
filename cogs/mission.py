@@ -23,22 +23,69 @@ class MissionModal(ui.Modal):
         self.image_url = ui.TextInput(label="Image URL", placeholder="https://i.imgur.com/image.png", required=False, style=discord.TextStyle.short)
         self.footer_text = ui.TextInput(label="Footer Text", placeholder="✨ Let the magic inspire your journey! ✨", required=False, style=discord.TextStyle.short)
         self.color = ui.TextInput(label="Color", placeholder="gold, red, blue, or #FFD700", required=False, style=discord.TextStyle.short)
-        self.post_date = ui.TextInput(label="Post Date", placeholder="25:12:2024", style=discord.TextStyle.short)
-        self.post_time = ui.TextInput(label="Post Time (UTC)", placeholder="18:00", style=discord.TextStyle.short)
         
         if existing_data:
             self.description.default = existing_data.get('description', '')
             self.image_url.default = existing_data.get('image_url', '')
             self.footer_text.default = existing_data.get('footer_text', '')
             self.color.default = existing_data.get('color', 'gold')
-            if existing_data.get('post_time'):
-                post_dt = datetime.fromisoformat(existing_data['post_time']) if isinstance(existing_data['post_time'], str) else existing_data['post_time']
-                self.post_date.default = f"{post_dt.day:02d}:{post_dt.month:02d}:{post_dt.year}"
-                self.post_time.default = f"{post_dt.hour:02d}:{post_dt.minute:02d}"
         
-        for item in [self.title_input, self.description, self.image_url, self.footer_text, self.color, self.post_date, self.post_time]:
+        for item in [self.title_input, self.description, self.image_url, self.footer_text, self.color]:
             self.add_item(item)
 
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Show date/time modal next
+        view = DateTimeView(self.bot, {
+            "title": self.title_input.value,
+            "description": self.description.value,
+            "image_url": self.image_url.value or None,
+            "footer_text": self.footer_text.value or None,
+            "color": self.color.value or "gold",
+            "creator_id": interaction.user.id,
+            "channel_id": self.channel_id
+        }, self.mission_id)
+        
+        # Pass existing data for editing
+        if hasattr(self, 'existing_data'):
+            view.existing_data = self.existing_data
+        
+        await interaction.followup.send("Now set the posting date and time:", view=view, ephemeral=True)
+
+
+
+class DateTimeView(discord.ui.View):
+    def __init__(self, bot, mission_data, mission_id=None):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.mission_data = mission_data
+        self.mission_id = mission_id
+    
+    @discord.ui.button(label="Set Date & Time", style=discord.ButtonStyle.primary)
+    async def set_datetime(self, interaction: discord.Interaction, button: discord.ui.Button):
+        existing_data = getattr(self, 'existing_data', None)
+        modal = DateTimeModal(self.bot, self.mission_data, self.mission_id, existing_data)
+        await interaction.response.send_modal(modal)
+
+class DateTimeModal(discord.ui.Modal):
+    def __init__(self, bot, mission_data, mission_id=None, existing_data=None):
+        super().__init__(title="Set Posting Date & Time")
+        self.bot = bot
+        self.mission_data = mission_data
+        self.mission_id = mission_id
+        
+        self.post_date = discord.ui.TextInput(label="Post Date", placeholder="25:12:2024", style=discord.TextStyle.short)
+        self.post_time = discord.ui.TextInput(label="Post Time (UTC)", placeholder="18:00", style=discord.TextStyle.short)
+        
+        if existing_data and existing_data.get('post_time'):
+            post_dt = datetime.fromisoformat(existing_data['post_time']) if isinstance(existing_data['post_time'], str) else existing_data['post_time']
+            self.post_date.default = f"{post_dt.day:02d}:{post_dt.month:02d}:{post_dt.year}"
+            self.post_time.default = f"{post_dt.hour:02d}:{post_dt.minute:02d}"
+        
+        self.add_item(self.post_date)
+        self.add_item(self.post_time)
+    
     async def on_submit(self, interaction: discord.Interaction):
         try:
             date_parts = self.post_date.value.split(':')
@@ -58,32 +105,26 @@ class MissionModal(ui.Modal):
 
         await interaction.response.defer(ephemeral=True)
         
-        mission_data = {
-            "title": self.title_input.value,
-            "description": self.description.value,
-            "image_url": self.image_url.value or None,
-            "footer_text": self.footer_text.value or None,
-            "color": self.color.value or "gold",
-            "creator_id": interaction.user.id,
-            "channel_id": self.channel_id,
+        self.mission_data.update({
             "post_time": post_time_dt,
             "flight_numbers": "N/A",
             "custom_emojis": "N/A",
             "multiplier": 0,
             "deadline_hours": 0,
             "author_name": None
-        }
+        })
         
-        if self.mission_id is None:
-            await interaction.client.mission_db.create_mission(mission_data)
-            message = f"✅ Mission '{mission_data['title']}' scheduled!"
-        else:
-            await interaction.client.mission_db.update_mission(self.mission_id, mission_data)
-            message = f"✅ Mission '{mission_data['title']}' updated!"
-        
-        await interaction.followup.send(content=message, ephemeral=True)
-
-
+        try:
+            if self.mission_id is None:
+                await interaction.client.mission_db.create_mission(self.mission_data)
+                message = f"✅ Mission '{self.mission_data['title']}' scheduled!"
+            else:
+                await interaction.client.mission_db.update_mission(self.mission_id, self.mission_data)
+                message = f"✅ Mission '{self.mission_data['title']}' updated!"
+            
+            await interaction.followup.send(content=message, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Database error: {str(e)}", ephemeral=True)
 
 class Mission(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -258,6 +299,7 @@ class Mission(commands.Cog):
             return
 
         modal = MissionModal(self.bot, mission['channel_id'], mission_id=mission['id'], default_title=mission['title'], existing_data=mission)
+        modal.existing_data = mission  # Store for later use
         await interaction.response.send_modal(modal)
 
     async def _handle_delete_by_title(self, interaction, title):
@@ -269,7 +311,6 @@ class Mission(commands.Cog):
             else:
                 await interaction.followup.send(f"❌ Mission '{title}' not found or already deleted.", ephemeral=True)
         except Exception as e:
-            print(f"Error deleting mission {title}: {e}")
             await interaction.followup.send(f"❌ Error deleting mission: {str(e)}", ephemeral=True)
 
     async def _handle_preview_by_title(self, interaction, title):
