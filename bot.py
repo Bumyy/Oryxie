@@ -98,7 +98,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.utils')
             await self.load_extension('cogs.flight_generator_pdf')
-            await self.load_extension('cogs.special_events')
+            #await self.load_extension('cogs.special_events')
             await self.load_extension('cogs.shop_cog')
             await self.load_extension('cogs.mission')
             await self.load_extension('cogs.gate_assignment')
