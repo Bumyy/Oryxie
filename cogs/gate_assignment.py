@@ -23,28 +23,59 @@ def format_duration(seconds: int) -> str:
 
 class FlightDetailsModal(discord.ui.Modal):
     def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str):
-        super().__init__(title=f"Details for {event_name}")
-        self.sorted_attendees = sorted_attendees
-
-        # Ensure default message fits in modal
-        safe_default = default_message[:1800] if len(default_message) > 1800 else default_message
+        print(f"[DEBUG] FlightDetailsModal.__init__ called")
+        print(f"[DEBUG] Event name: {event_name}")
+        print(f"[DEBUG] Attendees count: {len(sorted_attendees)}")
+        print(f"[DEBUG] Default message length: {len(default_message)}")
+        print(f"[DEBUG] Flight number: {flight_number}")
         
-        self.message_content = discord.ui.TextInput(
-            label="Event Message (Edit as needed)",
-            style=discord.TextStyle.paragraph,
-            default=safe_default,
-            max_length=1800
-        )
-        
-        self.gates = discord.ui.TextInput(
-            label=f"Gates (Need {len(self.sorted_attendees)}) - One per line",
-            style=discord.TextStyle.paragraph,
-            placeholder="Terminal 1A\nA1\nA2\nA3\nA4\n\nTerminal 2B\nB1\nB2",
-            max_length=1000
-        )
+        try:
+            super().__init__(title=f"Details for {event_name}")
+            print(f"[DEBUG] Modal superclass initialized successfully")
+            
+            self.sorted_attendees = sorted_attendees
 
-        self.add_item(self.message_content)
-        self.add_item(self.gates)
+            # Ensure default message fits in modal
+            safe_default = default_message[:1800] if len(default_message) > 1800 else default_message
+            print(f"[DEBUG] Safe default message length: {len(safe_default)}")
+            
+            try:
+                self.message_content = discord.ui.TextInput(
+                    label="Event Message (Edit as needed)",
+                    style=discord.TextStyle.paragraph,
+                    default=safe_default,
+                    max_length=1800
+                )
+                print(f"[DEBUG] Message content TextInput created successfully")
+            except Exception as e:
+                print(f"[ERROR] Failed to create message_content TextInput: {e}")
+                raise
+            
+            try:
+                self.gates = discord.ui.TextInput(
+                    label=f"Gates (Need {len(self.sorted_attendees)}) - One per line",
+                    style=discord.TextStyle.paragraph,
+                    placeholder="Terminal 1A\nA1\nA2\nA3\nA4\n\nTerminal 2B\nB1\nB2",
+                    max_length=1000
+                )
+                print(f"[DEBUG] Gates TextInput created successfully")
+            except Exception as e:
+                print(f"[ERROR] Failed to create gates TextInput: {e}")
+                raise
+
+            try:
+                self.add_item(self.message_content)
+                print(f"[DEBUG] Message content added to modal")
+                self.add_item(self.gates)
+                print(f"[DEBUG] Gates added to modal")
+            except Exception as e:
+                print(f"[ERROR] Failed to add items to modal: {e}")
+                raise
+                
+            print(f"[DEBUG] FlightDetailsModal initialization completed successfully")
+        except Exception as e:
+            print(f"[ERROR] FlightDetailsModal initialization failed: {e}")
+            raise
 
     async def send_with_retry(self, interaction: discord.Interaction, content: str, max_retries: int = 3):
         """Send message with retry logic for rate limiting"""
@@ -172,35 +203,77 @@ class FlightDetailsModal(discord.ui.Modal):
 
 class GateAssignmentView(discord.ui.View):
     def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str):
-        super().__init__(timeout=180)
-        self.event_name = event_name
-        self.sorted_attendees = sorted_attendees
-        self.default_message = default_message
-        self.flight_number = flight_number
+        print(f"[DEBUG] GateAssignmentView.__init__ called")
+        print(f"[DEBUG] Event name: {event_name}")
+        print(f"[DEBUG] Attendees count: {len(sorted_attendees)}")
+        print(f"[DEBUG] Default message length: {len(default_message)}")
+        print(f"[DEBUG] Flight number: {flight_number}")
+        
+        try:
+            super().__init__(timeout=180)
+            print(f"[DEBUG] View superclass initialized")
+            
+            self.event_name = event_name
+            self.sorted_attendees = sorted_attendees
+            self.default_message = default_message
+            self.flight_number = flight_number
+            
+            print(f"[DEBUG] GateAssignmentView initialization completed")
+        except Exception as e:
+            print(f"[ERROR] GateAssignmentView initialization failed: {e}")
+            raise
 
     @discord.ui.button(label="Assign Gates", style=discord.ButtonStyle.primary)
     async def assign_gates_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        print(f"[DEBUG] assign_gates_button clicked by {interaction.user}")
+        print(f"[DEBUG] Event name: {self.event_name}")
+        print(f"[DEBUG] Attendees count: {len(self.sorted_attendees)}")
+        print(f"[DEBUG] Default message length: {len(self.default_message)}")
+        print(f"[DEBUG] Flight number: {self.flight_number}")
+        print(f"[DEBUG] Interaction response done: {interaction.response.is_done()}")
+        
         try:
             # Truncate default message if too long for modal
             truncated_message = self.default_message[:1800] if len(self.default_message) > 1800 else self.default_message
+            print(f"[DEBUG] Truncated message length: {len(truncated_message)}")
             
+            print(f"[DEBUG] Creating FlightDetailsModal...")
             modal = FlightDetailsModal(self.event_name, self.sorted_attendees, truncated_message, self.flight_number)
+            print(f"[DEBUG] FlightDetailsModal created successfully")
+            
+            print(f"[DEBUG] Sending modal via interaction.response.send_modal...")
             await interaction.response.send_modal(modal)
-        except discord.InteractionResponded:
-            logger.warning("Interaction already responded to")
+            print(f"[DEBUG] Modal sent successfully")
+            
+        except discord.InteractionResponded as e:
+            print(f"[ERROR] Interaction already responded: {e}")
+            logger.warning(f"Interaction already responded to: {e}")
             return
         except discord.HTTPException as e:
+            print(f"[ERROR] Discord HTTP Exception: {e}")
+            print(f"[ERROR] HTTP Status: {getattr(e, 'status', 'Unknown')}")
+            print(f"[ERROR] HTTP Response: {getattr(e, 'response', 'Unknown')}")
             logger.error(f"Failed to send modal: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("Failed to open gate assignment form. Please try again.", ephemeral=True)
-            else:
-                await interaction.followup.send("Failed to open gate assignment form. Please try again.", ephemeral=True)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(f"Failed to open gate assignment form. HTTP Error: {e}", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"Failed to open gate assignment form. HTTP Error: {e}", ephemeral=True)
+            except Exception as send_error:
+                print(f"[ERROR] Failed to send error message: {send_error}")
         except Exception as e:
+            print(f"[ERROR] Unexpected error opening modal: {e}")
+            print(f"[ERROR] Error type: {type(e)}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
             logger.error(f"Unexpected error opening modal: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
-            else:
-                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
+            except Exception as send_error:
+                print(f"[ERROR] Failed to send error message: {send_error}")
 
 class GateAssignment(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -259,54 +332,77 @@ class GateAssignment(commands.Cog):
     @app_commands.command(name="gate_assignment", description="Assigns event gates to attendees based on rank.")
     @app_commands.autocomplete(event=event_autocomplete)
     async def gate_assignment(self, interaction: discord.Interaction, event: str, flight_number: str = None):
+        print(f"[DEBUG] gate_assignment command called by {interaction.user}")
+        print(f"[DEBUG] Event parameter: {event}")
+        print(f"[DEBUG] Flight number parameter: {flight_number}")
+        
         await interaction.response.defer(ephemeral=True)
+        print(f"[DEBUG] Interaction deferred")
 
         if not any(role.name.lower() == "staff" for role in interaction.user.roles):
+            print(f"[DEBUG] User {interaction.user} lacks Staff role")
             await interaction.followup.send("You need the Staff role to use this command.", ephemeral=True)
             return
+        print(f"[DEBUG] User has Staff role")
 
         try:
             event_id = int(event)
+            print(f"[DEBUG] Parsed event ID: {event_id}")
             scheduled_event = discord.utils.get(interaction.guild.scheduled_events, id=event_id)
-        except (ValueError, TypeError):
+            print(f"[DEBUG] Found scheduled event: {scheduled_event}")
+        except (ValueError, TypeError) as e:
+            print(f"[ERROR] Failed to parse event ID: {e}")
             await interaction.followup.send("Invalid event selected.", ephemeral=True)
             return
 
         if not scheduled_event:
+            print(f"[ERROR] Scheduled event not found for ID: {event_id}")
             await interaction.followup.send("Event not found.", ephemeral=True)
             return
 
+        print(f"[DEBUG] Getting event attendees...")
         user_list = [user async for user in scheduled_event.users()]
+        print(f"[DEBUG] Found {len(user_list)} users in event")
+        
         if not user_list:
+            print(f"[DEBUG] No attendees found")
             await interaction.followup.send("No attendees found for this event.", ephemeral=True)
             return
 
         attendees = [member for user in user_list if (member := interaction.guild.get_member(user.id)) is not None]
+        print(f"[DEBUG] Found {len(attendees)} valid attendees")
         
         sorted_attendees = sorted(attendees, key=self.get_member_rank_priority)
+        print(f"[DEBUG] Sorted attendees by rank")
 
         route_info = None
         status_message = "Proceed to assign gates."
         if flight_number:
+            print(f"[DEBUG] Fetching route info for flight: {flight_number}")
             try:
                 route_info = await self.routes_model.find_route_by_fltnum(flight_number)
+                print(f"[DEBUG] Route info result: {route_info}")
                 if route_info:
                     status_message = "Route details found and pre-filled."
                 else:
                     status_message = "Route not found for the given flight number."
             except Exception as e:
+                print(f"[ERROR] Error fetching route details: {e}")
                 logger.error(f"Error fetching route details: {e}")
                 status_message = "An error occurred while fetching route details."
 
         event_time = scheduled_event.start_time.strftime("%H:%Mz")
         current_date = datetime.utcnow().strftime("%d/%m/%Y")
+        print(f"[DEBUG] Event time: {event_time}, Date: {current_date}")
         
         dep = route_info.get('dep', '') if route_info else ''
         arr = route_info.get('arr', '') if route_info else ''
         duration = format_duration(route_info['duration']) if route_info and route_info.get('duration') else ''
         aircraft_text = ', '.join(ac.get('name', ac.get('icao', 'Unknown')) for ac in route_info['aircraft']) if route_info and route_info.get('aircraft') else 'Not specified'
+        print(f"[DEBUG] Route details - DEP: {dep}, ARR: {arr}, Duration: {duration}, Aircraft: {aircraft_text}")
 
         callsign = self.generate_callsign(flight_number) if flight_number else ''
+        print(f"[DEBUG] Generated callsign: {callsign}")
         
         default_message = f"""{scheduled_event.name}
 **📅 Date:** {current_date}
@@ -326,9 +422,22 @@ class GateAssignment(commands.Cog):
 **📦 Cargo:** kg
 **☁️ Cruise Alt:** FL
 **💨 Cruise Speed:** M"""
-
-        view = GateAssignmentView(scheduled_event.name, sorted_attendees, default_message, flight_number)
-        await interaction.followup.send(status_message, view=view, ephemeral=True)
+        
+        print(f"[DEBUG] Default message length: {len(default_message)}")
+        print(f"[DEBUG] Creating GateAssignmentView...")
+        
+        try:
+            view = GateAssignmentView(scheduled_event.name, sorted_attendees, default_message, flight_number)
+            print(f"[DEBUG] GateAssignmentView created successfully")
+            
+            print(f"[DEBUG] Sending followup message with view...")
+            await interaction.followup.send(status_message, view=view, ephemeral=True)
+            print(f"[DEBUG] Followup message sent successfully")
+        except Exception as e:
+            print(f"[ERROR] Failed to create view or send message: {e}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            raise
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(GateAssignment(bot))

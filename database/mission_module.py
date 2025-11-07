@@ -45,7 +45,7 @@ class MissionDB:
         await self.db.execute("""
             UPDATE scheduled_events SET
             title = %s, description = %s, image_url = %s, footer_text = %s, color = %s, author_name = %s,
-            flight_numbers = %s, custom_emojis = %s, multiplier = %s, deadline_hours = %s, post_time = %s
+            flight_numbers = %s, custom_emojis = %s, multiplier = %s, deadline_hours = %s, post_time = %s, channel_id = %s
             WHERE id = %s
         """, (
             mission_data["title"], mission_data["description"],
@@ -53,11 +53,12 @@ class MissionDB:
             mission_data["color"], mission_data.get("author_name"),
             mission_data["flight_numbers"], mission_data.get("custom_emojis"),
             mission_data.get("multiplier", 0), mission_data.get("deadline_hours", 0),
-            mission_data["post_time"], mission_id
+            mission_data["post_time"], mission_data["channel_id"], mission_id
         ))
 
     async def delete_mission_by_title(self, title: str) -> int:
-        return await self.db.execute("DELETE FROM scheduled_events WHERE title = %s", (title,))
+        result = await self.db.execute("DELETE FROM scheduled_events WHERE title = %s", (title,))
+        return result if result is not None else 0
 
     async def mark_mission_posted(self, mission_id: int) -> None:
         await self.db.execute("UPDATE scheduled_events SET is_posted = 1 WHERE id = %s", (mission_id,))

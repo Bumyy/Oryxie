@@ -60,8 +60,8 @@ class ShopModel:
     async def delete_shop(self, shop_name: str) -> bool:
         """Delete shop and all its items"""
         try:
-            await self.db.execute("DELETE FROM shops WHERE shop_name = %s", (shop_name,))
-            return True
+            result = await self.db.execute("DELETE FROM shops WHERE shop_name = %s", (shop_name,))
+            return result > 0
         except Exception:
             return False
     
@@ -126,8 +126,8 @@ class ShopModel:
     async def delete_item(self, item_id: int) -> bool:
         """Delete item"""
         try:
-            await self.db.execute("DELETE FROM shop_items WHERE id = %s", (item_id,))
-            return True
+            result = await self.db.execute("DELETE FROM shop_items WHERE id = %s", (item_id,))
+            return result > 0
         except Exception:
             return False
     
