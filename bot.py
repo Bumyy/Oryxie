@@ -102,9 +102,9 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.shop_cog')
             await self.load_extension('cogs.mission')
             await self.load_extension('cogs.gate_assignment')
+            await self.load_extension('cogs.callsign_finder')
             
             #await self.load_extension('cogs.live_flights')
-            #await self.load_extension('cogs.callsign_finder')
             #await self.load_extension('cogs.remainder')
             
             

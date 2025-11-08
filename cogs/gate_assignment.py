@@ -7,6 +7,7 @@ from datetime import datetime
 import logging
 from typing import List
 import asyncio
+import re
 
 from database.routes_model import RoutesModel
 
@@ -226,30 +227,23 @@ class GateAssignmentView(discord.ui.View):
             logger.warning(f"Interaction already responded to: {e}")
             return
         except discord.HTTPException as e:
-            print(f"[ERROR] Discord HTTP Exception: {e}")
-            print(f"[ERROR] HTTP Status: {getattr(e, 'status', 'Unknown')}")
-            print(f"[ERROR] HTTP Response: {getattr(e, 'response', 'Unknown')}")
             logger.error(f"Failed to send modal: {e}")
             try:
                 if not interaction.response.is_done():
-                    await interaction.response.send_message(f"Failed to open gate assignment form. HTTP Error: {e}", ephemeral=True)
+                    await interaction.response.send_message("Failed to open gate assignment form. Please try again.", ephemeral=True)
                 else:
-                    await interaction.followup.send(f"Failed to open gate assignment form. HTTP Error: {e}", ephemeral=True)
-            except Exception as send_error:
-                print(f"[ERROR] Failed to send error message: {send_error}")
+                    await interaction.followup.send("Failed to open gate assignment form. Please try again.", ephemeral=True)
+            except Exception:
+                logger.error("Failed to send error message to user")
         except Exception as e:
-            print(f"[ERROR] Unexpected error opening modal: {e}")
-            print(f"[ERROR] Error type: {type(e)}")
-            import traceback
-            print(f"[ERROR] Traceback: {traceback.format_exc()}")
             logger.error(f"Unexpected error opening modal: {e}")
             try:
                 if not interaction.response.is_done():
-                    await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+                    await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
                 else:
-                    await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
-            except Exception as send_error:
-                print(f"[ERROR] Failed to send error message: {send_error}")
+                    await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except Exception:
+                logger.error("Failed to send error message to user")
 
 class GateAssignment(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -276,6 +270,7 @@ class GateAssignment(commands.Cog):
             return 999
 
         user_roles = [role.name for role in member.roles]
+        best_priority = 999
         
         for rank_index, rank in enumerate(self.ranks):
             rank_parts = [part.strip() for part in rank.split('|')]
@@ -286,22 +281,24 @@ class GateAssignment(commands.Cog):
                     role_lower = role.lower()
                     rank_lower = rank_part.lower()
                     
+                    matched = False
                     # Strategy 1: Exact match
                     if rank_lower == role_lower:
-                        return rank_index
-                    
+                        matched = True
                     # Strategy 2: Contains match
-                    if rank_lower in role_lower:
-                        return rank_index
-                    
+                    elif rank_lower in role_lower:
+                        matched = True
                     # Strategy 3: Remove spaces and special chars
-                    import re
-                    clean_rank = re.sub(r'[^a-z0-9]', '', rank_lower)
-                    clean_role = re.sub(r'[^a-z0-9]', '', role_lower)
-                    if clean_rank in clean_role and len(clean_rank) > 3:
-                        return rank_index
+                    else:
+                        clean_rank = re.sub(r'[^a-z0-9]', '', rank_lower)
+                        clean_role = re.sub(r'[^a-z0-9]', '', role_lower)
+                        if clean_rank in clean_role and len(clean_rank) > 3:
+                            matched = True
+                    
+                    if matched and rank_index < best_priority:
+                        best_priority = rank_index
         
-        return 999
+        return best_priority
     
     def generate_callsign(self, flight_number: str) -> str:
         """Generate callsign based on flight number prefix."""
@@ -350,14 +347,7 @@ class GateAssignment(commands.Cog):
         attendees = [member for user in user_list if (member := interaction.guild.get_member(user.id)) is not None]
         sorted_attendees = sorted(attendees, key=self.get_member_rank_priority)
         
-        # Debug: Send rank assignment details to Discord
-        debug_info = "**🔍 Rank Assignment Debug:**\n"
-        for i, member in enumerate(sorted_attendees):
-            priority = self.get_member_rank_priority(member)
-            user_roles = [role.name for role in member.roles if role.name != "@everyone"]
-            debug_info += f"{i+1}. {member.display_name} (priority: {priority}) - Roles: {', '.join(user_roles) if user_roles else 'None'}\n"
-        
-        await interaction.followup.send(debug_info[:2000], ephemeral=True)
+
 
         route_info = None
         status_message = "Proceed to assign gates."
