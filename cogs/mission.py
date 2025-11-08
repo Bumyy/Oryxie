@@ -47,7 +47,7 @@ class MissionModal(ui.Modal):
             "channel_id": self.channel_id
         }, self.mission_id)
         
-        # Pass existing data for editing
+        
         if hasattr(self, 'existing_data'):
             view.existing_data = self.existing_data
         
