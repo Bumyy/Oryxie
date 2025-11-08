@@ -333,6 +333,15 @@ class GateAssignment(commands.Cog):
 
         attendees = [member for user in user_list if (member := interaction.guild.get_member(user.id)) is not None]
         sorted_attendees = sorted(attendees, key=self.get_member_rank_priority)
+        
+        # Debug: Send rank assignment details to Discord
+        debug_info = "**🔍 Rank Assignment Debug:**\n"
+        for i, member in enumerate(sorted_attendees):
+            priority = self.get_member_rank_priority(member)
+            user_roles = [role.name for role in member.roles if role.name != "@everyone"]
+            debug_info += f"{i+1}. {member.display_name} (priority: {priority}) - Roles: {', '.join(user_roles) if user_roles else 'None'}\n"
+        
+        await interaction.followup.send(debug_info[:2000], ephemeral=True)
 
         route_info = None
         status_message = "Proceed to assign gates."
