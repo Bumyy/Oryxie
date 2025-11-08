@@ -26,7 +26,7 @@ class FlightDetailsModal(discord.ui.Modal):
 
         
         try:
-            title = " ".join(event_name.split()[:4])
+            title = " ".join(event_name.split()[:4])[:45]
             super().__init__(title=title)
             
             self.sorted_attendees = sorted_attendees
