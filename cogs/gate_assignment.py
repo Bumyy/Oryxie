@@ -222,7 +222,7 @@ class GateAssignmentView(discord.ui.View):
             await interaction.response.send_modal(modal)
             
         except discord.InteractionResponded as e:
-            print(f"[ERROR] Interaction already responded: {e}")
+            logger.error(f"Interaction already responded: {e}")
             logger.warning(f"Interaction already responded to: {e}")
             return
         except discord.HTTPException as e:
