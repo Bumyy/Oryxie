@@ -282,7 +282,23 @@ class GateAssignment(commands.Cog):
             
             for role in user_roles:
                 for rank_part in rank_parts:
-                    if rank_part == role or rank_part in role:
+                    # Multiple matching strategies
+                    role_lower = role.lower()
+                    rank_lower = rank_part.lower()
+                    
+                    # Strategy 1: Exact match
+                    if rank_lower == role_lower:
+                        return rank_index
+                    
+                    # Strategy 2: Contains match
+                    if rank_lower in role_lower:
+                        return rank_index
+                    
+                    # Strategy 3: Remove spaces and special chars
+                    import re
+                    clean_rank = re.sub(r'[^a-z0-9]', '', rank_lower)
+                    clean_role = re.sub(r'[^a-z0-9]', '', role_lower)
+                    if clean_rank in clean_role and len(clean_rank) > 3:
                         return rank_index
         
         return 999
