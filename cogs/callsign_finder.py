@@ -2,13 +2,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from typing import Optional, Set, List
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 CALLSIGN_PREFIX = "QRV"
-RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ROLE_ID", 0))
 
 async def is_recruiter_or_has_admin_perm(interaction: discord.Interaction) -> bool:
     user = interaction.user
@@ -16,10 +11,9 @@ async def is_recruiter_or_has_admin_perm(interaction: discord.Interaction) -> bo
     if user.guild_permissions.administrator:
         return True
 
-    if RECRUITER_ROLE_ID > 0:
-        for role in user.roles:
-            if role.id == RECRUITER_ROLE_ID:
-                return True
+    for role in user.roles:
+        if "recruiter" in role.name.lower():
+            return True
     
     return False
 
