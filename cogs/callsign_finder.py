@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 CALLSIGN_PREFIX = "QRV"
-RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ROLE_ID"))
+RECRUITER_ROLE_ID = int(os.getenv("RECRUITER_ROLE_ROLE_ID", 0))
 
 async def is_recruiter_or_has_admin_perm(interaction: discord.Interaction) -> bool:
     user = interaction.user
@@ -16,9 +16,10 @@ async def is_recruiter_or_has_admin_perm(interaction: discord.Interaction) -> bo
     if user.guild_permissions.administrator:
         return True
 
-    for role in user.roles:
-        if role.id == RECRUITER_ROLE_ID:
-            return True
+    if RECRUITER_ROLE_ID > 0:
+        for role in user.roles:
+            if role.id == RECRUITER_ROLE_ID:
+                return True
     
     return False
 
@@ -243,8 +244,8 @@ class CustomRangeModal(discord.ui.Modal):
             start_num = int(self.start.value)
             end_num = int(self.end.value)
             
-            if start_num > end_num or start_num < 1 or end_num > 999:
-                await interaction.followup.send("❌ Invalid range. Start must be less than end, and both must be between 1-999.")
+            if start_num > end_num or start_num < 1 or end_num > 999 or (end_num - start_num) > 100:
+                await interaction.followup.send("❌ Invalid range. Start must be less than end, both must be between 1-999, and range cannot exceed 100 callsigns.")
                 return
                 
             taken_callsigns = await self.cog.bot.pilots_model.get_all_callsigns()
