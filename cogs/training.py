@@ -245,7 +245,9 @@ class TrainingCogV2(commands.Cog, name="Training V2"):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        await self.start_training_flow(member)
+        # Only run training for the specific server
+        if member.guild.id == 1073981884075352105:
+            await self.start_training_flow(member)
 
     async def start_training_flow(self, member: discord.Member):
         training_channel = self.bot.get_channel(TRAINING_CHANNEL_ID)
