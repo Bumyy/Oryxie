@@ -38,6 +38,8 @@ class PirepsModel:
                 p.date,
                 p.multi,
                 pi.name AS pilot_name,
+                pi.ifuserid,
+                pi.ifc,
                 a.name AS aircraft_name
             FROM
                 pireps AS p
