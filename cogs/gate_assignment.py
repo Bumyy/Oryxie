@@ -265,40 +265,46 @@ class GateAssignment(commands.Cog):
             logger.error(f"CRITICAL: Error reading assets/rank.json: {e}. The gate assignment command will not work.")
             return []
 
-    def get_member_rank_priority(self, member: discord.Member) -> int:
-        if not self.ranks:
-            return 999
+    async def get_pilot_total_hours(self, pilot_id: int) -> float:
+        """Get total flight hours for a pilot from accepted PIREPs"""
+        query = "SELECT SUM(flighttime) as total_seconds FROM pireps WHERE pilotid = %s AND status = 1"
+        result = await self.bot.db_manager.fetch_one(query, (pilot_id,))
+        if result and result['total_seconds']:
+            return round(result['total_seconds'] / 3600, 1)
+        return 0.0
 
-        user_roles = [role.name for role in member.roles]
-        best_priority = 999
+    async def get_member_priority(self, member: discord.Member) -> tuple:
+        """
+        Returns (priority_group, sort_value) where:
+        - priority_group: 0=staff, 1=pilot_of_month, 2=regular
+        - sort_value: callsign_number for staff, -hours for others (negative for desc sort)
+        """
+        # Try to identify pilot
+        pilot_result = await self.bot.pilots_model.identify_pilot(member)
         
-        for rank_index, rank in enumerate(self.ranks):
-            rank_parts = [part.strip() for part in rank.split('|')]
+        if pilot_result['success']:
+            callsign = pilot_result['pilot_data']['callsign']
             
-            for role in user_roles:
-                for rank_part in rank_parts:
-                    # Multiple matching strategies
-                    role_lower = role.lower()
-                    rank_lower = rank_part.lower()
-                    
-                    matched = False
-                    # Strategy 1: Exact match
-                    if rank_lower == role_lower:
-                        matched = True
-                    # Strategy 2: Contains match
-                    elif rank_lower in role_lower:
-                        matched = True
-                    # Strategy 3: Remove spaces and special chars
-                    else:
-                        clean_rank = re.sub(r'[^a-z0-9]', '', rank_lower)
-                        clean_role = re.sub(r'[^a-z0-9]', '', role_lower)
-                        if clean_rank in clean_role and len(clean_rank) > 3:
-                            matched = True
-                    
-                    if matched and rank_index < best_priority:
-                        best_priority = rank_index
+            # Check if staff callsign (QRV001-QRV019)
+            if callsign.startswith('QRV'):
+                try:
+                    callsign_num = int(callsign[3:])  # Extract number after QRV
+                    if 1 <= callsign_num <= 19:
+                        return (0, callsign_num)  # Staff priority, sorted by callsign number
+                except ValueError:
+                    pass
+            
+            # Get flight hours for non-staff
+            hours = await self.get_pilot_total_hours(pilot_result['pilot_data']['id'])
+        else:
+            hours = 0.0
         
-        return best_priority
+        # Check for Pilot of the Month role
+        if any(role.name.lower() == "pilot of the month" for role in member.roles):
+            return (1, -hours)  # Second priority, sorted by hours desc
+        
+        # Regular pilot
+        return (2, -hours)  # Third priority, sorted by hours desc
     
     def generate_callsign(self, flight_number: str) -> str:
         """Generate callsign based on flight number prefix."""
@@ -345,7 +351,37 @@ class GateAssignment(commands.Cog):
             return
 
         attendees = [member for user in user_list if (member := interaction.guild.get_member(user.id)) is not None]
-        sorted_attendees = sorted(attendees, key=self.get_member_rank_priority)
+        
+        # Get priorities for all attendees
+        attendee_priorities = []
+        debug_info = []
+        
+        for member in attendees:
+            priority = await self.get_member_priority(member)
+            attendee_priorities.append((member, priority))
+            
+            # Build debug info
+            pilot_result = await self.bot.pilots_model.identify_pilot(member)
+            callsign = pilot_result['pilot_data']['callsign'] if pilot_result['success'] else 'No callsign'
+            
+            if priority[0] == 0:  # Staff
+                category = 'Staff callsign'
+            elif priority[0] == 1:  # Pilot of the month
+                hours = -priority[1]  # Convert back from negative
+                category = f'Pilot of the month : {hours}hrs'
+            else:  # Regular pilot
+                hours = -priority[1]  # Convert back from negative
+                category = f'{hours}hrs'
+            
+            debug_info.append(f"{member.mention} : {callsign} : {category}")
+        
+        # Sort by priority tuple (group first, then sort value)
+        attendee_priorities.sort(key=lambda x: x[1])
+        sorted_attendees = [member for member, _ in attendee_priorities]
+        
+        # Send debug info as ephemeral message
+        debug_message = "**🔍 Priority Debug Info:**\n" + "\n".join(debug_info)
+        await interaction.followup.send(debug_message, ephemeral=True)
         
 
 
