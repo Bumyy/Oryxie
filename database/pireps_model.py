@@ -61,35 +61,7 @@ class PirepsModel:
 
         return pending_reports
 
-    async def update_pirep_status(self, pirep_id: int, status: int, rejected_by: str = None, rejection_reason: str = None) -> int:
-        """
-        Updates the status of a PIREP and optionally sets rejection details.
-        
-        Args:
-            pirep_id: The ID of the PIREP to update
-            status: The new status (0=pending, 1=accepted, 2=rejected)
-            rejected_by: Discord ID of who rejected it (for status=2)
-            rejection_reason: Reason for rejection (for status=2)
-            
-        Returns:
-            The number of rows affected by the update
-        """
-        if status == 2:  # Rejected
-            query = """
-                UPDATE pireps 
-                SET status = %s, rejected_by = %s, rejection_reason = %s, rejection_date = NOW()
-                WHERE id = %s
-            """
-            args = (status, rejected_by, rejection_reason, pirep_id)
-        else:  # Accepted or Pending
-            query = """
-                UPDATE pireps 
-                SET status = %s
-                WHERE id = %s
-            """
-            args = (status, pirep_id)
-        
-        return await self.db.execute(query, args)
+
 
     async def get_accepted_pireps(self) -> list[dict]:
         """
