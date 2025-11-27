@@ -61,6 +61,8 @@ class PirepsModel:
 
         return pending_reports
 
+
+
     async def get_accepted_pireps(self) -> list[dict]:
         """
         Fetches all PIREPs with a status of 1 (accepted), joining with the pilots
@@ -103,3 +105,100 @@ class PirepsModel:
             report['formatted_flighttime'] = self._format_flight_time(report.get('flighttime'))
 
         return accepted_reports
+
+    async def get_rejected_pireps_last_10_days(self) -> list[dict]:
+        """
+        Fetches all PIREPs with a status of 2 (rejected) from the last 10 days,
+        joining with the pilots and aircraft tables to get their names.
+        Also includes rejection reason and who rejected it if available.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a rejected PIREP
+            with pilot and aircraft information included.
+        """
+
+        query = """
+            SELECT
+                p.id AS pirep_id,
+                p.flightnum,
+                p.departure,
+                p.arrival,
+                p.flighttime,
+                p.pilotid,
+                p.fuelused,
+                p.date,
+                p.multi,
+                p.rejected_by,
+                p.rejection_reason,
+                p.rejection_date,
+                pi.name AS pilot_name,
+                pi.ifuserid,
+                pi.ifc,
+                a.name AS aircraft_name
+            FROM
+                pireps AS p
+            INNER JOIN
+                pilots AS pi ON p.pilotid = pi.id
+            INNER JOIN
+                aircraft AS a ON p.aircraftid = a.id
+            WHERE
+                p.status = %s
+                AND p.rejection_date >= DATE_SUB(NOW(), INTERVAL 10 DAY)
+            ORDER BY
+                p.rejection_date DESC
+        """
+        args = (2,)
+        
+        rejected_reports = await self.db.fetch_all(query, args)
+        
+        for report in rejected_reports:
+            report['formatted_flighttime'] = self._format_flight_time(report.get('flighttime'))
+
+        return rejected_reports
+
+    async def get_pirep_by_id(self, pirep_id: int) -> dict:
+        """
+        Fetches a single PIREP by its ID with pilot and aircraft information.
+        
+        Args:
+            pirep_id: The ID of the PIREP to fetch
+            
+        Returns:
+            A dictionary representing the PIREP or None if not found
+        """
+        query = """
+            SELECT
+                p.id AS pirep_id,
+                p.flightnum,
+                p.departure,
+                p.arrival,
+                p.flighttime,
+                p.pilotid,
+                p.fuelused,
+                p.date,
+                p.multi,
+                p.status,
+                p.rejected_by,
+                p.rejection_reason,
+                p.rejection_date,
+                pi.name AS pilot_name,
+                pi.ifuserid,
+                pi.ifc,
+                a.name AS aircraft_name
+            FROM
+                pireps AS p
+            INNER JOIN
+                pilots AS pi ON p.pilotid = pi.id
+            INNER JOIN
+                aircraft AS a ON p.aircraftid = a.id
+            WHERE
+                p.id = %s
+        """
+        args = (pirep_id,)
+        
+        pirep = await self.db.fetch_one(query, args)
+        
+        if pirep:
+            pirep['formatted_flighttime'] = self._format_flight_time(pirep.get('flighttime'))
+        
+        return pirep

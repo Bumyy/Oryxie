@@ -116,9 +116,16 @@ class RoutesModel:
         
         args = (fltnum, start_pattern, middle_pattern, end_pattern)
         
+        print(f"DEBUG ROUTES: Searching for flight number: '{fltnum}'")
+        print(f"DEBUG ROUTES: Query patterns - exact: '{fltnum}', start: '{start_pattern}', middle: '{middle_pattern}', end: '{end_pattern}'")
+        
         results = await self.db.fetch_all(query, args)
+        print(f"DEBUG ROUTES: Query returned {len(results) if results else 0} results")
+        if results:
+            print(f"DEBUG ROUTES: First result: {results[0]}")
         
         if not results:
+            print(f"DEBUG ROUTES: No results found for flight number: '{fltnum}'")
             return None
         
         route_data = {

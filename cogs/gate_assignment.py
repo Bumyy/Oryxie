@@ -10,6 +10,7 @@ import asyncio
 import re
 
 from database.routes_model import RoutesModel
+from services.priority_service import PriorityService
 
 logger = logging.getLogger('oryxie.cogs.gate_assignment')
 
@@ -250,6 +251,7 @@ class GateAssignment(commands.Cog):
         self.bot = bot
         self.ranks = self.load_ranks()
         self.routes_model = RoutesModel(self.bot.db_manager)
+        self.priority_service = PriorityService(self.bot)
 
     def load_ranks(self):
         try:
@@ -265,46 +267,7 @@ class GateAssignment(commands.Cog):
             logger.error(f"CRITICAL: Error reading assets/rank.json: {e}. The gate assignment command will not work.")
             return []
 
-    async def get_pilot_total_hours(self, pilot_id: int) -> float:
-        """Get total flight hours for a pilot from accepted PIREPs"""
-        query = "SELECT SUM(flighttime) as total_seconds FROM pireps WHERE pilotid = %s AND status = 1"
-        result = await self.bot.db_manager.fetch_one(query, (pilot_id,))
-        if result and result['total_seconds']:
-            return round(result['total_seconds'] / 3600, 1)
-        return 0.0
 
-    async def get_member_priority(self, member: discord.Member) -> tuple:
-        """
-        Returns (priority_group, sort_value) where:
-        - priority_group: 0=staff, 1=pilot_of_month, 2=regular
-        - sort_value: callsign_number for staff, -hours for others (negative for desc sort)
-        """
-        # Try to identify pilot
-        pilot_result = await self.bot.pilots_model.identify_pilot(member)
-        
-        if pilot_result['success']:
-            callsign = pilot_result['pilot_data']['callsign']
-            
-            # Check if staff callsign (QRV001-QRV019)
-            if callsign.startswith('QRV'):
-                try:
-                    callsign_num = int(callsign[3:])  # Extract number after QRV
-                    if 1 <= callsign_num <= 19:
-                        return (0, callsign_num)  # Staff priority, sorted by callsign number
-                except ValueError:
-                    pass
-            
-            # Get flight hours for non-staff
-            hours = await self.get_pilot_total_hours(pilot_result['pilot_data']['id'])
-        else:
-            hours = 0.0
-        
-        # Check for Pilot of the Month role
-        if any(role.name.lower() == "pilot of the month" for role in member.roles):
-            return (1, -hours)  # Second priority, sorted by hours desc
-        
-        # Regular pilot
-        return (2, -hours)  # Third priority, sorted by hours desc
     
     def generate_callsign(self, flight_number: str) -> str:
         """Generate callsign based on flight number prefix."""
@@ -352,32 +315,11 @@ class GateAssignment(commands.Cog):
 
         attendees = [member for user in user_list if (member := interaction.guild.get_member(user.id)) is not None]
         
-        # Get priorities for all attendees
-        attendee_priorities = []
-        debug_info = []
+        # Sort attendees by priority
+        sorted_attendees = await self.priority_service.sort_members_by_priority(attendees)
         
-        for member in attendees:
-            priority = await self.get_member_priority(member)
-            attendee_priorities.append((member, priority))
-            
-            # Build debug info
-            pilot_result = await self.bot.pilots_model.identify_pilot(member)
-            callsign = pilot_result['pilot_data']['callsign'] if pilot_result['success'] else 'No callsign'
-            
-            if priority[0] == 0:  # Staff
-                category = 'Staff callsign'
-            elif priority[0] == 1:  # Pilot of the month
-                hours = -priority[1]  # Convert back from negative
-                category = f'Pilot of the month : {hours}hrs'
-            else:  # Regular pilot
-                hours = -priority[1]  # Convert back from negative
-                category = f'{hours}hrs'
-            
-            debug_info.append(f"{member.mention} : {callsign} : {category}")
-        
-        # Sort by priority tuple (group first, then sort value)
-        attendee_priorities.sort(key=lambda x: x[1])
-        sorted_attendees = [member for member, _ in attendee_priorities]
+        # Get debug info
+        debug_info = await self.priority_service.get_priority_debug_info(sorted_attendees)
         
         # Send debug info as ephemeral message
         debug_message = "**🔍 Priority Debug Info:**\n" + "\n".join(debug_info)
