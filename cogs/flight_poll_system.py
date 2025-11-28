@@ -24,10 +24,9 @@ class PollSetupView(discord.ui.View):
         self.poll_title = poll_title
         self.duration_hours = duration_hours
         self.author = author
-        self.selected_emojis = {}
 
-        for index, route in enumerate(self.routes_data[:MAX_ROUTES_PER_POLL]):
-            self.add_item(EmojiSelect(index, route, ctx_interaction.guild))
+
+        # No emoji selection needed anymore
 
     @discord.ui.button(label="🚀 Launch Poll", style=discord.ButtonStyle.green, row=4)
     async def launch_poll(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -42,8 +41,6 @@ class PollSetupView(discord.ui.View):
         )
         
         for index, route in enumerate(self.routes_data[:MAX_ROUTES_PER_POLL]):
-            emoji = self.selected_emojis.get(index, "✈️")
-            
             # Get aircraft codes
             ac_list = route.get('aircraft', [])
             ac_codes = []
@@ -64,11 +61,25 @@ class PollSetupView(discord.ui.View):
             dur_str = f"{dur_seconds // 3600}h{(dur_seconds % 3600) // 60:02d}"
             atc_tag = " ATC HUB" if route.get('is_atc', False) else ""
             
-            final_text = f"{route['dep']}-{route['arr']} {ac_name} {dur_str}{atc_tag}"
-            if len(final_text) > 55:
-                final_text = final_text[:52] + "..."
+            # Get livery name from route data
+            livery_name = route.get('livery', 'Qatar Airways')  # Default to Qatar Airways
+            print(f"DEBUG POLL: Route {index} - Livery: '{livery_name}', Flight: '{route['fltnum']}'")
+            print(f"DEBUG POLL: Full route data: {route}")
             
-            poll.add_answer(text=final_text, emoji=emoji)
+            # Try with livery name first
+            final_text = f"{livery_name}: {route['dep']}-{route['arr']} {ac_name} {dur_str}{atc_tag}"
+            print(f"DEBUG POLL: Initial text: '{final_text}' (length: {len(final_text)})")
+            
+            # If exceeds 55 characters, use flight number instead
+            if len(final_text) > 55:
+                final_text = f"{route['fltnum']}: {route['dep']}-{route['arr']} {ac_name} {dur_str}{atc_tag}"
+                print(f"DEBUG POLL: Using flight number due to length: '{final_text}'")
+                if len(final_text) > 55:
+                    final_text = final_text[:52] + "..."
+                    print(f"DEBUG POLL: Truncated: '{final_text}'")
+            
+            print(f"DEBUG POLL: Final poll answer: '{final_text}'")
+            poll.add_answer(text=final_text)
 
         view = PollControlView(self.bot, self.author)
         poll_message = await interaction.channel.send(poll=poll, view=view)
@@ -81,26 +92,7 @@ class PollSetupView(discord.ui.View):
             
         await interaction.followup.send("✅ Poll launched successfully!", ephemeral=True)
 
-class EmojiSelect(discord.ui.Select):
-    def __init__(self, index, route, guild):
-        self.index = index
-        
-        options = [discord.SelectOption(label="Default Plane", value="✈️", emoji="✈️")]
-        available_emojis = sorted([e for e in guild.emojis if e.available], key=lambda x: x.name.lower())
-        
-        for emoji in available_emojis[:24]:
-            options.append(discord.SelectOption(label=emoji.name, value=str(emoji), emoji=emoji))
-                
-        super().__init__(
-            placeholder=f"Select Logo for {route['fltnum']}",
-            min_values=1, max_values=1, options=options,
-            row=min(index, 3)
-        )
 
-    async def callback(self, interaction: discord.Interaction):
-        if self.view and hasattr(self.view, 'selected_emojis'):
-            self.view.selected_emojis[self.index] = self.values[0]
-        await interaction.response.defer()
 
 class PollControlView(discord.ui.View):
     def __init__(self, bot, author):
@@ -121,7 +113,15 @@ class PollControlView(discord.ui.View):
 
     async def get_route_from_answer(self, text):
         try:
-            parts = text.split(' ')
+            # Handle new format: "Virgin Australia: YSSY-OTHH B77W 14h30"
+            if ':' in text:
+                # Split by colon to separate livery from route info
+                route_part = text.split(':', 1)[1].strip()
+            else:
+                # Fallback for old format
+                route_part = text
+            
+            parts = route_part.split(' ')
             if len(parts) >= 3 and '-' in parts[0]:
                 dep, arr = parts[0].split('-')
                 query = "SELECT * FROM routes WHERE dep = %s AND arr = %s LIMIT 1"
@@ -243,16 +243,16 @@ class DepartureTimeModal(discord.ui.Modal, title='Set Departure Time'):
         if not route_data:
             return await interaction.followup.send("Could not find route data in database for winner.", ephemeral=True)
 
-        # Get the emoji from the winning poll answer
-        selected_emoji = str(winner.emoji) if winner.emoji else "✈️"
-
+        # Get livery from route data
+        livery_name = route_data.get('livery', 'Qatar Airways')
+        
         # Determine target channel
         target_forum = interaction.channel.parent if isinstance(interaction.channel, discord.Thread) else interaction.channel
 
         # Create post content
         current_date = datetime.datetime.utcnow().strftime("%d/%m/%y")
         ac_name = route_data.get('poll_aircraft', 'Heavy')
-        post_title = f"{route_data['dep']} - {route_data['arr']} ICAO Group Flight"
+        post_title = f"{route_data['dep']} - {route_data['arr']} Group Flight"
         dur = route_data['duration']
         d_str = f"{dur // 3600}h {(dur % 3600) // 60}m"
         organizer = self.author.mention if self.author else interaction.user.mention
@@ -264,7 +264,7 @@ class DepartureTimeModal(discord.ui.Modal, title='Set Departure Time'):
 🌐 **Multiplier:** 3x
 #️⃣ **Flight Number:** {route_data['fltnum']}
 ⏱️ **Flight Duration:** {d_str}
-✈️ **Aircraft Type:** {selected_emoji} {ac_name}
+✈️ **Aircraft Type:** {livery_name} {ac_name}
 
 **Organized by:** {organizer}"""
 
