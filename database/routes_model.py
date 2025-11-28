@@ -128,11 +128,17 @@ class RoutesModel:
             print(f"DEBUG ROUTES: No results found for flight number: '{fltnum}'")
             return None
         
+        # Get the livery from the first aircraft result
+        livery_name = "Qatar Airways"  # Default
+        if results[0].get("aircraft_livery") and results[0]["aircraft_livery"].strip():
+            livery_name = results[0]["aircraft_livery"]
+        
         route_data = {
             "dep": results[0]["dep"],
             "arr": results[0]["arr"],
             "duration": results[0]["duration"],
-            "fltnum": results[0]["fltnum"],
+            "fltnum": fltnum,  # Use the requested flight number, not the full DB field
+            "livery": livery_name,  # Add livery field
             "aircraft": []
         }
         
@@ -140,20 +146,29 @@ class RoutesModel:
         seen_aircraft = set()
         for row in results:
             if row["aircraft_icao"] is not None and row["aircraft_name"] is not None:
-                # Format as "Livery Name Aircraft Name" or just "Aircraft Name" if no livery
-                livery = row.get("aircraft_livery") if row.get("aircraft_livery") else ""
-                
-                if livery and livery.lower() != "generic" and livery.strip():
-                    display_name = f"{livery} {row['aircraft_name']}"
-                else:
-                    display_name = row["aircraft_name"]
-                
-                aircraft_key = (row["aircraft_icao"], display_name)
+                aircraft_key = (row["aircraft_icao"], row["aircraft_name"])
                 if aircraft_key not in seen_aircraft:
                     aircraft_info = {
                         "icao": row["aircraft_icao"],
-                        "name": display_name
+                        "name": row["aircraft_name"]
                     }
                     route_data["aircraft"].append(aircraft_info)
                     seen_aircraft.add(aircraft_key)
         return route_data
+
+    async def get_all_liveries(self) -> List[str]:
+        """
+        Gets all unique livery names from the aircraft table.
+        
+        Returns:
+            A list of unique livery names.
+        """
+        query = """
+            SELECT DISTINCT a.liveryname 
+            FROM aircraft a 
+            WHERE a.liveryname IS NOT NULL AND a.liveryname != '' AND a.liveryname != 'Generic'
+            ORDER BY a.liveryname
+        """
+        
+        results = await self.db.fetch_all(query)
+        return [row['liveryname'] for row in results if row['liveryname'].strip()]
