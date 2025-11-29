@@ -94,6 +94,34 @@ class PollSetupView(discord.ui.View):
 
 
 
+class ClosePollConfirmView(discord.ui.View):
+    def __init__(self, original_view, original_interaction):
+        super().__init__(timeout=60)
+        self.original_view = original_view
+        self.original_interaction = original_interaction
+
+    @discord.ui.button(label="✅ Yes, Close Poll", style=discord.ButtonStyle.danger)
+    async def confirm_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await self.original_interaction.message.end_poll()
+            self.original_view.poll_closed = True
+            
+            for item in self.original_view.children:
+                if item.custom_id == "poll_close_btn":
+                    item.disabled = True
+                    item.label = "🛑 Poll Closed"
+                    break
+            
+            self.original_view.poll_end_time = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+            await self.original_interaction.message.edit(view=self.original_view)
+            await interaction.response.edit_message(content="✅ Poll has been closed.", view=None)
+        except Exception as e:
+            await interaction.response.edit_message(content=f"❌ Error closing poll: {e}", view=None)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Poll close cancelled.", view=None)
+
 class PollControlView(discord.ui.View):
     def __init__(self, bot, author):
         super().__init__(timeout=None)
@@ -141,17 +169,8 @@ class PollControlView(discord.ui.View):
         if self.author and interaction.user != self.author and not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("Only the poll creator can close this.", ephemeral=True)
         
-        try:
-            await interaction.message.end_poll()
-            self.poll_closed = True
-            button.disabled = True
-            button.label = "🛑 Poll Closed"
-            self.poll_end_time = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-            
-            await interaction.response.edit_message(view=self)
-            await interaction.followup.send("✅ Poll closed.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"Error closing poll: {e}", ephemeral=True)
+        confirm_view = ClosePollConfirmView(self, interaction)
+        await interaction.response.send_message("⚠️ Are you sure you want to close this poll?", view=confirm_view, ephemeral=True)
 
     @discord.ui.button(label="📋 Voter List", style=discord.ButtonStyle.secondary, custom_id="poll_voters_btn")
     async def voter_list(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -243,8 +262,11 @@ class DepartureTimeModal(discord.ui.Modal, title='Set Departure Time'):
         if not route_data:
             return await interaction.followup.send("Could not find route data in database for winner.", ephemeral=True)
 
-        # Get livery from route data
-        livery_name = route_data.get('livery', 'Qatar Airways')
+        # Get livery from poll answer text
+        if ':' in winner.text:
+            livery_name = winner.text.split(':', 1)[0].strip()
+        else:
+            livery_name = 'Qatar Airways'  # fallback
         
         # Determine target channel
         target_forum = interaction.channel.parent if isinstance(interaction.channel, discord.Thread) else interaction.channel
