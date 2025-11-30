@@ -281,17 +281,26 @@ class UserConfirmView(discord.ui.View):
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         
+        # Add staff role permissions
         for role_name in staff_names:
             staff_role = discord.utils.get(interaction.guild.roles, name=role_name)
             if staff_role:
                 overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
         
+        # Add individual staff members
+        for member in interaction.guild.members:
+            member_roles = [role.name.lower() for role in member.roles]
+            if any(role_name in member_roles for role_name in staff_names):
+                overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+        
         if self.user:
             overwrites[self.user] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
         
         ticket_type = f"{enquiry_type}-enquiry"
+        # Use target user's name if available, otherwise use callsign
+        channel_suffix = self.user.display_name if self.user else f"qrv{callsign}"
         ticket_channel = await interaction.guild.create_text_channel(
-            name=f'{ticket_type}-{interaction.user.display_name}',
+            name=f'{ticket_type}-{channel_suffix}',
             category=category,
             overwrites=overwrites
         )
