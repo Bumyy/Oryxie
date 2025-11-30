@@ -1,4 +1,5 @@
 import os
+import asyncio
 import aiohttp
 from typing import Optional, List, Dict, Any
 
@@ -46,10 +47,19 @@ class InfiniteFlightAPIManager:
         Helper function to make API requests with improved, resilient error handling.
         """
         session = await self._get_session()
-        url = f"{self.base_url}{endpoint}?apikey={self.api_key}"
+        
+        # Handle params separately to avoid double question marks
+        params = kwargs.pop('params', {})
+        params['apikey'] = self.api_key
+        url = f"{self.base_url}{endpoint}"
+        
+        # Ensure Content-Type: application/json for POST requests
+        headers = kwargs.pop('headers', {})
+        if method.upper() == 'POST' and 'json' in kwargs:
+            headers['Content-Type'] = 'application/json'
         
         try:
-            async with session.request(method, url, **kwargs) as response:
+            async with session.request(method, url, params=params, headers=headers, **kwargs) as response:
                 response.raise_for_status()
                 
                 if 'application/json' in response.headers.get('Content-Type', ''):
@@ -106,3 +116,28 @@ class InfiniteFlightAPIManager:
 
     async def get_aircraft(self) -> Dict:
         return await self._request('GET', '/aircraft')
+    
+    async def get_user_flights(self, user_id: str, hours: int = 72) -> Dict:
+        """
+        Get user flights using the correct Public API v2 endpoint.
+        Endpoint: GET /users/{userId}/flights
+        """
+        # The correct endpoint uses plural 'users' and 'flights'
+        # This returns a paginated result including 'data' list.
+        return await self._request('GET', f'/users/{user_id}/flights')
+    
+    async def get_user_by_ifc_username(self, username: str) -> Dict:
+        """
+        Get user information by IFC username.
+        Uses POST /user/stats endpoint with proper JSON formatting.
+        """
+        payload = {"discourseNames": [username]}
+        response = await self._request('POST', '/user/stats', json=payload)
+        
+        if response and isinstance(response, dict) and response.get('result'):
+            result_list = response['result']
+            if isinstance(result_list, list) and len(result_list) > 0:
+                user_obj = result_list[0]
+                return {'result': user_obj}
+        
+        return None
