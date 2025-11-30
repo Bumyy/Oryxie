@@ -105,6 +105,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.callsign_finder')
             await self.load_extension('cogs.flight_poll_system')
             await self.load_extension('cogs.ticket_system')
+            await self.load_extension('cogs.database_audit')
             
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
