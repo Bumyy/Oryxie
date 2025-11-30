@@ -57,7 +57,7 @@ class DatabaseAuditCog(commands.Cog):
                 
                 for pilot in batch:
                     # Small delay to prevent API Rate Limiting (429 Too Many Requests)
-                    await asyncio.sleep(0.1) 
+                    await asyncio.sleep(2.0) 
                     
                     ifc_url = pilot['ifc']
                     
