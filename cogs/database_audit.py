@@ -57,7 +57,7 @@ class DatabaseAuditCog(commands.Cog):
                 
                 for pilot in batch:
                     # Small delay to prevent API Rate Limiting (429 Too Many Requests)
-                    await asyncio.sleep(2.0) 
+                    await asyncio.sleep(0.3) 
                     
                     ifc_url = pilot['ifc']
                     
@@ -109,16 +109,16 @@ class DatabaseAuditCog(commands.Cog):
                             rows_updated = await self.bot.pilots_model.update_ifuserid_by_ifc_username(username, user_id)
                             if rows_updated > 0:
                                 updated_count += rows_updated
-                        except Exception:
-                            # Don't mark as invalid since API lookup succeeded
-                            pass
+                        except Exception as db_e:
+                            await interaction.followup.send(f"🔧 **DEBUG:** DB Update Error for {username}: {str(db_e)}", ephemeral=False)
                     
-                    except Exception:
+                    except Exception as api_e:
+                        await interaction.followup.send(f"🔧 **DEBUG:** API Error for {username}: {str(api_e)}", ephemeral=False)
                         batch_invalid.append({
                             'name': pilot['name'],
                             'callsign': pilot['callsign'],
                             'discord_id': pilot['discordid'],
-                            'reason': f'API Error'
+                            'reason': f'API Error: {str(api_e)}'
                         })
                 
                 invalid_pilots.extend(batch_invalid)
@@ -153,8 +153,8 @@ class DatabaseAuditCog(commands.Cog):
             
         except Exception as e:
             import traceback
-            traceback.print_exc()
-            await interaction.followup.send(f"❌ **Critical Error during audit:** {str(e)}", ephemeral=False)
+            error_trace = traceback.format_exc()
+            await interaction.followup.send(f"❌ **Critical Error during audit:** {str(e)}\n```\n{error_trace[:1500]}\n```", ephemeral=False)
 
     async def _audit_active_pilots(self, interaction: discord.Interaction):
         """Audits callsigns for Status 1 (active) pilots only."""
