@@ -247,6 +247,13 @@ class TrainingCogV2(commands.Cog, name="Training V2"):
     async def on_member_join(self, member: discord.Member):
         # Only run training for the specific server
         if member.guild.id == 1073981884075352105:
+            # Add the role to new members
+            role = member.guild.get_role(1137998383630524477)
+            if role:
+                try:
+                    await member.add_roles(role)
+                except Exception:
+                    pass  # Fail silently if role assignment doesn't work
             await self.start_training_flow(member)
 
     async def start_training_flow(self, member: discord.Member):
