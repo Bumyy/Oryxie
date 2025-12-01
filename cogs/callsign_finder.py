@@ -153,7 +153,7 @@ class SingleCallsignModal(discord.ui.Modal):
         
         clean_number = self.number.value.strip().zfill(3)
         callsign_to_check = f"{CALLSIGN_PREFIX}{clean_number}"
-        result = await self.cog.bot.pilots_model.get_pilot_by_callsign(callsign_to_check)
+        result = await self.cog.bot.pilots_model.get_pilot_by_callsign_any_status(callsign_to_check)
         
         if result:
             message = f"❌ **{callsign_to_check}** is **TAKEN**"
@@ -194,7 +194,7 @@ class MultipleCallsignModal(discord.ui.Modal):
                 clean_number = num.zfill(3)
                 callsign_to_check = f"{CALLSIGN_PREFIX}{clean_number}"
                 
-                result = await self.cog.bot.pilots_model.get_pilot_by_callsign(callsign_to_check)
+                result = await self.cog.bot.pilots_model.get_pilot_by_callsign_any_status(callsign_to_check)
                 
                 if result:
                     results.append(f"❌ **{callsign_to_check}** - TAKEN")
