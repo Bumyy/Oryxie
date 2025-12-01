@@ -128,7 +128,7 @@ class PilotsModel:
     
     async def get_all_callsigns(self) -> Set[str]:
         """
-        Retrieves a set of all unique callsigns from the pilots table.
+        Retrieves a set of all unique callsigns from the pilots table (both active and inactive).
         A set is used for highly efficient 'in' checks (O(1) average time complexity).
 
         Returns:
