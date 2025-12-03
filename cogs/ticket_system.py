@@ -2,7 +2,10 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
+import os
 from database.pilots_model import PilotsModel
+
+STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID"))
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -56,16 +59,13 @@ class ConfirmTicketView(discord.ui.View):
                 interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
             }
             
-            staff_names = ["staff", "executive", "manager"]
-            for role_name in staff_names:
-                staff_role = discord.utils.get(interaction.guild.roles, name=role_name)
-                if staff_role:
-                    overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
-            
-            # Add individual staff members
-            for member in interaction.guild.members:
-                member_roles = [role.name.lower() for role in member.roles]
-                if any(role_name in member_roles for role_name in staff_names):
+            # Add staff role
+            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+            if staff_role:
+                overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+                
+                # Add individual staff members
+                for member in staff_role.members:
                     overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
             
             ticket_channel = await interaction.guild.create_text_channel(
@@ -99,11 +99,10 @@ class TicketControlView(discord.ui.View):
         self.ticket_creator_id = ticket_creator_id
 
     def is_staff(self, user, guild):
-        # Check for staff, executive, or manager roles (case insensitive)
+        # Check for staff role using STAFF_ROLE_ID
         try:
-            staff_names = ["staff", "executive", "manager"]
-            user_roles = [role.name.lower() for role in user.roles]
-            return any(role_name in user_roles for role_name in staff_names)
+            staff_role = guild.get_role(STAFF_ROLE_ID)
+            return staff_role in user.roles if staff_role else False
         except Exception:
             return False
 
@@ -125,13 +124,12 @@ class TicketControlView(discord.ui.View):
                 return await interaction.response.send_message("Only staff can use this button.", ephemeral=True)
             
             channel = interaction.channel
-            staff_names = ["staff", "executive", "manager"]
+            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
             non_staff = []
             
             for target, overwrite in channel.overwrites.items():
                 if isinstance(target, discord.Member):
-                    user_roles = [role.name.lower() for role in target.roles]
-                    is_staff = any(role_name in user_roles for role_name in staff_names)
+                    is_staff = staff_role in target.roles if staff_role else False
                     if not is_staff and overwrite.read_messages:
                         non_staff.append(target)
             
@@ -280,23 +278,19 @@ class UserConfirmView(discord.ui.View):
         callsign = self.callsign.replace('QRV', '')
         
         category = interaction.channel.category
-        staff_names = ["staff", "executive", "manager"]
         
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         
-        # Add staff role permissions
-        for role_name in staff_names:
-            staff_role = discord.utils.get(interaction.guild.roles, name=role_name)
-            if staff_role:
-                overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
-        
-        # Add individual staff members
-        for member in interaction.guild.members:
-            member_roles = [role.name.lower() for role in member.roles]
-            if any(role_name in member_roles for role_name in staff_names):
+        # Add staff role and members
+        staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+        if staff_role:
+            overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+            
+            # Add individual staff members
+            for member in staff_role.members:
                 overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
         
         if self.user:
@@ -354,9 +348,8 @@ class ClosedTicketView(discord.ui.View):
     @discord.ui.button(label='Re-add User', style=discord.ButtonStyle.success, emoji='➕', custom_id='readd_user')
     async def readd_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            staff_names = ["staff", "executive", "manager"]
-            user_roles = [role.name.lower() for role in interaction.user.roles]
-            is_staff = any(role_name in user_roles for role_name in staff_names)
+            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+            is_staff = staff_role in interaction.user.roles if staff_role else False
             
             if not is_staff:
                 return await interaction.response.send_message("Only staff can re-add users.", ephemeral=True)
@@ -377,9 +370,8 @@ class ClosedTicketView(discord.ui.View):
     @discord.ui.button(label='Delete Channel', style=discord.ButtonStyle.danger, emoji='🗑️', custom_id='delete_channel')
     async def delete_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            staff_names = ["staff", "executive", "manager"]
-            user_roles = [role.name.lower() for role in interaction.user.roles]
-            is_staff = any(role_name in user_roles for role_name in staff_names)
+            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+            is_staff = staff_role in interaction.user.roles if staff_role else False
             
             if not is_staff:
                 return await interaction.response.send_message("Only staff can delete tickets.", ephemeral=True)
@@ -421,9 +413,8 @@ class TicketSystem(commands.Cog):
         app_commands.Choice(name="Pirep Enquiry", value="pirep")
     ])
     async def staff_enquiry(self, interaction: discord.Interaction, callsign: str, enquiry_type: app_commands.Choice[str]):
-        staff_names = ["staff", "executive", "manager"]
-        user_roles = [role.name.lower() for role in interaction.user.roles]
-        is_staff = any(role_name in user_roles for role_name in staff_names)
+        staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+        is_staff = staff_role in interaction.user.roles if staff_role else False
         
         if not is_staff:
             return await interaction.response.send_message("Only staff can use this command.", ephemeral=True)
