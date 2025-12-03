@@ -62,6 +62,12 @@ class ConfirmTicketView(discord.ui.View):
                 if staff_role:
                     overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
             
+            # Add individual staff members
+            for member in interaction.guild.members:
+                member_roles = [role.name.lower() for role in member.roles]
+                if any(role_name in member_roles for role_name in staff_names):
+                    overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+            
             ticket_channel = await interaction.guild.create_text_channel(
                 name=f'{self.ticket_type.lower().replace(" ", "-")}-{interaction.user.display_name}',
                 category=category,
