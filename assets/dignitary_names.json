@@ -1,13 +1,14 @@
 {
   "royal_names": [
-    "Sheikh Faisal bin Jassim Al Thani",
-    "Sheikh Nasser bin Khalid Al Thani",
-    "Sheikh Salman bin Hamad Al Thani",
-    "Sheikh Jassim bin Mohammed Al Thani",
-    "Sheikh Abdullah bin Suhaim Al Thani",
-    "Sheikh Turki bin Abdulaziz Al Thani",
-    "Sheikh Khalid bin Fahad Al Thani",
-    "Sheikh Mansour bin Rashid Al Thani"
+    "Sheikh Tamim bin Hamad Al Thani",
+    "Sheikha Jawaher bint Hamad bin Suhaim Al Thani",
+    "Sheikha Moza bint Nasser",
+    "Sheikh Abdullah bin Hamad Al Thani",
+    "Sheikh Jassim bin Hamad Al Thani",
+    "Sheikh Mohammed bin Hamad Al Thani",
+    "Sheikh Joaan bin Hamad Al Thani",
+    "Sheikh Khalifa bin Hamad Al Thani",
+    "Sheikh Thani bin Hamad Al Thani"
   ],
   "official_roles": [
     "Prime Minister",
@@ -20,8 +21,7 @@
     "National Olympic Committee Head",
     "Trade Delegation Head",
     "State Protocol Team Leader",
-    "Senior Military Delegation",
-    "Medical Emergency Response Team"
+    "Senior Military Delegation"
   ],
   "dignitary_scenarios": [
     "Diplomatic",

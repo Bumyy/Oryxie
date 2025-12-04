@@ -137,35 +137,44 @@ class FlightClaimView(discord.ui.View):
             # Generate AI scenario now when flight is claimed
             cog = interaction.client.get_cog("FlightGeneratorPDF")
             if cog:
+                print(f"[DEBUG] Starting AI scenario generation for {self.flight_type} flight")
                 dep_data = self.flight_brain.get_airport_data("OTHH")
                 # Parse destination from route format
                 route = self.flight_data.route if isinstance(self.flight_data, FlightDetails) else self.flight_data['route']
+                print(f"[DEBUG] Route: {route}")
                 route_parts = route.split()
                 if len(route_parts) >= 4:
                     dest_icao = route_parts[3]  # "OTHH 🇶🇦 to DEST"
                 else:
                     dest_icao = route_parts[2] if len(route_parts) >= 3 else "OTHH"  # Fallback
                 
+                print(f"[DEBUG] Destination ICAO: {dest_icao}")
                 dest_data = self.flight_brain.get_airport_data(dest_icao)
                 
                 if dep_data is not None and dest_data is not None:
+                    print(f"[DEBUG] Airport data found - Dep: {dep_data.get('municipality', 'N/A')}, Dest: {dest_data.get('municipality', 'N/A')}")
                     aircraft_name = self.flight_data.aircraft_name if isinstance(self.flight_data, FlightDetails) else self.flight_data['aircraft_name']
                     passengers = self.flight_data.passengers if isinstance(self.flight_data, FlightDetails) else self.flight_data['passengers']
                     cargo = self.flight_data.cargo if isinstance(self.flight_data, FlightDetails) else self.flight_data['cargo']
                     deadline = self.flight_data.deadline if isinstance(self.flight_data, FlightDetails) else self.flight_data['deadline']
                     
+                    print(f"[DEBUG] Calling AI service with: aircraft={aircraft_name}, passengers={passengers}, cargo={cargo}, deadline={deadline}")
                     scenario_data = await cog.ai_service.generate_ai_scenario(aircraft_name, dep_data, dest_data, passengers, cargo, self.flight_type, deadline)
+                    print(f"[DEBUG] AI scenario data received: {scenario_data}")
                     if isinstance(self.flight_data, FlightDetails):
                         for key, value in scenario_data.items():
                             setattr(self.flight_data, key, value)
                     else:
                         self.flight_data.update(scenario_data)
+                    print(f"[DEBUG] AI scenario data applied to flight_data")
+                else:
+                    print(f"[DEBUG] Airport data missing - Dep: {dep_data is not None}, Dest: {dest_data is not None}")
 
             pdf_output = cog.pdf_service.generate_flight_pdf(self.flight_data, self.flight_type, interaction.user)
             if pdf_output:
                 pdf_buffer = io.BytesIO(pdf_output)
                 flight_number = self.flight_data.flight_number if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('flight_number', 'Unknown')
-                await interaction.channel.send(f"✈️ Here are the flight documents for **{flight_number}** claimed by {interaction.user.mention}.", file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"))
+                await interaction.followup.send(f"✈️ Here are the flight documents for **{flight_number}**.", file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"))
                 await interaction.followup.send("✅ Flight claimed! The documents have been posted in the channel.", ephemeral=True)
             else:
                 await interaction.followup.send("✅ Flight claimed! (But PDF generation failed).", ephemeral=True)

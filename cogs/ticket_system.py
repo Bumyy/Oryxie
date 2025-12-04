@@ -5,7 +5,7 @@ import asyncio
 import os
 from database.pilots_model import PilotsModel
 
-STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID"))
+STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID")) if os.getenv("STAFF_ROLE_ID") else None
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -60,13 +60,26 @@ class ConfirmTicketView(discord.ui.View):
             }
             
             # Add staff role
-            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+            print(f"DEBUG: STAFF_ROLE_ID = {STAFF_ROLE_ID}")
+            if STAFF_ROLE_ID is None:
+                print("DEBUG: STAFF_ROLE_ID is None - environment variable not set")
+                staff_role = None
+            else:
+                staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+            print(f"DEBUG: staff_role = {staff_role}")
             if staff_role:
                 overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+                print(f"DEBUG: Added staff role {staff_role.name} to overwrites")
                 
                 # Add individual staff members
+                staff_count = 0
                 for member in staff_role.members:
                     overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+                    staff_count += 1
+                    print(f"DEBUG: Added staff member {member.display_name}")
+                print(f"DEBUG: Total staff members added: {staff_count}")
+            else:
+                print(f"DEBUG: Staff role not found with ID {STAFF_ROLE_ID}")
             
             ticket_channel = await interaction.guild.create_text_channel(
                 name=f'{self.ticket_type.lower().replace(" ", "-")}-{interaction.user.display_name}',

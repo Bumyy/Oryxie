@@ -93,18 +93,14 @@ class PDFService:
                     (f"Dossier: {self._clean_text(data.get('dignitary', 'N/A'))}", 
                      self._clean_text(data.get('dignitary_intro', 'No introduction available.'))),
                     ('Mission Objectives:', 
-                     self._clean_text(data.get('mission_briefing', 'No briefing available.'))),
-                    ('Urgency:', 
-                     self._clean_text(data.get('deadline_rationale', 'Standard operational timeline.')))
+                     self._clean_text(data.get('mission_briefing', 'No briefing available.')))
                 ]
             else:
                 briefing_data = [
                     (f"Client Profile: {self._clean_text(data.get('client', 'N/A'))}", 
                      self._clean_text(data.get('client_intro', 'No client introduction available.'))),
                     ('Flight Purpose:', 
-                     self._clean_text(data.get('mission_briefing', 'No briefing available.'))),
-                    ('Urgency:', 
-                     self._clean_text(data.get('deadline_rationale', 'Standard operational timeline.')))
+                     self._clean_text(data.get('mission_briefing', 'No briefing available.')))
                 ]
             
             for title, content in briefing_data:
@@ -112,6 +108,14 @@ class PDFService:
                 pdf.cell(0, 6, title, 0, 1)
                 pdf.set_font('Arial', '', 10)
                 pdf.multi_cell(0, 5, content)
+                pdf.ln(3)
+            
+            # Manifest Details Section
+            if data.get('manifest_details'):
+                pdf.set_font('Arial', 'B', 10)
+                pdf.cell(0, 6, 'Manifest Details:', 0, 1)
+                pdf.set_font('Arial', '', 10)
+                pdf.multi_cell(0, 5, self._clean_text(data.get('manifest_details', '')))
                 pdf.ln(3)
 
             # Crew Assignment
