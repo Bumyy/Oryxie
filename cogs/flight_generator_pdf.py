@@ -174,7 +174,7 @@ class FlightClaimView(discord.ui.View):
             if pdf_output:
                 pdf_buffer = io.BytesIO(pdf_output)
                 flight_number = self.flight_data.flight_number if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('flight_number', 'Unknown')
-                await interaction.followup.send(f"✈️ Here are the flight documents for **{flight_number}**.", file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"), ephemeral=True)
+                await interaction.followup.send(f"✈️ Here are the flight documents for **{flight_number}**.", file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"))
                 await interaction.followup.send("✅ Flight claimed! The documents have been posted in the channel.", ephemeral=True)
             else:
                 await interaction.followup.send("✅ Flight claimed! (But PDF generation failed).", ephemeral=True)
