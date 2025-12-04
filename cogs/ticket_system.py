@@ -5,7 +5,7 @@ import asyncio
 import os
 from database.pilots_model import PilotsModel
 
-STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID")) if os.getenv("STAFF_ROLE_ID") else None
+STAFF_ROLE_ID = 1090752933433450516
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -60,26 +60,13 @@ class ConfirmTicketView(discord.ui.View):
             }
             
             # Add staff role
-            print(f"DEBUG: STAFF_ROLE_ID = {STAFF_ROLE_ID}")
-            if STAFF_ROLE_ID is None:
-                print("DEBUG: STAFF_ROLE_ID is None - environment variable not set")
-                staff_role = None
-            else:
-                staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
-            print(f"DEBUG: staff_role = {staff_role}")
+            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
             if staff_role:
                 overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
-                print(f"DEBUG: Added staff role {staff_role.name} to overwrites")
                 
                 # Add individual staff members
-                staff_count = 0
                 for member in staff_role.members:
                     overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
-                    staff_count += 1
-                    print(f"DEBUG: Added staff member {member.display_name}")
-                print(f"DEBUG: Total staff members added: {staff_count}")
-            else:
-                print(f"DEBUG: Staff role not found with ID {STAFF_ROLE_ID}")
             
             ticket_channel = await interaction.guild.create_text_channel(
                 name=f'{self.ticket_type.lower().replace(" ", "-")}-{interaction.user.display_name}',
@@ -156,57 +143,42 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label='Close Ticket', style=discord.ButtonStyle.danger, emoji='🔒', custom_id='close_ticket')
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print("DEBUG: Close ticket button clicked")
         try:
-            await interaction.response.send_message("DEBUG: Starting close process...", ephemeral=True)
-            print("DEBUG: Sent initial response")
+            await interaction.response.defer(ephemeral=True)
             
             # Allow staff OR ticket creator to close
             is_staff = self.is_staff(interaction.user, interaction.guild)
             is_creator = interaction.user.id == self.ticket_creator_id
-            print(f"DEBUG: is_staff={is_staff}, is_creator={is_creator}, user_id={interaction.user.id}, creator_id={self.ticket_creator_id}")
             
             if not is_staff and not is_creator:
                 return await interaction.followup.send("Only staff or ticket creator can close this ticket.", ephemeral=True)
             
-            print("DEBUG: Permission check passed")
-            
             # Remove ticket creator from channel
             channel = interaction.channel
-            print(f"DEBUG: Channel: {channel.name}")
             
             if self.ticket_creator_id:
                 ticket_creator = interaction.guild.get_member(self.ticket_creator_id)
-                print(f"DEBUG: Ticket creator: {ticket_creator}")
                 if ticket_creator:
                     await channel.set_permissions(ticket_creator, overwrite=None)
-                    print("DEBUG: Removed ticket creator permissions")
-            
-            print("DEBUG: About to create view and embed")
             
             # Update view to show re-add and delete buttons
             view = ClosedTicketView(self.ticket_creator_id)
             embed = discord.Embed(
                 title="🔒 Ticket Closed",
                 description="This ticket has been closed. The ticket creator has been removed from the channel.",
-                color=0x800000  # Maroon color
+                color=0x800000
             )
             
-            print("DEBUG: About to edit original message")
-            
-            # Edit the original message
-            await interaction.edit_original_response(content=None, embed=embed, view=view)
-            print("DEBUG: Successfully edited message")
+            await interaction.followup.send(embed=embed, view=view)
             
         except Exception as e:
-            print(f"DEBUG: Exception occurred: {str(e)}")
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(f"Error closing ticket: {str(e)}", ephemeral=True)
                 else:
                     await interaction.followup.send(f"Error closing ticket: {str(e)}", ephemeral=True)
-            except Exception as e2:
-                print(f"DEBUG: Failed to send error message: {str(e2)}")
+            except Exception:
+                pass
 
 
     
