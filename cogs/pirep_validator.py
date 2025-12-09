@@ -118,6 +118,17 @@ class PirepPaginationView(discord.ui.View):
         validator = self.bot.get_cog('PirepValidator')
         history_embed = await validator.get_flight_history(self.pending_pireps[self.current_index])
         await interaction.followup.send(embed=history_embed, ephemeral=True)
+    
+    @discord.ui.button(label="🐛 Debug", style=discord.ButtonStyle.danger, row=1)
+    async def debug_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any("staff" in role.name.lower() for role in interaction.user.roles):
+            return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        validator = self.bot.get_cog('PirepValidator')
+        debug_info = await validator.get_debug_info(self.pending_pireps[self.current_index])
+        await interaction.followup.send(debug_info, ephemeral=True)
 
 class PirepValidator(commands.Cog):
     def __init__(self, bot: 'MyBot'):
@@ -354,6 +365,60 @@ class PirepValidator(commands.Cog):
         
         return embed
 
+    async def get_debug_info(self, pirep):
+        """Get debug information for troubleshooting."""
+        ifuserid = await self.resolve_ifuserid(pirep)
+        
+        if not ifuserid:
+            return "**Debug Info:**\nNo IF User ID found"
+        
+        try:
+            user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
+        except Exception as e:
+            return f"**Debug Info:**\nAPI Error: {str(e)}"
+        
+        if not user_flights_data or not user_flights_data.get('result'):
+            return "**Debug Info:**\nNo flight data from API"
+        
+        result_data = user_flights_data['result']
+        user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
+        
+        pirep_datetime = pirep['date'] if hasattr(pirep['date'], 'date') else datetime.combine(pirep['date'], datetime.min.time())
+        
+        matching_flight = None
+        for flight in user_flights:
+            if isinstance(flight, dict) and flight.get('originAirport') == pirep['departure'] and flight.get('destinationAirport') == pirep['arrival']:
+                try:
+                    flight_date = datetime.fromisoformat(flight['created'])
+                    if flight_date.tzinfo:
+                        flight_date = flight_date.replace(tzinfo=None)
+                    if abs(flight_date - pirep_datetime) < timedelta(days=2):
+                        matching_flight = flight
+                        break
+                except:
+                    continue
+        
+        if not matching_flight:
+            return f"**Debug Info:**\nNo matching flight found\nTotal flights: {len(user_flights)}"
+        
+        debug_text = f"**Debug Info:**\n"
+        debug_text += f"Raw 'created' field: `{matching_flight.get('created', 'MISSING')}`\n"
+        debug_text += f"Python version: `{__import__('sys').version}`\n"
+        
+        try:
+            flight_date = datetime.fromisoformat(matching_flight['created'])
+            debug_text += f"Parsed datetime: `{flight_date}`\n"
+            debug_text += f"Has timezone: `{flight_date.tzinfo is not None}`\n"
+            if flight_date.tzinfo:
+                flight_date = flight_date.replace(tzinfo=None)
+            debug_text += f"After tz removal: `{flight_date}`\n"
+            date_str = flight_date.strftime('%d %b %Y %H:%M Z')
+            debug_text += f"Formatted: `{date_str}`\n"
+        except Exception as e:
+            debug_text += f"Error: `{type(e).__name__}: {str(e)}`\n"
+        
+        return debug_text
+    
     async def get_flight_history(self, pirep):
         """Get flight history for the pilot."""
         ifuserid = await self.resolve_ifuserid(pirep)
