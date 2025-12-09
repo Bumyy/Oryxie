@@ -50,7 +50,7 @@ class PirepsModel:
             WHERE
                 p.status = %s
             ORDER BY
-                p.date ASC
+                p.date DESC
         """
         args = (0,)
         
@@ -202,3 +202,85 @@ class PirepsModel:
             pirep['formatted_flighttime'] = self._format_flight_time(pirep.get('flighttime'))
         
         return pirep
+
+    async def get_pireps_by_month(self, month: int, year: int) -> list[dict]:
+        """
+        Fetches all PIREPs for a specific month and year with pilot information.
+        
+        Args:
+            month: Month number (1-12)
+            year: Year (e.g., 2024)
+            
+        Returns:
+            A list of dictionaries representing PIREPs for the specified month
+        """
+        query = """
+            SELECT
+                p.id AS pirep_id,
+                p.flightnum,
+                p.departure,
+                p.arrival,
+                p.flighttime,
+                p.pilotid,
+                p.fuelused,
+                p.date,
+                p.multi,
+                p.status,
+                pi.name AS pilot_name,
+                pi.ifuserid,
+                pi.ifc,
+                pi.discordid
+            FROM
+                pireps AS p
+            INNER JOIN
+                pilots AS pi ON p.pilotid = pi.id
+            WHERE
+                MONTH(p.date) = %s
+                AND YEAR(p.date) = %s
+                AND p.status = 1
+            ORDER BY
+                p.date DESC
+        """
+        args = (month, year)
+        
+        pireps = await self.db.fetch_all(query, args)
+        
+        for pirep in pireps:
+            pirep['formatted_flighttime'] = self._format_flight_time(pirep.get('flighttime'))
+        
+        return pireps
+
+    async def count_route_flights_by_callsign(self, callsign_digits: str, departure: str, arrival: str) -> dict:
+        """
+        Counts how many times a pilot has flown a specific route based on their callsign digits.
+        
+        Args:
+            callsign_digits: Last 3 digits of the callsign (e.g., "123" for QRV123)
+            departure: Departure airport code (e.g., "NZAA")
+            arrival: Arrival airport code (e.g., "OTHH")
+            
+        Returns:
+            Dictionary with pilot info and flight count
+        """
+        query = """
+            SELECT
+                pi.name AS pilot_name,
+                pi.callsign,
+                COUNT(p.id) AS flight_count
+            FROM
+                pireps AS p
+            INNER JOIN
+                pilots AS pi ON p.pilotid = pi.id
+            WHERE
+                pi.callsign LIKE %s
+                AND p.departure = %s
+                AND p.arrival = %s
+                AND p.status = 1
+            GROUP BY
+                pi.id, pi.name, pi.callsign
+        """
+        callsign_pattern = f"%{callsign_digits}"
+        args = (callsign_pattern, departure, arrival)
+        
+        result = await self.db.fetch_one(query, args)
+        return result if result else {"pilot_name": None, "callsign": None, "flight_count": 0}

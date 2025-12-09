@@ -63,7 +63,6 @@ class Roster(commands.Cog):
                     elif current_discord_id == member_id_str:
                         # Discord ID matches
                         already_synced_count += 1
-                        member_info.append(f"{member.mention} : active : already synced")
                     else:
                         # Discord ID doesn't match, update with new one
                         await self.bot.pilots_model.update_discord_id(callsign, member_id_str)
