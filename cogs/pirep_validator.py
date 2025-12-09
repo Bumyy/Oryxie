@@ -249,7 +249,10 @@ class PirepValidator(commands.Cog):
                 if isinstance(flight, dict):
                     livery_name = await self.resolve_livery_name(flight.get('aircraftId'), flight.get('liveryId'))
                     try:
-                        date_str = datetime.fromisoformat(flight['created']).strftime('%m/%d %H:%M')
+                        flight_date = datetime.fromisoformat(flight['created'])
+                        if flight_date.tzinfo is not None:
+                            flight_date = flight_date.replace(tzinfo=None)
+                        date_str = flight_date.strftime('%m/%d %H:%M')
                     except:
                         date_str = 'Unknown'
                     time_str = format_flight_time(int(flight.get('totalTime', 0) * 60))
@@ -273,8 +276,12 @@ class PirepValidator(commands.Cog):
         livery_name = await self.resolve_livery_name(matching_flight.get('aircraftId'), matching_flight.get('liveryId'))
         
         try:
-            date_str = datetime.fromisoformat(matching_flight['created']).strftime('%d %b %Y %H:%M Z')
-        except:
+            flight_date = datetime.fromisoformat(matching_flight['created'])
+            if flight_date.tzinfo is not None:
+                flight_date = flight_date.replace(tzinfo=None)
+            date_str = flight_date.strftime('%d %b %Y %H:%M Z')
+        except Exception as e:
+            print(f"Error parsing date: {e}")
             date_str = "Unknown"
         
         issues = []
