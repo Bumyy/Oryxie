@@ -13,22 +13,33 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 EVENT_CONFIG = {
-    "EVENT_NAME": "halloween_2025",
-    "CURRENCY_NAME": "Candy",
-    "CURRENCY_EMOJI": "🍬",
-    "MISSION_FLIGHTNUM": "HWN",
+    "EVENT_NAME": "christmas_2025",
+    "CURRENCY_NAME": "Cookies",
+    "CURRENCY_EMOJI": "🍪",
+    "MISSION_FLIGHTNUM": "CHMS",
     "DROP_REWARD_MIN": 50,
     "DROP_REWARD_MAX": 150,
     "DROP_LIMIT": 5,
-    "EMBED_COLOR": 0xff7518,
+    "EMBED_COLOR": 0xc41e3a,
 }
 
-class CandyDropView(discord.ui.View):
+def get_cookie_multiplier(flightnum: str) -> int:
+    """Returns cookie multiplier based on flight number (case insensitive, ignores spaces)."""
+    normalized = flightnum.replace(" ", "").upper()
+    if "QRVNDEVENT" in normalized or "NDEVENTQRV" in normalized:
+        return 3
+    elif "CHMSEVENT" in normalized or "EVENTCHMS" in normalized:
+        return 2
+    elif "CHMS" in normalized:
+        return 1
+    return 0
+
+class CookieDropView(discord.ui.View):
     def __init__(self, cog_instance):
         super().__init__(timeout=None)
         self.cog = cog_instance
 
-    @discord.ui.button(label="🎃 Claim Your Candy", style=discord.ButtonStyle.primary, custom_id="candy_drop_claim")
+    @discord.ui.button(label="🎁 Claim Your Cookies", style=discord.ButtonStyle.primary, custom_id="cookie_drop_claim")
     async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         
@@ -43,13 +54,13 @@ class CandyDropView(discord.ui.View):
         pilot_id = pilot_record['id']
         callsign = pilot_record['callsign']
 
-        if await self.cog.bot.event_transaction_model.check_duplicate(pilot_id, f"Candy Drop Claim: #{message_id}"):
+        if await self.cog.bot.event_transaction_model.check_duplicate(pilot_id, f"Cookie Drop Claim: #{message_id}"):
             await interaction.followup.send("You have already claimed this drop!", ephemeral=True)
             return
             
-        if await self.cog.bot.event_transaction_model.check_cooldown(pilot_id, 'Candy Drop Claim:%'):
+        if await self.cog.bot.event_transaction_model.check_cooldown(pilot_id, 'Cookie Drop Claim:%'):
             try:
-                last_transaction = await self.cog.bot.event_transaction_model.get_last_transaction(pilot_id, 'Candy Drop Claim:%')
+                last_transaction = await self.cog.bot.event_transaction_model.get_last_transaction(pilot_id, 'Cookie Drop Claim:%')
                 if last_transaction:
                     now = datetime.datetime.utcnow()
                     last_time = last_transaction['transaction_date']
@@ -65,7 +76,7 @@ class CandyDropView(discord.ui.View):
                 await interaction.followup.send("You've already enjoyed your treat recently! Try again after 20 hours ⏳", ephemeral=True)
             return
             
-        claim_count = await self.cog.bot.event_transaction_model.count_claims(f"Candy Drop Claim: #{message_id}")
+        claim_count = await self.cog.bot.event_transaction_model.count_claims(f"Cookie Drop Claim: #{message_id}")
         if claim_count >= EVENT_CONFIG["DROP_LIMIT"]:
             try:
                 button.disabled = True
@@ -73,20 +84,20 @@ class CandyDropView(discord.ui.View):
                 await interaction.message.edit(view=self)
             except (discord.HTTPException, discord.Forbidden) as e:
                 logger.error(f"Failed to disable button: {e}")
-            await interaction.followup.send("This Candy Drop has already been claimed! Watch for the next one 👀", ephemeral=True)
+            await interaction.followup.send("This Cookie Drop has already been claimed! Watch for the next one 👀", ephemeral=True)
             return
 
         try:
             reward_amount = random.randint(EVENT_CONFIG["DROP_REWARD_MIN"], EVENT_CONFIG["DROP_REWARD_MAX"])
             
-            if await self.cog.bot.event_transaction_model.add_transaction(pilot_id, reward_amount, f"Candy Drop Claim: #{message_id}"):
+            if await self.cog.bot.event_transaction_model.add_transaction(pilot_id, reward_amount, f"Cookie Drop Claim: #{message_id}"):
                 pilot_data = {'callsign': callsign, 'discordid': pilot_record.get('discordid')}
-                await self.cog.log_candy_transaction(pilot_data, reward_amount, f"Candy Drop Claim: #{message_id}", interaction.user.mention)
-                await interaction.followup.send(f"You grabbed the Candy Drop! +{reward_amount} Candy added to your balance 🍬", ephemeral=True)
+                await self.cog.log_cookie_transaction(pilot_data, reward_amount, f"Cookie Drop Claim: #{message_id}", interaction.user.mention)
+                await interaction.followup.send(f"You grabbed the Cookie Drop! +{reward_amount} Cookies added to your balance 🍪", ephemeral=True)
             else:
                 await interaction.followup.send("Database error occurred. Please try again later.", ephemeral=True)
         except Exception as e:
-            logger.error(f"Error processing candy claim: {e}")
+            logger.error(f"Error processing cookie claim: {e}")
             await interaction.followup.send("An error occurred while processing your claim.", ephemeral=True)
 
 class SpecialEventsCog(commands.Cog):
@@ -100,22 +111,22 @@ class SpecialEventsCog(commands.Cog):
             self.general_chat_channel_id = None
             
         try:
-            self.candy_logs_channel_id = int(os.getenv("CANDY_LOGS_CHANNEL_ID"))
+            self.cookie_logs_channel_id = int(os.getenv("CANDY_LOGS_CHANNEL_ID"))
         except (TypeError, ValueError):
-            self.candy_logs_channel_id = None
+            self.cookie_logs_channel_id = None
 
-    async def log_candy_transaction(self, pilot_data, amount, reason, user_mention=None, flight_info=None):
-        if not self.candy_logs_channel_id:
+    async def log_cookie_transaction(self, pilot_data, amount, reason, user_mention=None, flight_info=None):
+        if not self.cookie_logs_channel_id:
             return
             
-        channel = self.bot.get_channel(self.candy_logs_channel_id)
+        channel = self.bot.get_channel(self.cookie_logs_channel_id)
         if not channel:
             return
             
         pilot_display = f"<@{pilot_data['discordid']}>" if pilot_data.get('discordid') else pilot_data['callsign']
         
         message_parts = [
-            f"🍬 **Candy Transaction**",
+            f"🍪 **Cookie Transaction**",
             f"**Pilot:** {pilot_display}",
             f"**Amount:** {amount:+} {EVENT_CONFIG['CURRENCY_NAME']}",
             f"**Reason:** {reason}"
@@ -129,42 +140,42 @@ class SpecialEventsCog(commands.Cog):
         try:
             await channel.send("\n".join(message_parts))
         except (discord.HTTPException, discord.Forbidden) as e:
-            logger.error(f"Failed to log candy transaction: {e}")
+            logger.error(f"Failed to log cookie transaction: {e}")
 
     def cog_unload(self):
         self.tasks_started = False
         if hasattr(self, 'pirep_checker') and self.pirep_checker.is_running():
             self.pirep_checker.cancel()
-        if hasattr(self, 'candy_drop_scheduler') and self.candy_drop_scheduler.is_running():
-            self.candy_drop_scheduler.cancel()
+        if hasattr(self, 'cookie_drop_scheduler') and self.cookie_drop_scheduler.is_running():
+            self.cookie_drop_scheduler.cancel()
 
-    @app_commands.command(name="halloween", description="Manage the Halloween event.")
+    @app_commands.command(name="christmas", description="Manage the Christmas event.")
     @app_commands.describe(
         action="What to do",
         callsign="Pilot callsign (for add/remove/check)",
-        amount="Amount of candy (for add/remove)",
+        amount="Amount of cookies (for add/remove)",
         reason="Reason for transaction (for add/remove)"
     )
     @app_commands.choices(action=[
         app_commands.Choice(name="Start Event", value="start"),
         app_commands.Choice(name="Stop Event", value="stop"),
-        app_commands.Choice(name="Add Candy", value="add"),
-        app_commands.Choice(name="Remove Candy", value="remove"),
+        app_commands.Choice(name="Add Cookies", value="add"),
+        app_commands.Choice(name="Remove Cookies", value="remove"),
         app_commands.Choice(name="Check Balance", value="check"),
         app_commands.Choice(name="Test Drop", value="test_drop"),
         app_commands.Choice(name="View Records", value="records"),
         app_commands.Choice(name="Poll PIREPs", value="poll_pireps")
     ])
     @app_commands.checks.has_permissions(administrator=True)
-    async def halloween(self, interaction: discord.Interaction, action: str, callsign: str = None, amount: int = None, reason: str = None):
+    async def christmas(self, interaction: discord.Interaction, action: str, callsign: str = None, amount: int = None, reason: str = None):
         if action == "start":
             if self.tasks_started:
                 await interaction.response.send_message("Event tasks are already running.", ephemeral=True)
                 return
             self.tasks_started = True
             self.pirep_checker.start()
-            self.candy_drop_scheduler.start()
-            await interaction.response.send_message("✅ Halloween event started!", ephemeral=True)
+            self.cookie_drop_scheduler.start()
+            await interaction.response.send_message("✅ Christmas event started!", ephemeral=True)
             
         elif action == "stop":
             if not self.tasks_started:
@@ -172,8 +183,8 @@ class SpecialEventsCog(commands.Cog):
                 return
             self.tasks_started = False
             self.pirep_checker.cancel()
-            self.candy_drop_scheduler.cancel()
-            await interaction.response.send_message("🛑 Halloween event stopped.", ephemeral=True)
+            self.cookie_drop_scheduler.cancel()
+            await interaction.response.send_message("🛑 Christmas event stopped.", ephemeral=True)
             
         elif action in ["add", "remove", "check"]:
             if not callsign:
@@ -200,7 +211,7 @@ class SpecialEventsCog(commands.Cog):
                 
                 if await self.bot.event_transaction_model.add_transaction(pilot_id, final_amount, reason):
                     pilot_data = {'callsign': callsign, 'discordid': None}
-                    await self.log_candy_transaction(pilot_data, final_amount, f"Admin {action}: {reason}", interaction.user.mention)
+                    await self.log_cookie_transaction(pilot_data, final_amount, f"Admin {action}: {reason}", interaction.user.mention)
                     
                     action_word = "Added" if action == "add" else "Removed"
                     await interaction.response.send_message(f"✅ {action_word} {abs(amount)} {EVENT_CONFIG['CURRENCY_NAME']} {'to' if action == 'add' else 'from'} `{callsign}`.", ephemeral=True)
@@ -212,20 +223,20 @@ class SpecialEventsCog(commands.Cog):
                 channel = self.bot.get_channel(self.general_chat_channel_id)
                 if channel:
                     embed = discord.Embed(
-                        title="🍭 Candy Drop Alert!",
-                        description=f"A sweet surprise has appeared in the skies! {EVENT_CONFIG['CURRENCY_EMOJI']}\n"
-                                  f"The first {EVENT_CONFIG['DROP_LIMIT']} pilots to tap below will receive **50-150 Candy**!\n\n"
-                                  "⏰ Once you claim, you must wait 20 hours before claiming again —\n"
-                                  "let's make sure everyone gets a chance to enjoy the treats!",
+                        title="🎄🍪 Festive Cookie Surprise!",
+                        description=f"A magical winter surprise by Santa 🎅 has arrived! ❄\n"
+                                  f"The first {EVENT_CONFIG['DROP_LIMIT']} pilots to tap below will receive **50-150 Cookies** to celebrate the Christmas Spirit. {EVENT_CONFIG['CURRENCY_EMOJI']}\n\n"
+                                  "Once claimed, you must wait 20 hours before claiming again —\n"
+                                  "this keeps the treats fair for everyone. 🎁",
                         color=EVENT_CONFIG["EMBED_COLOR"]
                     )
-                    embed.set_footer(text="QRV Halloween 2025 | Candy Drop System")
+                    embed.set_footer(text="QRV Christmas 2025 | Festive Cookie System")
                     embed.timestamp = discord.utils.utcnow()
                     
-                    view = CandyDropView(self)
+                    view = CookieDropView(self)
                     message = await channel.send(embed=embed, view=view)
                     view.message = message
-                    await interaction.response.send_message("🍬 Test candy drop sent!", ephemeral=True)
+                    await interaction.response.send_message("🍪 Test cookie drop sent!", ephemeral=True)
                 else:
                     await interaction.response.send_message("Drop channel not found.", ephemeral=True)
             else:
@@ -247,7 +258,7 @@ class SpecialEventsCog(commands.Cog):
                 batch_num = (i // batch_size) + 1
                 total_batches = (total_records + batch_size - 1) // batch_size
                 
-                message_lines = [f"🍬 **Event Records - Batch {batch_num}/{total_batches}**\n"]
+                message_lines = [f"🍪 **Event Records - Batch {batch_num}/{total_batches}**\n"]
                 
                 for record in batch:
                     callsign = record['callsign'] or f"ID:{record['pilot_id']}"
@@ -267,30 +278,33 @@ class SpecialEventsCog(commands.Cog):
                 rewards_given = 0
                 
                 for pirep in accepted_pireps:
-                    if pirep.get('flightnum') == EVENT_CONFIG["MISSION_FLIGHTNUM"]:
+                    flightnum = pirep.get('flightnum', '')
+                    cookie_mult = get_cookie_multiplier(flightnum)
+                    
+                    if cookie_mult >= 1:
                         if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model):
                             pilot_data = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
                             if pilot_data:
-                                # Calculate actual candy amount
                                 flight_time_seconds = pirep.get('flighttime', 0)
                                 multiplier = float(pirep.get('multi', 1) or 1)
                                 raw_flight_time_seconds = flight_time_seconds / multiplier if multiplier > 0 else flight_time_seconds
-                                candy_amount = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+                                base_cookies = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+                                cookie_amount = base_cookies * cookie_mult
                                 
                                 flight_info = {
                                     'departure': pirep.get('departure', 'Unknown'),
                                     'arrival': pirep.get('arrival', 'Unknown')
                                 }
-                                await self.log_candy_transaction(pilot_data, candy_amount, f"PIREP Reward: #{pirep['pirep_id']}", flight_info=flight_info)
+                                await self.log_cookie_transaction(pilot_data, cookie_amount, f"PIREP Reward: #{pirep['pirep_id']} ({cookie_mult}x)", flight_info=flight_info)
                                 rewards_given += 1
                                 
-                await interaction.followup.send(f"✅ PIREP polling complete! Awarded {rewards_given} Halloween PIREP rewards.", ephemeral=True)
+                await interaction.followup.send(f"✅ PIREP polling complete! Awarded {rewards_given} Christmas PIREP rewards.", ephemeral=True)
                 
             except Exception as e:
                 await interaction.followup.send(f"❌ Error polling PIREPs: {e}", ephemeral=True)
 
-    @halloween.error
-    async def on_halloween_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+    @christmas.error
+    async def on_christmas_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message("You need administrator permissions to use this command.", ephemeral=True)
         else:
@@ -313,15 +327,15 @@ class SpecialEventsCog(commands.Cog):
         message_parts = [
             f"**{pilot_record['callsign']}**, you currently have **{balance} {EVENT_CONFIG['CURRENCY_NAME']}** {EVENT_CONFIG['CURRENCY_EMOJI']}.",
             "",
-            "🏆 **Top 3 Candy Holders:**"
+            "🏆 **Top 3 Cookie Holders:**"
         ]
         
         if top3_data:
             for i, holder in enumerate(top3_data, 1):
                 emoji = ["🥇", "🥈", "🥉"][i-1]
-                message_parts.append(f"{emoji} {holder['callsign']}: {holder['total_candy']} {EVENT_CONFIG['CURRENCY_NAME']}")
+                message_parts.append(f"{emoji} {holder['callsign']}: {holder['total_cookies']} {EVENT_CONFIG['CURRENCY_NAME']}")
         else:
-            message_parts.append("No candy holders yet!")
+            message_parts.append("No cookie holders yet!")
             
         await interaction.response.send_message("\n".join(message_parts), ephemeral=True)
 
@@ -341,21 +355,24 @@ class SpecialEventsCog(commands.Cog):
         processed_count = 0
         for pirep in accepted_pireps:
             try:
-                if pirep.get('flightnum') == EVENT_CONFIG["MISSION_FLIGHTNUM"]:
+                flightnum = pirep.get('flightnum', '')
+                cookie_mult = get_cookie_multiplier(flightnum)
+                
+                if cookie_mult >= 1:
                     if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model):
                         pilot_data = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
                         if pilot_data:
-                            # Calculate actual candy amount
                             flight_time_seconds = pirep.get('flighttime', 0)
                             multiplier = float(pirep.get('multi', 1) or 1)
                             raw_flight_time_seconds = flight_time_seconds / multiplier if multiplier > 0 else flight_time_seconds
-                            candy_amount = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+                            base_cookies = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+                            cookie_amount = base_cookies * cookie_mult
                             
                             flight_info = {
                                 'departure': pirep.get('departure', 'Unknown'),
                                 'arrival': pirep.get('arrival', 'Unknown')
                             }
-                            await self.log_candy_transaction(pilot_data, candy_amount, f"PIREP Reward: #{pirep['pirep_id']}", flight_info=flight_info)
+                            await self.log_cookie_transaction(pilot_data, cookie_amount, f"PIREP Reward: #{pirep['pirep_id']} ({cookie_mult}x)", flight_info=flight_info)
                             processed_count += 1
                             
                 if processed_count >= 10:
@@ -365,7 +382,7 @@ class SpecialEventsCog(commands.Cog):
                 continue
 
     @tasks.loop(count=1)
-    async def candy_drop_scheduler(self):
+    async def cookie_drop_scheduler(self):
         max_iterations = 10000
         iteration_count = 0
         
@@ -382,42 +399,42 @@ class SpecialEventsCog(commands.Cog):
                     if channel:
                         try:
                             embed = discord.Embed(
-                                title="🍭 Candy Drop Alert!",
-                                description=f"A sweet surprise has appeared in the skies! {EVENT_CONFIG['CURRENCY_EMOJI']}\n"
-                                          f"The first {EVENT_CONFIG['DROP_LIMIT']} pilots to tap below will receive **50-150 Candy**!\n\n"
-                                          "⏰ Once you claim, you must wait 20 hours before claiming again —\n"
-                                          "let's make sure everyone gets a chance to enjoy the treats!",
+                                title="🎄🍪 Festive Cookie Surprise!",
+                                description=f"A magical winter surprise by Santa 🎅 has arrived! ❄\n"
+                                          f"The first {EVENT_CONFIG['DROP_LIMIT']} pilots to tap below will receive **50-150 Cookies** to celebrate the Christmas Spirit. {EVENT_CONFIG['CURRENCY_EMOJI']}\n\n"
+                                          "Once claimed, you must wait 20 hours before claiming again —\n"
+                                          "this keeps the treats fair for everyone. 🎁",
                                 color=EVENT_CONFIG["EMBED_COLOR"]
                             )
-                            embed.set_footer(text="QRV Halloween 2025 | Candy Drop System")
+                            embed.set_footer(text="QRV Christmas 2025 | Festive Cookie System")
                             embed.timestamp = discord.utils.utcnow()
                             
-                            view = CandyDropView(self)
+                            view = CookieDropView(self)
                             message = await channel.send(embed=embed, view=view)
                             view.message = message
                         except (discord.HTTPException, discord.Forbidden) as e:
-                            logger.error(f"Failed to send candy drop: {e}")
+                            logger.error(f"Failed to send cookie drop: {e}")
                             
                 iteration_count += 1
                 
             except Exception as e:
-                logger.error(f"Error in candy_drop_scheduler: {e}")
+                logger.error(f"Error in cookie_drop_scheduler: {e}")
                 await asyncio.sleep(60)
                 iteration_count += 1
 
     @pirep_checker.before_loop
-    @candy_drop_scheduler.before_loop
+    @cookie_drop_scheduler.before_loop
     async def before_tasks(self):
         await self.bot.wait_until_ready()
 
 async def setup(bot):
     cog = SpecialEventsCog(bot)
     await bot.add_cog(cog)
-    bot.add_view(CandyDropView(cog))
+    bot.add_view(CookieDropView(cog))
     
     if not cog.pirep_checker.is_running():
         cog.tasks_started = True
         cog.pirep_checker.start()
         
-    if not cog.candy_drop_scheduler.is_running():
-        cog.candy_drop_scheduler.start()
+    if not cog.cookie_drop_scheduler.is_running():
+        cog.cookie_drop_scheduler.start()

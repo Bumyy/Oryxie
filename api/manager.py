@@ -117,6 +117,12 @@ class InfiniteFlightAPIManager:
     async def get_aircraft(self) -> Dict:
         return await self._request('GET', '/aircraft')
     
+    async def get_aircraft_liveries(self, aircraft_id: str) -> Dict:
+        """
+        Fetches all available liveries for a specific aircraft ID.
+        """
+        return await self._request('GET', f'/aircraft/{aircraft_id}/liveries')
+    
     async def get_user_flights(self, user_id: str, hours: int = 72) -> Dict:
         """
         Get user flights using the correct Public API v2 endpoint.

@@ -41,6 +41,7 @@ class MyBot(commands.Bot):
         self.flightdata: FlightData = None
         self.if_api_manager: InfiniteFlightAPIManager = None
         self.aircraft_name_map = {}
+        self.livery_cache = {}
         # Services
         self.ai_service: AIService = None
         self.flight_service: FlightService = None
@@ -105,7 +106,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.callsign_finder')
             await self.load_extension('cogs.flight_poll_system')
             await self.load_extension('cogs.ticket_system')
-            await self.load_extension('cogs.database_audit')
+            await self.load_extension('cogs.pirep_validator')
             
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
