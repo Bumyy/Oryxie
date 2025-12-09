@@ -79,16 +79,28 @@ class MyBot(commands.Bot):
             print(f"ERROR: {e}")
 
          # --- Populate the aircraft name map ---
+        print("\n=== AIRCRAFT DATA FETCH DEBUG ===")
         print("Fetching aircraft data from Infinite Flight API...")
         aircraft_data = await self.if_api_manager.get_aircraft()
+        print(f"Raw aircraft_data type: {type(aircraft_data)}")
+        print(f"Aircraft data keys: {aircraft_data.keys() if aircraft_data else 'None'}")
+        
         if aircraft_data and aircraft_data.get('result'):
+            print(f"Number of aircraft in result: {len(aircraft_data['result'])}")
+            print("\nFirst 3 aircraft samples:")
+            for i, aircraft in enumerate(aircraft_data['result'][:3]):
+                print(f"  [{i}] ID: {aircraft.get('id')} | Name: {aircraft.get('name')}")
+            
             self.aircraft_name_map = {
                 aircraft['id']: aircraft['name'] 
                 for aircraft in aircraft_data['result']
             }
-            print(f"Successfully loaded {len(self.aircraft_name_map)} aircraft names.")
+            print(f"\nSuccessfully loaded {len(self.aircraft_name_map)} aircraft names.")
+            print(f"Sample IDs in map: {list(self.aircraft_name_map.keys())[:5]}")
         else:
             print("WARNING: Could not load aircraft names from the API. Aircraft will show as 'Unknown'.")
+            print(f"aircraft_data value: {aircraft_data}")
+        print("=== END AIRCRAFT DATA DEBUG ===\n")
             
         print("Loading extensions...")
         try:

@@ -53,6 +53,10 @@ class InfiniteFlightAPIManager:
         params['apikey'] = self.api_key
         url = f"{self.base_url}{endpoint}"
         
+        print(f"\n[IF API] {method} {endpoint}")
+        print(f"[IF API] Full URL: {url}")
+        print(f"[IF API] Params (excluding apikey): {[k for k in params.keys() if k != 'apikey']}")
+        
         # Ensure Content-Type: application/json for POST requests
         headers = kwargs.pop('headers', {})
         if method.upper() == 'POST' and 'json' in kwargs:
@@ -60,11 +64,24 @@ class InfiniteFlightAPIManager:
         
         try:
             async with session.request(method, url, params=params, headers=headers, **kwargs) as response:
+                print(f"[IF API] Response Status: {response.status}")
+                print(f"[IF API] Response Headers: {dict(response.headers)}")
                 response.raise_for_status()
                 
                 if 'application/json' in response.headers.get('Content-Type', ''):
-                    return await response.json()
-                return await response.text()
+                    json_data = await response.json()
+                    print(f"[IF API] Response type: JSON")
+                    print(f"[IF API] Response keys: {json_data.keys() if isinstance(json_data, dict) else 'Not a dict'}")
+                    if isinstance(json_data, dict) and 'result' in json_data:
+                        result = json_data['result']
+                        if isinstance(result, list):
+                            print(f"[IF API] Result is list with {len(result)} items")
+                        elif isinstance(result, dict):
+                            print(f"[IF API] Result is dict with keys: {result.keys()}")
+                    return json_data
+                text_data = await response.text()
+                print(f"[IF API] Response type: TEXT (length: {len(text_data)})")
+                return text_data
                 
         except aiohttp.ClientResponseError as e:
             print(f"API Request Error to {url}: {e.status}, message='{e.message}'")
@@ -115,7 +132,10 @@ class InfiniteFlightAPIManager:
         return await self._request('GET', '/tracks')
 
     async def get_aircraft(self) -> Dict:
-        return await self._request('GET', '/aircraft')
+        print("\n[DEBUG] get_aircraft() called")
+        result = await self._request('GET', '/aircraft')
+        print(f"[DEBUG] get_aircraft() returning: {type(result)}")
+        return result
     
     async def get_aircraft_liveries(self, aircraft_id: str) -> Dict:
         """
