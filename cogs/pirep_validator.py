@@ -127,8 +127,10 @@ class PirepPaginationView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         
         validator = self.bot.get_cog('PirepValidator')
-        debug_info = await validator.get_debug_info(self.pending_pireps[self.current_index])
-        await interaction.followup.send(debug_info, ephemeral=True)
+        debug_messages = await validator.get_debug_info(self.pending_pireps[self.current_index])
+        
+        for msg in debug_messages:
+            await interaction.followup.send(msg, ephemeral=True)
 
 class PirepValidator(commands.Cog):
     def __init__(self, bot: 'MyBot'):
@@ -367,119 +369,133 @@ class PirepValidator(commands.Cog):
 
     async def get_debug_info(self, pirep):
         """Get debug information for troubleshooting."""
-        debug_lines = []
-        debug_lines.append("```")
-        debug_lines.append("🔍 PIREP VALIDATION DEBUG")
-        debug_lines.append("="*60)
+        messages = []
         
-        debug_lines.append(f"\n📋 PIREP DATA:")
-        debug_lines.append(f"  ID: {pirep.get('pirep_id')}")
-        debug_lines.append(f"  Pilot: {pirep['pilot_name']}")
-        debug_lines.append(f"  Route: {pirep['departure']} → {pirep['arrival']}")
-        debug_lines.append(f"  Aircraft: {pirep['aircraft_name']}")
-        debug_lines.append(f"  Date (raw): {pirep['date']}")
-        debug_lines.append(f"  Date type: {type(pirep['date'])}")
+        # Part 1: PIREP Info
+        part1 = ["```", "🔍 PIREP VALIDATION DEBUG", "="*60]
+        part1.append(f"\n📋 PIREP DATA:")
+        part1.append(f"  ID: {pirep.get('pirep_id')}")
+        part1.append(f"  Pilot: {pirep['pilot_name']}")
+        part1.append(f"  Route: {pirep['departure']} → {pirep['arrival']}")
+        part1.append(f"  Aircraft: {pirep['aircraft_name']}")
+        part1.append(f"  Date (raw): {pirep['date']}")
+        part1.append(f"  Date type: {type(pirep['date'])}")
         
         pirep_datetime = pirep['date'] if hasattr(pirep['date'], 'date') else datetime.combine(pirep['date'], datetime.min.time())
-        debug_lines.append(f"  Date (parsed): {pirep_datetime}")
-        debug_lines.append(f"  Flight Time: {pirep['formatted_flighttime']} ({pirep.get('flighttime')}s)")
-        debug_lines.append(f"  Flight #: {pirep.get('flightnum', 'N/A')}")
+        part1.append(f"  Date (parsed): {pirep_datetime}")
+        part1.append(f"  Flight Time: {pirep['formatted_flighttime']} ({pirep.get('flighttime')}s)")
+        part1.append(f"  Flight #: {pirep.get('flightnum', 'N/A')}")
         
         ifuserid = await self.resolve_ifuserid(pirep)
-        debug_lines.append(f"\n🆔 IF User ID: {ifuserid}")
+        part1.append(f"\n🆔 IF User ID: {ifuserid}")
         
         if not ifuserid:
-            debug_lines.append("\n❌ No IF User ID - Cannot validate")
-            debug_lines.append("```")
-            return "\n".join(debug_lines)
+            part1.append("\n❌ No IF User ID - Cannot validate")
+            part1.append("```")
+            messages.append("\n".join(part1))
+            return messages
         
         try:
             user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
-            debug_lines.append(f"\n✅ API Response received")
+            part1.append(f"\n✅ API Response received")
         except Exception as e:
-            debug_lines.append(f"\n❌ API Error: {e}")
-            debug_lines.append("```")
-            return "\n".join(debug_lines)
+            part1.append(f"\n❌ API Error: {e}")
+            part1.append("```")
+            messages.append("\n".join(part1))
+            return messages
         
         if not user_flights_data or not user_flights_data.get('result'):
-            debug_lines.append("\n❌ No flight data from API")
-            debug_lines.append("```")
-            return "\n".join(debug_lines)
+            part1.append("\n❌ No flight data from API")
+            part1.append("```")
+            messages.append("\n".join(part1))
+            return messages
         
         result_data = user_flights_data['result']
         user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
         
-        debug_lines.append(f"\n✈️ Total flights from API: {len(user_flights)}")
-        debug_lines.append(f"\n🔎 SEARCHING FOR: {pirep['departure']} → {pirep['arrival']}")
-        debug_lines.append(f"   Date window: ±2 days from {pirep_datetime}")
-        debug_lines.append(f"\n📊 FLIGHT ANALYSIS:")
+        part1.append(f"\n✈️ Total flights: {len(user_flights)}")
+        part1.append(f"🔎 Looking for: {pirep['departure']} → {pirep['arrival']}")
+        part1.append(f"Date window: ±2 days from {pirep_datetime}")
+        part1.append("```")
+        messages.append("\n".join(part1))
         
+        # Part 2+: Flight Analysis (split into chunks)
         matching_flight = None
         for idx, flight in enumerate(user_flights[:10]):
-            debug_lines.append(f"\n  [{idx+1}] {flight.get('originAirport', '?')} → {flight.get('destinationAirport', '?')}")
+            flight_debug = ["```"]
+            flight_debug.append(f"[{idx+1}] {flight.get('originAirport', '?')} → {flight.get('destinationAirport', '?')}")
             
             if not isinstance(flight, dict):
-                debug_lines.append(f"      ⚠️ Not a dict: {type(flight)}")
+                flight_debug.append(f"  ⚠️ Not a dict: {type(flight)}")
+                flight_debug.append("```")
+                messages.append("\n".join(flight_debug))
                 continue
             
             origin = flight.get('originAirport', 'N/A')
             dest = flight.get('destinationAirport', 'N/A')
             created_raw = flight.get('created', 'MISSING')
             
-            debug_lines.append(f"      Callsign: {flight.get('callsign', 'N/A')}")
-            debug_lines.append(f"      Aircraft ID: {flight.get('aircraftId', 'N/A')}")
-            debug_lines.append(f"      Created (raw): {created_raw}")
-            debug_lines.append(f"      Time: {flight.get('totalTime', 0)} min")
+            flight_debug.append(f"  Callsign: {flight.get('callsign', 'N/A')}")
+            flight_debug.append(f"  Aircraft: {flight.get('aircraftId', 'N/A')}")
+            flight_debug.append(f"  Created: {created_raw}")
+            flight_debug.append(f"  Time: {flight.get('totalTime', 0)} min")
             
             route_match = (origin == pirep['departure'] and dest == pirep['arrival'])
-            debug_lines.append(f"      Route match: {route_match}")
+            flight_debug.append(f"  Route match: {route_match}")
             
             if not route_match:
                 if origin != pirep['departure']:
-                    debug_lines.append(f"        ❌ Origin: '{origin}' != '{pirep['departure']}'")
+                    flight_debug.append(f"    ❌ Origin: '{origin}' != '{pirep['departure']}'")
                 if dest != pirep['arrival']:
-                    debug_lines.append(f"        ❌ Dest: '{dest}' != '{pirep['arrival']}'")
+                    flight_debug.append(f"    ❌ Dest: '{dest}' != '{pirep['arrival']}'")
+                flight_debug.append("```")
+                messages.append("\n".join(flight_debug))
                 continue
             
-            debug_lines.append(f"      ✅ ROUTE MATCHES! Checking date...")
+            flight_debug.append(f"  ✅ ROUTE MATCHES! Checking date...")
             
             try:
                 flight_date = datetime.fromisoformat(created_raw)
-                debug_lines.append(f"        Parsed: {flight_date}")
-                debug_lines.append(f"        Has TZ: {flight_date.tzinfo is not None}")
+                flight_debug.append(f"    Parsed: {flight_date}")
+                flight_debug.append(f"    Has TZ: {flight_date.tzinfo is not None}")
                 
                 if flight_date.tzinfo:
                     flight_date = flight_date.replace(tzinfo=None)
-                    debug_lines.append(f"        After TZ removal: {flight_date}")
+                    flight_debug.append(f"    After TZ removal: {flight_date}")
                 
                 time_diff = abs(flight_date - pirep_datetime)
-                debug_lines.append(f"        Time diff: {time_diff}")
-                debug_lines.append(f"        Within 2 days: {time_diff < timedelta(days=2)}")
+                flight_debug.append(f"    Time diff: {time_diff}")
+                flight_debug.append(f"    Within 2 days: {time_diff < timedelta(days=2)}")
                 
                 if time_diff < timedelta(days=2):
                     matching_flight = flight
-                    debug_lines.append(f"        ✅✅✅ MATCH FOUND!")
+                    flight_debug.append(f"    ✅✅✅ MATCH FOUND!")
+                    flight_debug.append("```")
+                    messages.append("\n".join(flight_debug))
                     break
                 else:
-                    debug_lines.append(f"        ❌ Outside date window")
+                    flight_debug.append(f"    ❌ Outside date window")
             except Exception as e:
-                debug_lines.append(f"        ❌ Date parse error: {type(e).__name__}: {e}")
-                import traceback
-                debug_lines.append(f"        Traceback: {traceback.format_exc()[:200]}")
+                flight_debug.append(f"    ❌ Date error: {type(e).__name__}: {e}")
+            
+            flight_debug.append("```")
+            messages.append("\n".join(flight_debug))
         
+        # Final summary
+        summary = ["```"]
         if not matching_flight:
-            debug_lines.append(f"\n❌ NO MATCH FOUND in {min(len(user_flights), 10)} flights checked")
+            summary.append(f"❌ NO MATCH in {min(len(user_flights), 10)} flights")
             if len(user_flights) > 10:
-                debug_lines.append(f"   (Showing first 10 of {len(user_flights)} total)")
+                summary.append(f"(Showing first 10 of {len(user_flights)} total)")
         else:
-            debug_lines.append(f"\n✅ MATCH FOUND:")
-            debug_lines.append(f"   Callsign: {matching_flight.get('callsign')}")
-            debug_lines.append(f"   Aircraft: {matching_flight.get('aircraftId')}")
-            debug_lines.append(f"   Server: {matching_flight.get('server')}")
-            debug_lines.append(f"   Landings: {matching_flight.get('landingCount')}")
+            summary.append(f"✅ MATCH FOUND:")
+            summary.append(f"  Callsign: {matching_flight.get('callsign')}")
+            summary.append(f"  Aircraft: {matching_flight.get('aircraftId')}")
+            summary.append(f"  Server: {matching_flight.get('server')}")
+        summary.append("```")
+        messages.append("\n".join(summary))
         
-        debug_lines.append("```")
-        return "\n".join(debug_lines)
+        return messages
     
     async def get_flight_history(self, pirep):
         """Get flight history for the pilot."""
