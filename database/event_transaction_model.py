@@ -73,3 +73,23 @@ class EventTransactionModel:
             return False
             
         return await self.add_transaction(pilot_id, candy_amount, reason)
+
+    async def get_candy_balance_report(self) -> List[Dict]:
+        """Get candy balance for all members minus candy drops after Nov 1, 2025"""
+        query = """
+            SELECT 
+                et.pilot_id,
+                COALESCE(SUM(et.amount), 0) as total_balance,
+                COALESCE(SUM(CASE 
+                    WHEN et.reason LIKE %s 
+                    AND et.transaction_date > %s 
+                    THEN et.amount 
+                    ELSE 0 
+                END), 0) as candy_drop_after_nov1
+            FROM event_transactions et
+            WHERE et.currency_name = %s
+            GROUP BY et.pilot_id
+            HAVING total_balance > 0
+            ORDER BY total_balance DESC
+        """
+        return await self.db.fetch_all(query, ('Candy Drop Claim:%', '2025-11-01 00:00:00', self.currency_name))
