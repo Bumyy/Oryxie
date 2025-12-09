@@ -238,8 +238,15 @@ class UserConfirmView(discord.ui.View):
         try:
             if self.action_type == "add":
                 await interaction.channel.set_permissions(self.user, read_messages=True, send_messages=True)
+                
+                # Rename channel to new user's name
+                current_name = interaction.channel.name
+                ticket_type = current_name.split('-')[0]  # Extract ticket type (e.g., 'general-support', 'pirep-support', 'loa')
+                new_name = f"{ticket_type}-{self.user.display_name}"
+                await interaction.channel.edit(name=new_name)
+                
                 await interaction.response.edit_message(
-                    content=f"✅ Added {self.user.mention} ({self.callsign}) to the ticket.",
+                    content=f"✅ Added {self.user.mention} ({self.callsign}) to the ticket and renamed channel.",
                     view=None
                 )
             elif self.action_type == "enquiry":
@@ -387,39 +394,6 @@ class TicketSystem(commands.Cog):
     async def check_roles(self, interaction: discord.Interaction):
         roles = [role.name for role in interaction.user.roles]
         await interaction.response.send_message(f"Your roles: {', '.join(roles)}", ephemeral=True)
-    
-    @app_commands.command(name="staff_enquiry", description="Create staff enquiry ticket")
-    @app_commands.describe(
-        callsign="Callsign number (e.g., 777 for QRV777)",
-        enquiry_type="Type of enquiry"
-    )
-    @app_commands.choices(enquiry_type=[
-        app_commands.Choice(name="IFC Enquiry", value="ifc"),
-        app_commands.Choice(name="Pirep Enquiry", value="pirep")
-    ])
-    async def staff_enquiry(self, interaction: discord.Interaction, callsign: str, enquiry_type: app_commands.Choice[str]):
-        staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
-        is_staff = staff_role in interaction.user.roles if staff_role else False
-        
-        if not is_staff:
-            return await interaction.response.send_message("Only staff can use this command.", ephemeral=True)
-        
-        target_user = None
-        full_callsign = f"QRV{callsign}"
-        
-        if self.pilots_model:
-            pilot_data = await self.pilots_model.get_pilot_by_callsign(full_callsign)
-            if pilot_data and pilot_data.get('discordid'):
-                target_user = interaction.guild.get_member(int(pilot_data['discordid']))
-        
-        view = UserConfirmView(target_user, full_callsign, "enquiry")
-        view.enquiry_type = enquiry_type.value
-        
-        user_info = f" and add {target_user.mention}" if target_user else " (pilot not found in database)"
-        await interaction.response.send_message(
-            f"Do you want to create a {enquiry_type.name} ticket for {full_callsign}{user_info}?",
-            view=view, ephemeral=True
-        )
 
     @app_commands.command(name="ticket_setup", description="Setup ticket system in current channel")
     @app_commands.describe(title="Title for the ticket embed", description="Description for the ticket embed")
