@@ -333,7 +333,8 @@ class SpecialEventsCog(commands.Cog):
         if top3_data:
             for i, holder in enumerate(top3_data, 1):
                 emoji = ["🥇", "🥈", "🥉"][i-1]
-                message_parts.append(f"{emoji} {holder['callsign']}: {holder['total_cookies']} {EVENT_CONFIG['CURRENCY_NAME']}")
+                total = holder.get('total_cookies') or holder.get('total_candy', 0)
+                message_parts.append(f"{emoji} {holder['callsign']}: {total} {EVENT_CONFIG['CURRENCY_NAME']}")
         else:
             message_parts.append("No cookie holders yet!")
             

@@ -156,6 +156,66 @@ class RoutesModel:
                     seen_aircraft.add(aircraft_key)
         return route_data
 
+    async def find_routes_to_airport(self, arr_icao: str) -> List[Dict]:
+        """
+        Finds all routes going to a specific airport.
+        
+        Args:
+            arr_icao: The arrival airport ICAO code.
+        
+        Returns:
+            A list of dictionaries containing route details.
+        """
+        query = """
+            SELECT DISTINCT
+                r.dep,
+                r.arr,
+                r.fltnum,
+                r.duration,
+                a.icao AS aircraft_icao,
+                a.name AS aircraft_name
+            FROM
+                routes r
+            LEFT JOIN
+                route_aircraft ra ON r.id = ra.routeid
+            LEFT JOIN
+                aircraft a ON ra.aircraftid = a.id
+            WHERE
+                r.arr = %s
+            ORDER BY
+                r.dep, r.fltnum
+        """
+        
+        results = await self.db.fetch_all(query, (arr_icao,))
+        
+        if not results:
+            return []
+        
+        # Group results by route (dep-arr-fltnum combination)
+        routes_dict = {}
+        for row in results:
+            route_key = (row['dep'], row['arr'], row['fltnum'])
+            
+            if route_key not in routes_dict:
+                routes_dict[route_key] = {
+                    'dep': row['dep'],
+                    'arr': row['arr'],
+                    'fltnum': row['fltnum'],
+                    'duration': row['duration'],
+                    'aircraft': []
+                }
+            
+            # Add aircraft if present
+            if row['aircraft_icao'] and row['aircraft_name']:
+                aircraft_info = {
+                    'icao': row['aircraft_icao'],
+                    'name': row['aircraft_name']
+                }
+                if aircraft_info not in routes_dict[route_key]['aircraft']:
+                    routes_dict[route_key]['aircraft'].append(aircraft_info)
+        
+        return list(routes_dict.values())
+
     async def get_all_liveries(self) -> List[str]:
         """
         Gets all unique livery names from the aircraft table.
