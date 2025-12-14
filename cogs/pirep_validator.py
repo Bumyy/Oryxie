@@ -369,133 +369,31 @@ class PirepValidator(commands.Cog):
 
     async def get_debug_info(self, pirep):
         """Get debug information for troubleshooting."""
-        messages = []
-        
-        # Part 1: PIREP Info
-        part1 = ["```", "🔍 PIREP VALIDATION DEBUG", "="*60]
-        part1.append(f"\n📋 PIREP DATA:")
-        part1.append(f"  ID: {pirep.get('pirep_id')}")
-        part1.append(f"  Pilot: {pirep['pilot_name']}")
-        part1.append(f"  Route: {pirep['departure']} → {pirep['arrival']}")
-        part1.append(f"  Aircraft: {pirep['aircraft_name']}")
-        part1.append(f"  Date (raw): {pirep['date']}")
-        part1.append(f"  Date type: {type(pirep['date'])}")
-        
-        pirep_datetime = pirep['date'] if hasattr(pirep['date'], 'date') else datetime.combine(pirep['date'], datetime.min.time())
-        part1.append(f"  Date (parsed): {pirep_datetime}")
-        part1.append(f"  Flight Time: {pirep['formatted_flighttime']} ({pirep.get('flighttime')}s)")
-        part1.append(f"  Flight #: {pirep.get('flightnum', 'N/A')}")
-        
         ifuserid = await self.resolve_ifuserid(pirep)
-        part1.append(f"\n🆔 IF User ID: {ifuserid}")
         
         if not ifuserid:
-            part1.append("\n❌ No IF User ID - Cannot validate")
-            part1.append("```")
-            messages.append("\n".join(part1))
-            return messages
+            return ["No IF User ID found"]
         
         try:
             user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
-            part1.append(f"\n✅ API Response received")
         except Exception as e:
-            part1.append(f"\n❌ API Error: {e}")
-            part1.append("```")
-            messages.append("\n".join(part1))
-            return messages
+            return [f"API Error: {e}"]
         
         if not user_flights_data or not user_flights_data.get('result'):
-            part1.append("\n❌ No flight data from API")
-            part1.append("```")
-            messages.append("\n".join(part1))
-            return messages
+            return ["No flight data from API"]
         
         result_data = user_flights_data['result']
         user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
         
-        part1.append(f"\n✈️ Total flights: {len(user_flights)}")
-        part1.append(f"🔎 Looking for: {pirep['departure']} → {pirep['arrival']}")
-        part1.append(f"Date window: ±2 days from {pirep_datetime}")
-        part1.append("```")
-        messages.append("\n".join(part1))
+        date_info = []
+        date_info.append(f"**PIREP Date:** {pirep['date']} (type: {type(pirep['date'])})")
         
-        # Part 2+: Flight Analysis (split into chunks)
-        matching_flight = None
-        for idx, flight in enumerate(user_flights[:10]):
-            flight_debug = ["```"]
-            flight_debug.append(f"[{idx+1}] {flight.get('originAirport', '?')} → {flight.get('destinationAirport', '?')}")
-            
-            if not isinstance(flight, dict):
-                flight_debug.append(f"  ⚠️ Not a dict: {type(flight)}")
-                flight_debug.append("```")
-                messages.append("\n".join(flight_debug))
-                continue
-            
-            origin = flight.get('originAirport', 'N/A')
-            dest = flight.get('destinationAirport', 'N/A')
-            created_raw = flight.get('created', 'MISSING')
-            
-            flight_debug.append(f"  Callsign: {flight.get('callsign', 'N/A')}")
-            flight_debug.append(f"  Aircraft: {flight.get('aircraftId', 'N/A')}")
-            flight_debug.append(f"  Created: {created_raw}")
-            flight_debug.append(f"  Time: {flight.get('totalTime', 0)} min")
-            
-            route_match = (origin == pirep['departure'] and dest == pirep['arrival'])
-            flight_debug.append(f"  Route match: {route_match}")
-            
-            if not route_match:
-                if origin != pirep['departure']:
-                    flight_debug.append(f"    ❌ Origin: '{origin}' != '{pirep['departure']}'")
-                if dest != pirep['arrival']:
-                    flight_debug.append(f"    ❌ Dest: '{dest}' != '{pirep['arrival']}'")
-                flight_debug.append("```")
-                messages.append("\n".join(flight_debug))
-                continue
-            
-            flight_debug.append(f"  ✅ ROUTE MATCHES! Checking date...")
-            
-            try:
-                flight_date = datetime.fromisoformat(created_raw)
-                flight_debug.append(f"    Parsed: {flight_date}")
-                flight_debug.append(f"    Has TZ: {flight_date.tzinfo is not None}")
-                
-                if flight_date.tzinfo:
-                    flight_date = flight_date.replace(tzinfo=None)
-                    flight_debug.append(f"    After TZ removal: {flight_date}")
-                
-                time_diff = abs(flight_date - pirep_datetime)
-                flight_debug.append(f"    Time diff: {time_diff}")
-                flight_debug.append(f"    Within 2 days: {time_diff < timedelta(days=2)}")
-                
-                if time_diff < timedelta(days=2):
-                    matching_flight = flight
-                    flight_debug.append(f"    ✅✅✅ MATCH FOUND!")
-                    flight_debug.append("```")
-                    messages.append("\n".join(flight_debug))
-                    break
-                else:
-                    flight_debug.append(f"    ❌ Outside date window")
-            except Exception as e:
-                flight_debug.append(f"    ❌ Date error: {type(e).__name__}: {e}")
-            
-            flight_debug.append("```")
-            messages.append("\n".join(flight_debug))
+        for idx, flight in enumerate(user_flights[:5]):
+            if isinstance(flight, dict):
+                created_raw = flight.get('created', 'MISSING')
+                date_info.append(f"**Flight {idx+1}:** {created_raw}")
         
-        # Final summary
-        summary = ["```"]
-        if not matching_flight:
-            summary.append(f"❌ NO MATCH in {min(len(user_flights), 10)} flights")
-            if len(user_flights) > 10:
-                summary.append(f"(Showing first 10 of {len(user_flights)} total)")
-        else:
-            summary.append(f"✅ MATCH FOUND:")
-            summary.append(f"  Callsign: {matching_flight.get('callsign')}")
-            summary.append(f"  Aircraft: {matching_flight.get('aircraftId')}")
-            summary.append(f"  Server: {matching_flight.get('server')}")
-        summary.append("```")
-        messages.append("\n".join(summary))
-        
-        return messages
+        return ["\n".join(date_info)]
     
     async def get_flight_history(self, pirep):
         """Get flight history for the pilot."""
@@ -503,72 +401,43 @@ class PirepValidator(commands.Cog):
         
         if not ifuserid:
             return discord.Embed(
-                title="❌ Flight History Unavailable",
-                description="No Infinite Flight User ID found for this pilot.",
+                title="❌ No IF User ID",
+                description="Cannot get flight history",
                 color=discord.Color.red()
             )
         
         try:
             user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
-        except:
+        except Exception as e:
             return discord.Embed(
-                title="⚠️ Flight History Unavailable",
-                description="Could not fetch flight data from API.",
+                title="⚠️ API Error",
+                description=f"Error: {e}",
                 color=discord.Color.orange()
             )
         
         if not user_flights_data or not user_flights_data.get('result'):
             return discord.Embed(
-                title="⚠️ Flight History Unavailable",
-                description="Could not fetch flight data from API.",
+                title="⚠️ No Data",
+                description="No flight data from API",
                 color=discord.Color.orange()
             )
         
         result_data = user_flights_data['result']
         user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
-        expert_flights = [f for f in user_flights if isinstance(f, dict) and f.get('server', '').lower() == 'expert']
         
-        pirep_date = pirep['date'] if hasattr(pirep['date'], 'date') else datetime.combine(pirep['date'], datetime.min.time())
+        date_info = []
+        date_info.append(f"**PIREP Date:** {pirep['date']}")
         
-        past_flights = []
-        future_flights = []
+        for idx, flight in enumerate(user_flights[:3]):
+            if isinstance(flight, dict):
+                created_raw = flight.get('created', 'MISSING')
+                date_info.append(f"**API Flight {idx+1}:** {created_raw}")
         
-        for flight in expert_flights:
-            try:
-                flight_date = datetime.fromisoformat(flight['created'])
-                if flight_date.tzinfo:
-                    flight_date = flight_date.replace(tzinfo=None)
-                
-                if flight_date <= pirep_date:
-                    past_flights.append((flight, flight_date))
-                else:
-                    future_flights.append((flight, flight_date))
-            except:
-                continue
-        
-        past_flights.sort(key=lambda x: x[1], reverse=True)
-        future_flights.sort(key=lambda x: x[1])
-        
-        embed = discord.Embed(
-            title=f"📅 Flight History - {pirep['pilot_name']}",
-            description=f"Expert Server flights around PIREP submission date: **{pirep_date.strftime('%d %b %Y')}**",
+        return discord.Embed(
+            title="📅 Date Debug",
+            description="\n".join(date_info),
             color=discord.Color.blue()
         )
-        
-        if past_flights:
-            past_text = [f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 {f.get('callsign', 'N/A')}" for f, fd in past_flights[:10]]
-            embed.add_field(name="⏪ Past Flights (Last 3 Days)", value="\n".join(past_text) if past_text else "No flights", inline=False)
-        else:
-            embed.add_field(name="⏪ Past Flights (Last 3 Days)", value="No Expert server flights found", inline=False)
-        
-        if future_flights:
-            future_text = [f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 {f.get('callsign', 'N/A')}" for f, fd in future_flights[:10]]
-            embed.add_field(name="⏩ Future Flights (After Submission)", value="\n".join(future_text) if future_text else "No flights", inline=False)
-        else:
-            embed.add_field(name="⏩ Future Flights (After Submission)", value="No future flights found", inline=False)
-        
-        embed.set_footer(text=f"PIREP ID: {pirep['pirep_id']} | Total Expert Flights: {len(expert_flights)}")
-        return embed
     
     async def check_route_database(self, departure, arrival, flight_num):
         """Check if the flight number exists in the routes database."""
