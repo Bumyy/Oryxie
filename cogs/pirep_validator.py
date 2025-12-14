@@ -229,7 +229,7 @@ class PirepValidator(commands.Cog):
                     flight_date = datetime.fromisoformat(flight['created'])
                     if flight_date.tzinfo:
                         flight_date = flight_date.replace(tzinfo=None)
-                    if abs(flight_date - pirep_datetime) < timedelta(days=2):
+                    if abs(flight_date - pirep_datetime) < timedelta(days=3):
                         matching_flight = flight
                         break
                 except:
@@ -385,15 +385,43 @@ class PirepValidator(commands.Cog):
         result_data = user_flights_data['result']
         user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
         
-        date_info = []
-        date_info.append(f"**PIREP Date:** {pirep['date']} (type: {type(pirep['date'])})")
+        pirep_datetime = pirep['date'] if hasattr(pirep['date'], 'date') else datetime.combine(pirep['date'], datetime.min.time())
         
-        for idx, flight in enumerate(user_flights[:5]):
+        debug_info = []
+        debug_info.append(f"**PIREP Date Raw:** {pirep['date']} ({type(pirep['date'])})")
+        debug_info.append(f"**PIREP DateTime:** {pirep_datetime}")
+        debug_info.append(f"**Looking for:** {pirep['departure']} → {pirep['arrival']}")
+        debug_info.append(f"**Time Window:** ±3 days")
+        debug_info.append("")
+        
+        for idx, flight in enumerate(user_flights[:3]):
             if isinstance(flight, dict):
+                origin = flight.get('originAirport', 'N/A')
+                dest = flight.get('destinationAirport', 'N/A')
                 created_raw = flight.get('created', 'MISSING')
-                date_info.append(f"**Flight {idx+1}:** {created_raw}")
+                
+                debug_info.append(f"**Flight {idx+1}:** {origin} → {dest}")
+                debug_info.append(f"  Raw: {created_raw}")
+                
+                route_match = (origin == pirep['departure'] and dest == pirep['arrival'])
+                debug_info.append(f"  Route Match: {route_match}")
+                
+                if route_match:
+                    try:
+                        flight_date = datetime.fromisoformat(created_raw)
+                        debug_info.append(f"  Parsed: {flight_date}")
+                        if flight_date.tzinfo:
+                            flight_date = flight_date.replace(tzinfo=None)
+                            debug_info.append(f"  No TZ: {flight_date}")
+                        
+                        time_diff = abs(flight_date - pirep_datetime)
+                        debug_info.append(f"  Diff: {time_diff}")
+                        debug_info.append(f"  Match: {time_diff < timedelta(days=3)}")
+                    except Exception as e:
+                        debug_info.append(f"  Error: {e}")
+                debug_info.append("")
         
-        return ["\n".join(date_info)]
+        return ["\n".join(debug_info)]
     
     async def get_flight_history(self, pirep):
         """Get flight history for the pilot."""
