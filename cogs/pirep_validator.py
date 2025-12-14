@@ -5,6 +5,12 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 import re
 
+def parse_api_datetime(date_string):
+    """Parse API datetime string handling microseconds + Z format."""
+    if date_string.endswith('Z'):
+        date_string = date_string[:-1] + '+00:00'
+    return datetime.fromisoformat(date_string)
+
 if TYPE_CHECKING:
     from ..bot import MyBot
 
@@ -226,7 +232,7 @@ class PirepValidator(commands.Cog):
         for flight in user_flights:
             if isinstance(flight, dict) and flight.get('originAirport') == pirep['departure'] and flight.get('destinationAirport') == pirep['arrival']:
                 try:
-                    flight_date = datetime.fromisoformat(flight['created'])
+                    flight_date = parse_api_datetime(flight['created'])
                     if flight_date.tzinfo:
                         flight_date = flight_date.replace(tzinfo=None)
                     if abs(flight_date - pirep_datetime) < timedelta(days=3):
@@ -262,7 +268,7 @@ class PirepValidator(commands.Cog):
                 if isinstance(flight, dict):
                     livery_name = await self.resolve_livery_name(flight.get('aircraftId'), flight.get('liveryId'))
                     try:
-                        flight_date = datetime.fromisoformat(flight['created'])
+                        flight_date = parse_api_datetime(flight['created'])
                         if flight_date.tzinfo is not None:
                             flight_date = flight_date.replace(tzinfo=None)
                         date_str = flight_date.strftime('%m/%d %H:%M')
@@ -289,7 +295,7 @@ class PirepValidator(commands.Cog):
         livery_name = await self.resolve_livery_name(matching_flight.get('aircraftId'), matching_flight.get('liveryId'))
         
         try:
-            flight_date = datetime.fromisoformat(matching_flight['created'])
+            flight_date = parse_api_datetime(matching_flight['created'])
             if flight_date.tzinfo is not None:
                 flight_date = flight_date.replace(tzinfo=None)
             date_str = flight_date.strftime('%d %b %Y %H:%M Z')
@@ -408,7 +414,7 @@ class PirepValidator(commands.Cog):
                 
                 if route_match:
                     try:
-                        flight_date = datetime.fromisoformat(created_raw)
+                        flight_date = parse_api_datetime(created_raw)
                         debug_info.append(f"  Parsed: {flight_date}")
                         if flight_date.tzinfo:
                             flight_date = flight_date.replace(tzinfo=None)
