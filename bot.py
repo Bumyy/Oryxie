@@ -104,6 +104,7 @@ class MyBot(commands.Bot):
             
         print("Loading extensions...")
         try:
+            await self.load_extension('cogs.special_events')
             await self.load_extension('cogs.pingpong')
             await self.load_extension('cogs.pireps')
             await self.load_extension('cogs.roster')
