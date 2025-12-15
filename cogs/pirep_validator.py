@@ -243,8 +243,10 @@ class PirepValidator(commands.Cog):
 
         try:
             route_valid = await self.check_route_database(pirep['departure'], pirep['arrival'], pirep.get('flightnum'))
+            route_exists = await self.check_route_exists(pirep['departure'], pirep['arrival'])
         except:
             route_valid = False
+            route_exists = False
 
         if not matching_flight:
             ifc_username = self.extract_ifc_username(pirep.get('ifc'))
@@ -310,8 +312,10 @@ class PirepValidator(commands.Cog):
             issues.append("Aircraft mismatch")
         if multiplier_text.startswith('❌'):
             issues.append("Invalid time")
-        if not route_valid:
-            issues.append("Flight number not in route database")
+        if not route_exists:
+            issues.append("Route not in database")
+        elif not route_valid:
+            issues.append("Flight number not valid for route")
         
         multiplier_used = False
         high_multiplier = False
@@ -340,7 +344,12 @@ class PirepValidator(commands.Cog):
             embed_color = discord.Color.red()
             status_text = "🛑 REVIEW REQUIRED"
         
-        flight_num_status = "✅ Valid" if route_valid else "⚠️ Not in CC"
+        if route_exists and route_valid:
+            flight_num_status = "✅ Valid"
+        elif route_exists:
+            flight_num_status = "⚠️ Route exists, flight # invalid"
+        else:
+            flight_num_status = "⚠️ Route not in database"
         ifc_username = self.extract_ifc_username(pirep.get('ifc'))
         
         embed = discord.Embed(
@@ -435,43 +444,72 @@ class PirepValidator(commands.Cog):
         
         if not ifuserid:
             return discord.Embed(
-                title="❌ No IF User ID",
-                description="Cannot get flight history",
+                title="❌ Flight History Unavailable",
+                description="No Infinite Flight User ID found for this pilot.",
                 color=discord.Color.red()
             )
         
         try:
             user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
-        except Exception as e:
+        except:
             return discord.Embed(
-                title="⚠️ API Error",
-                description=f"Error: {e}",
+                title="⚠️ Flight History Unavailable",
+                description="Could not fetch flight data from API.",
                 color=discord.Color.orange()
             )
         
         if not user_flights_data or not user_flights_data.get('result'):
             return discord.Embed(
-                title="⚠️ No Data",
-                description="No flight data from API",
+                title="⚠️ Flight History Unavailable",
+                description="Could not fetch flight data from API.",
                 color=discord.Color.orange()
             )
         
         result_data = user_flights_data['result']
         user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
+        expert_flights = [f for f in user_flights if isinstance(f, dict) and f.get('server', '').lower() == 'expert']
         
-        date_info = []
-        date_info.append(f"**PIREP Date:** {pirep['date']}")
+        pirep_date = pirep['date'] if hasattr(pirep['date'], 'date') else datetime.combine(pirep['date'], datetime.min.time())
         
-        for idx, flight in enumerate(user_flights[:3]):
-            if isinstance(flight, dict):
-                created_raw = flight.get('created', 'MISSING')
-                date_info.append(f"**API Flight {idx+1}:** {created_raw}")
+        past_flights = []
+        future_flights = []
         
-        return discord.Embed(
-            title="📅 Date Debug",
-            description="\n".join(date_info),
+        for flight in expert_flights:
+            try:
+                flight_date = parse_api_datetime(flight['created'])
+                if flight_date.tzinfo:
+                    flight_date = flight_date.replace(tzinfo=None)
+                
+                if flight_date <= pirep_date:
+                    past_flights.append((flight, flight_date))
+                else:
+                    future_flights.append((flight, flight_date))
+            except:
+                continue
+        
+        past_flights.sort(key=lambda x: x[1], reverse=True)
+        future_flights.sort(key=lambda x: x[1])
+        
+        embed = discord.Embed(
+            title=f"📅 Flight History - {pirep['pilot_name']}",
+            description=f"Expert Server flights around PIREP submission date: **{pirep_date.strftime('%d %b %Y')}**",
             color=discord.Color.blue()
         )
+        
+        if past_flights:
+            past_text = [f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 {f.get('callsign', 'N/A')}" for f, fd in past_flights[:10]]
+            embed.add_field(name="⏪ Past Flights (Last 3 Days)", value="\n".join(past_text) if past_text else "No flights", inline=False)
+        else:
+            embed.add_field(name="⏪ Past Flights (Last 3 Days)", value="No Expert server flights found", inline=False)
+        
+        if future_flights:
+            future_text = [f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 {f.get('callsign', 'N/A')}" for f, fd in future_flights[:10]]
+            embed.add_field(name="⏩ Future Flights (After Submission)", value="\n".join(future_text) if future_text else "No flights", inline=False)
+        else:
+            embed.add_field(name="⏩ Future Flights (After Submission)", value="No future flights found", inline=False)
+        
+        embed.set_footer(text=f"PIREP ID: {pirep['pirep_id']} | Total Expert Flights: {len(expert_flights)}")
+        return embed
     
     async def check_route_database(self, departure, arrival, flight_num):
         """Check if the flight number exists in the routes database."""
@@ -483,6 +521,14 @@ class PirepValidator(commands.Cog):
             if route_data:
                 return self.validate_flight_number(flight_num, route_data['fltnum'])
             return False
+        except:
+            return False
+    
+    async def check_route_exists(self, departure, arrival):
+        """Check if the route exists in the database."""
+        try:
+            route_data = await self.bot.routes_model.find_route_by_icao(departure, arrival)
+            return route_data is not None
         except:
             return False
     

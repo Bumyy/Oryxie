@@ -173,7 +173,7 @@ async def start_bot():
 
     async with bot:
         await bot.start(TOKEN)
-
+       # logger # 
 if __name__ == '__main__':
     logger = logging.getLogger('discord')
     logger.setLevel(logging.INFO)

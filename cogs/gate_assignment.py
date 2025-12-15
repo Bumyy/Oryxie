@@ -24,7 +24,7 @@ def format_duration(seconds: int) -> str:
         return ""
 
 class FlightDetailsModal(discord.ui.Modal):
-    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str):
+    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str, event_organiser_text: str = "", event_organiser_mention: str = ""):
 
         
         try:
@@ -32,6 +32,8 @@ class FlightDetailsModal(discord.ui.Modal):
             super().__init__(title=title)
             
             self.sorted_attendees = sorted_attendees
+            self.event_organiser_text = event_organiser_text
+            self.event_organiser_mention = event_organiser_mention
 
             # Ensure default message fits in modal
             safe_default = default_message[:1800] if len(default_message) > 1800 else default_message
@@ -151,7 +153,11 @@ class FlightDetailsModal(discord.ui.Modal):
                     else:
                         gate_assignment_text += f"- {line.upper()}: Vacant\n"
             
-            final_message = self.message_content.value + gate_assignment_text
+            # Add event rules with dynamic event organiser mention
+            organiser_rule = f"Copy flight plan from {self.event_organiser_mention} only" if self.event_organiser_mention else "Copy flight plan from @event organiser only"
+            event_rules = f"\n\n**Event Rules:**\n1) {organiser_rule}\n2) On air, everyone should maintain at least 5nm distance separation\n3) All participants should have the same cruise speed and cruise altitude before setting flight in AP+\n4) Taxi speed will not exceed 25 knots in straight lines and 10 knots during turns\n5) During turns, always keep an eye on surroundings - blocking other pilot paths and high-speed taxi will not be tolerated\n6) Any violation of the above rules will result in warnings and retraining\n7) Enjoy your flight!"
+            
+            final_message = self.message_content.value + self.event_organiser_text + gate_assignment_text + event_rules
             
             # Handle long messages by splitting
             message_chunks = self.split_message(final_message)
@@ -197,7 +203,7 @@ class FlightDetailsModal(discord.ui.Modal):
                 pass
 
 class GateAssignmentView(discord.ui.View):
-    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str):
+    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str, event_organiser_text: str = "", event_organiser_mention: str = ""):
 
         
         try:
@@ -208,6 +214,8 @@ class GateAssignmentView(discord.ui.View):
             self.sorted_attendees = sorted_attendees
             self.default_message = default_message
             self.flight_number = flight_number
+            self.event_organiser_text = event_organiser_text
+            self.event_organiser_mention = event_organiser_mention
             
         except Exception as e:
             logger.error(f"GateAssignmentView initialization failed: {e}")
@@ -220,7 +228,7 @@ class GateAssignmentView(discord.ui.View):
         try:
             # Truncate default message if too long for modal
             truncated_message = self.default_message[:1800] if len(self.default_message) > 1800 else self.default_message
-            modal = FlightDetailsModal(self.event_name, self.sorted_attendees, truncated_message, self.flight_number)
+            modal = FlightDetailsModal(self.event_name, self.sorted_attendees, truncated_message, self.flight_number, self.event_organiser_text, self.event_organiser_mention)
             await interaction.response.send_modal(modal)
             
         except discord.InteractionResponded as e:
@@ -289,7 +297,7 @@ class GateAssignment(commands.Cog):
 
     @app_commands.command(name="gate_assignment", description="Assigns event gates to attendees based on rank.")
     @app_commands.autocomplete(event=event_autocomplete)
-    async def gate_assignment(self, interaction: discord.Interaction, event: str, flight_number: str = None):
+    async def gate_assignment(self, interaction: discord.Interaction, event: str, flight_number: str = None, event_organiser: str = None):
         await interaction.response.defer(ephemeral=True)
 
         if not any(role.name.lower() == "staff" for role in interaction.user.roles):
@@ -350,6 +358,29 @@ class GateAssignment(commands.Cog):
 
         callsign = self.generate_callsign(flight_number) if flight_number else ''
         
+        # Handle event organiser lookup
+        event_organiser_text = ""
+        event_organiser_mention = ""
+        if event_organiser:
+            event_organiser = event_organiser.strip()
+            if event_organiser.isdigit() and len(event_organiser) == 3:
+                full_callsign = f"QRV{event_organiser}"
+                try:
+                    pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(full_callsign)
+                    if pilot_data and pilot_data.get('discordid'):
+                        event_organiser_text = f"\n**👑 Event Organiser:** <@{pilot_data['discordid']}>\n"
+                        event_organiser_mention = f"<@{pilot_data['discordid']}>"
+                    else:
+                        event_organiser_text = f"\n**👑 Event Organiser:** {full_callsign} (Not found in database)\n"
+                        event_organiser_mention = full_callsign
+                except Exception as e:
+                    logger.error(f"Error looking up event organiser: {e}")
+                    event_organiser_text = f"\n**👑 Event Organiser:** {full_callsign}\n"
+                    event_organiser_mention = full_callsign
+            else:
+                event_organiser_text = f"\n**👑 Event Organiser:** {event_organiser}\n"
+                event_organiser_mention = event_organiser
+        
         default_message = f"""{scheduled_event.name}
 **📅 Date:** {current_date}
 **⏰ Time:** {event_time}
@@ -370,7 +401,7 @@ class GateAssignment(commands.Cog):
 **💨 Cruise Speed:** M"""
         
         try:
-            view = GateAssignmentView(scheduled_event.name, sorted_attendees, default_message, flight_number)
+            view = GateAssignmentView(scheduled_event.name, sorted_attendees, default_message, flight_number, event_organiser_text, event_organiser_mention)
             await interaction.followup.send(status_message, view=view, ephemeral=True)
         except Exception as e:
             logger.error(f"Failed to create view or send message: {e}")
