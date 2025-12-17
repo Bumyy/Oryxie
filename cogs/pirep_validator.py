@@ -9,6 +9,17 @@ def parse_api_datetime(date_string):
     """Parse API datetime string handling microseconds + Z format."""
     if date_string.endswith('Z'):
         date_string = date_string[:-1] + '+00:00'
+    
+    # Handle microseconds with more than 6 digits by truncating to 6
+    import re
+    if '+' in date_string or 'Z' in date_string:
+        # Find microseconds pattern and truncate if needed
+        microsecond_pattern = r'\.(\d{7,})([+-]|Z)'
+        match = re.search(microsecond_pattern, date_string)
+        if match:
+            microseconds = match.group(1)[:6]  # Keep only first 6 digits
+            date_string = re.sub(microsecond_pattern, f'.{microseconds}' + r'\g<2>', date_string)
+    
     return datetime.fromisoformat(date_string)
 
 if TYPE_CHECKING:
@@ -269,6 +280,8 @@ class PirepValidator(commands.Cog):
             for flight in user_flights[:5]:
                 if isinstance(flight, dict):
                     livery_name = await self.resolve_livery_name(flight.get('aircraftId'), flight.get('liveryId'))
+                    aircraft_name = self.bot.aircraft_name_map.get(flight.get('aircraftId'), "Unknown Aircraft")
+                    landings = flight.get('landingCount', 0) if flight.get('landingCount') is not None else 0
                     try:
                         flight_date = parse_api_datetime(flight['created'])
                         if flight_date.tzinfo is not None:
@@ -277,7 +290,7 @@ class PirepValidator(commands.Cog):
                     except:
                         date_str = 'Unknown'
                     time_str = format_flight_time(int(flight.get('totalTime', 0) * 60))
-                    recent_flights.append(f"`{date_str}` {flight.get('originAirport', 'N/A')} → {flight.get('destinationAirport', 'N/A')} ({time_str})\n   **{flight.get('callsign', 'N/A')}** • {livery_name}")
+                    recent_flights.append(f"`{date_str}` {flight.get('originAirport', 'N/A')} → {flight.get('destinationAirport', 'N/A')} ({time_str})\n   📡 **{flight.get('callsign', 'N/A')}** • 🛬 {landings}\n   ✈️ {aircraft_name} • 🎨 {livery_name}")
             
             if recent_flights:
                 embed.add_field(name="📋 Recent Flights (Last 3 Days)", value="\n".join(recent_flights), inline=False)
@@ -497,13 +510,23 @@ class PirepValidator(commands.Cog):
         )
         
         if past_flights:
-            past_text = [f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 {f.get('callsign', 'N/A')}" for f, fd in past_flights[:10]]
+            past_text = []
+            for f, fd in past_flights[:10]:
+                aircraft_name = self.bot.aircraft_name_map.get(f.get('aircraftId'), "Unknown Aircraft")
+                livery_name = await self.resolve_livery_name(f.get('aircraftId'), f.get('liveryId'))
+                landings = f.get('landingCount', 0) if f.get('landingCount') is not None else 0
+                past_text.append(f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 **{f.get('callsign', 'N/A')}** • 🛬 {landings}\n   ✈️ {aircraft_name} • 🎨 {livery_name}")
             embed.add_field(name="⏪ Past Flights (Last 3 Days)", value="\n".join(past_text) if past_text else "No flights", inline=False)
         else:
             embed.add_field(name="⏪ Past Flights (Last 3 Days)", value="No Expert server flights found", inline=False)
         
         if future_flights:
-            future_text = [f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 {f.get('callsign', 'N/A')}" for f, fd in future_flights[:10]]
+            future_text = []
+            for f, fd in future_flights[:10]:
+                aircraft_name = self.bot.aircraft_name_map.get(f.get('aircraftId'), "Unknown Aircraft")
+                livery_name = await self.resolve_livery_name(f.get('aircraftId'), f.get('liveryId'))
+                landings = f.get('landingCount', 0) if f.get('landingCount') is not None else 0
+                future_text.append(f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 **{f.get('callsign', 'N/A')}** • 🛬 {landings}\n   ✈️ {aircraft_name} • 🎨 {livery_name}")
             embed.add_field(name="⏩ Future Flights (After Submission)", value="\n".join(future_text) if future_text else "No flights", inline=False)
         else:
             embed.add_field(name="⏩ Future Flights (After Submission)", value="No future flights found", inline=False)
