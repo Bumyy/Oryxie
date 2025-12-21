@@ -282,7 +282,7 @@ class SpecialEventsCog(commands.Cog):
                     cookie_mult = get_cookie_multiplier(flightnum)
                     
                     if cookie_mult >= 1:
-                        if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model):
+                        if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model, cookie_mult):
                             pilot_data = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
                             if pilot_data:
                                 flight_time_seconds = pirep.get('flighttime', 0)
@@ -360,7 +360,7 @@ class SpecialEventsCog(commands.Cog):
                 cookie_mult = get_cookie_multiplier(flightnum)
                 
                 if cookie_mult >= 1:
-                    if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model):
+                    if await self.bot.event_transaction_model.process_pirep_reward(pirep, self.bot.pilots_model, cookie_mult):
                         pilot_data = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
                         if pilot_data:
                             flight_time_seconds = pirep.get('flighttime', 0)
