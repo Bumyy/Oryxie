@@ -5,16 +5,17 @@ import asyncio
 from database.shop_model import ShopModel
 
 class ItemSelect(discord.ui.Select):
-    def __init__(self, cog, items):
+    def __init__(self, cog, items, shop_name):
         options = [discord.SelectOption(label=item['name'][:100], value=str(item['id']), description=f"Cost: {item['price']} Cookies"[:100]) 
                   for item in items if item['stock'] != 0] or [discord.SelectOption(label="No items available", value="0")]
         super().__init__(placeholder="Select an item to purchase...", options=options)
         self.cog = cog
+        self.shop_name = shop_name
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "0":
             return await interaction.response.send_message("No items available.", ephemeral=True)
-        await ConfirmView(self.cog, int(self.values[0])).send_confirmation(interaction)
+        await ConfirmView(self.cog, int(self.values[0]), self.shop_name).send_confirmation(interaction)
 
 class ManagementSelect(discord.ui.Select):
     def __init__(self, cog, shop_name):
@@ -73,14 +74,14 @@ class ManagementSelect(discord.ui.Select):
         await interaction.response.send_message(f"Select item to {action.split('_')[0]}:", view=view, ephemeral=True)
 
 class ConfirmView(discord.ui.View):
-    def __init__(self, cog, item_id):
+    def __init__(self, cog, item_id, shop_name):
         super().__init__(timeout=180)
-        self.cog, self.item_id = cog, item_id
+        self.cog, self.item_id, self.shop_name = cog, item_id, shop_name
 
     async def send_confirmation(self, interaction: discord.Interaction):
         item = await self.cog.shop_model.get_item(self.item_id)
-        if not item:
-            return await interaction.response.send_message("Item not found.", ephemeral=True)
+        if not item or item['shop_name'] != self.shop_name:
+            return await interaction.response.send_message("Item not found or not available in this shop.", ephemeral=True)
         if item['stock'] == 0:
             return await interaction.response.send_message("This item is sold out.", ephemeral=True)
         
@@ -104,8 +105,8 @@ class ConfirmView(discord.ui.View):
             pilot_id, callsign = pilot_record['id'], pilot_record['callsign']
 
             item = await self.cog.shop_model.get_item(self.item_id)
-            if not item or item['stock'] == 0:
-                return await interaction.followup.send("Sorry, this item just sold out!", ephemeral=True)
+            if not item or item['stock'] == 0 or item['shop_name'] != self.shop_name:
+                return await interaction.followup.send("Sorry, this item is not available!", ephemeral=True)
 
             balance = await self.cog.bot.event_transaction_model.get_balance(pilot_id)
             if balance < item['price']:
@@ -141,7 +142,7 @@ class ShopView(discord.ui.View):
                 return await interaction.response.send_message("The shop is currently empty or all items are sold out.", ephemeral=True)
             
             view = discord.ui.View(timeout=180)
-            view.add_item(ItemSelect(self.cog, items))
+            view.add_item(ItemSelect(self.cog, items, self.shop_name))
             await interaction.response.send_message("Please select an item from the menu below.", view=view, ephemeral=True)
         except Exception as e:
             print(f"Shop buy error: {e}")
