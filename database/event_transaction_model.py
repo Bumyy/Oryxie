@@ -8,14 +8,14 @@ class EventTransactionModel:
         self.currency_name = "Cookies"
 
     async def get_balance(self, pilot_id: int) -> int:
-        # V3 Logic: PIREPs from V3 only + All other Cookie transactions (drops, admin, shop)
+        # V3 Logic: PIREPs from V3 only + All other Cookie transactions (drops, admin, shop) excluding nuclear resets
         query = """SELECT COALESCE(SUM(amount), 0) AS balance 
                    FROM event_transactions 
                    WHERE pilot_id = %s AND currency_name = %s AND (
                        (event_name = %s) OR
-                       (event_name != %s AND reason NOT LIKE %s)
+                       (event_name != %s AND reason NOT LIKE %s AND reason NOT LIKE %s)
                    )"""
-        result = await self.db.fetch_one(query, (pilot_id, self.currency_name, self.event_name, self.event_name, '%PIREP%'))
+        result = await self.db.fetch_one(query, (pilot_id, self.currency_name, self.event_name, self.event_name, '%PIREP%', 'Nuclear Reset%'))
         return int(result['balance']) if result else 0
 
     async def add_transaction(self, pilot_id: int, amount: int, reason: str) -> bool:
@@ -45,12 +45,12 @@ class EventTransactionModel:
                    JOIN pilots p ON et.pilot_id = p.id 
                    WHERE p.status = 1 AND et.currency_name = %s AND (
                        (et.event_name = %s) OR
-                       (et.event_name != %s AND et.reason NOT LIKE %s)
+                       (et.event_name != %s AND et.reason NOT LIKE %s AND et.reason NOT LIKE %s)
                    )
                    GROUP BY et.pilot_id, p.callsign 
                    ORDER BY total_cookies DESC 
                    LIMIT %s"""
-        return await self.db.fetch_all(query, (self.currency_name, self.event_name, self.event_name, '%PIREP%', limit))
+        return await self.db.fetch_all(query, (self.currency_name, self.event_name, self.event_name, '%PIREP%', 'Nuclear Reset%', limit))
 
     async def count_claims(self, reason: str) -> int:
         query = "SELECT COUNT(id) AS claim_count FROM event_transactions WHERE reason = %s"
