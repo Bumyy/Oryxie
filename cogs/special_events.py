@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 EVENT_CONFIG = {
-    "EVENT_NAME": "christmas_2025",
+    "EVENT_NAME": "christmas_2025_v2",
     "CURRENCY_NAME": "Cookies",
     "CURRENCY_EMOJI": "🍪",
     "MISSION_FLIGHTNUM": "CHMS",
