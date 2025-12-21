@@ -8,8 +8,11 @@ class EventTransactionModel:
         self.currency_name = "Cookies"
 
     async def get_balance(self, pilot_id: int) -> int:
-        query = "SELECT COALESCE(SUM(amount), 0) AS balance FROM event_transactions WHERE pilot_id = %s AND event_name = %s"
-        result = await self.db.fetch_one(query, (pilot_id, self.event_name))
+        query = """SELECT COALESCE(SUM(amount), 0) AS balance 
+                   FROM event_transactions 
+                   WHERE pilot_id = %s AND event_name = %s 
+                   AND (reason LIKE %s OR reason LIKE %s OR amount < 0)"""
+        result = await self.db.fetch_one(query, (pilot_id, self.event_name, 'New PIREP%', 'Cookie Drop%'))
         return int(result['balance']) if result else 0
 
     async def add_transaction(self, pilot_id: int, amount: int, reason: str) -> bool:
@@ -17,9 +20,9 @@ class EventTransactionModel:
         args = (pilot_id, self.event_name, self.currency_name, amount, reason)
         return await self.db.execute(query, args) is not None
 
-    async def check_duplicate(self, pilot_id: int, reason: str) -> bool:
-        query = "SELECT id FROM event_transactions WHERE pilot_id = %s AND reason = %s"
-        result = await self.db.fetch_one(query, (pilot_id, reason))
+    async def check_duplicate(self, pilot_id: int, reason_pattern: str) -> bool:
+        query = "SELECT id FROM event_transactions WHERE pilot_id = %s AND reason LIKE %s"
+        result = await self.db.fetch_one(query, (pilot_id, reason_pattern))
         return result is not None
 
     async def check_cooldown(self, pilot_id: int, reason_pattern: str, hours: int = 20) -> bool:
@@ -38,10 +41,11 @@ class EventTransactionModel:
                    FROM event_transactions et 
                    JOIN pilots p ON et.pilot_id = p.id 
                    WHERE et.event_name = %s AND p.status = 1
+                   AND (et.reason LIKE %s OR et.reason LIKE %s OR et.amount < 0)
                    GROUP BY et.pilot_id, p.callsign 
                    ORDER BY total_cookies DESC 
                    LIMIT %s"""
-        return await self.db.fetch_all(query, (self.event_name, limit))
+        return await self.db.fetch_all(query, (self.event_name, 'New PIREP%', 'Cookie Drop%', limit))
 
     async def count_claims(self, reason: str) -> int:
         query = "SELECT COUNT(id) AS claim_count FROM event_transactions WHERE reason = %s"
@@ -67,9 +71,9 @@ class EventTransactionModel:
         base_cookies = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
         final_cookie_amount = base_cookies * cookie_multiplier
         
-        reason = f"PIREP Reward: #{pirep_id} ({cookie_multiplier}x)"
+        reason = f"New PIREP Reward: #{pirep_id} ({cookie_multiplier}x)"
         
-        if await self.check_duplicate(pilot_id, reason):
+        if await self.check_duplicate(pilot_id, f"New PIREP #{pirep_id}%"):
             return False
             
         pilot_data = await pilots_model.get_pilot_by_id(pilot_id)
