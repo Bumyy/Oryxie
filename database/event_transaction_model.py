@@ -17,9 +17,9 @@ class EventTransactionModel:
         args = (pilot_id, self.event_name, self.currency_name, amount, reason)
         return await self.db.execute(query, args) is not None
 
-    async def check_duplicate(self, pilot_id: int, reason: str) -> bool:
-        query = "SELECT id FROM event_transactions WHERE pilot_id = %s AND reason = %s"
-        result = await self.db.fetch_one(query, (pilot_id, reason))
+    async def check_duplicate(self, pilot_id: int, reason_pattern: str) -> bool:
+        query = "SELECT id FROM event_transactions WHERE pilot_id = %s AND reason LIKE %s"
+        result = await self.db.fetch_one(query, (pilot_id, reason_pattern))
         return result is not None
 
     async def check_cooldown(self, pilot_id: int, reason_pattern: str, hours: int = 20) -> bool:
@@ -67,9 +67,9 @@ class EventTransactionModel:
         base_cookies = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
         final_cookie_amount = base_cookies * cookie_multiplier
         
-        reason = f"PIREP Reward: #{pirep_id} ({cookie_multiplier}x)"
+        reason = f"New PIREP Reward: #{pirep_id} ({cookie_multiplier}x)"
         
-        if await self.check_duplicate(pilot_id, reason):
+        if await self.check_duplicate(pilot_id, f"New PIREP #{pirep_id}%"):
             return False
             
         pilot_data = await pilots_model.get_pilot_by_id(pilot_id)
