@@ -6,7 +6,7 @@ from database.shop_model import ShopModel
 
 class ItemSelect(discord.ui.Select):
     def __init__(self, cog, items):
-        options = [discord.SelectOption(label=item['name'][:100], value=str(item['id']), description=f"Cost: {item['price']} Candy"[:100]) 
+        options = [discord.SelectOption(label=item['name'][:100], value=str(item['id']), description=f"Cost: {item['price']} Cookies"[:100]) 
                   for item in items if item['stock'] != 0] or [discord.SelectOption(label="No items available", value="0")]
         super().__init__(placeholder="Select an item to purchase...", options=options)
         self.cog = cog
@@ -85,7 +85,7 @@ class ConfirmView(discord.ui.View):
             return await interaction.response.send_message("This item is sold out.", ephemeral=True)
         
         await interaction.response.send_message(
-            f"Are you sure you want to purchase **{item['name']}** for **{item['price']} Candy**?",
+            f"Are you sure you want to purchase **{item['name']}** for **{item['price']} Cookies**?",
             view=self, ephemeral=True
         )
 
@@ -109,14 +109,14 @@ class ConfirmView(discord.ui.View):
 
             balance = await self.cog.bot.event_transaction_model.get_balance(pilot_id)
             if balance < item['price']:
-                return await interaction.followup.send(f"You don't have enough Candy! You need {item['price']}, but you only have {balance}.", ephemeral=True)
+                return await interaction.followup.send(f"You don't have enough Cookies! You need {item['price']}, but you only have {balance}.", ephemeral=True)
 
             if not await self.cog.bot.event_transaction_model.add_transaction(pilot_id, -item['price'], f"Shop Purchase: {item['name']}"):
                 return await interaction.followup.send("Transaction failed. Please try again.", ephemeral=True)
             
             if item['stock'] != -1 and not await self.cog.shop_model.decrease_item_stock(self.item_id):
                 await self.cog.bot.event_transaction_model.add_transaction(pilot_id, item['price'], f"Shop Refund: {item['name']} (sold out)")
-                return await interaction.followup.send("Item sold out during purchase. Your candy has been refunded.", ephemeral=True)
+                return await interaction.followup.send("Item sold out during purchase. Your cookies have been refunded.", ephemeral=True)
 
             await self.cog.log_to_thread(interaction.guild, interaction.user, item)
             await self.cog.refresh_shop_embed(interaction.guild, item['shop_name'])
@@ -218,7 +218,7 @@ class ItemModal(discord.ui.Modal):
         inputs = [
             ("Item Name", "5 Hours Bonus", item_data['name'] if item_data else "", 100),
             ("Description", "Get **+5 hours** to your Account.", item_data['description'] if item_data else "", 1000),
-            ("Price (Candy)", "250", str(item_data['price']) if item_data else "", 10),
+            ("Price (Cookies)", "250", str(item_data['price']) if item_data else "", 10),
             ("Stock (-1 for unlimited)", "10", str(item_data['stock']) if item_data else "", 10)
         ]
         
@@ -292,7 +292,7 @@ class ShopCog(commands.Cog, name="Shop"):
         else:
             for item in items:
                 stock_str = "Unlimited" if item['stock'] == -1 else "SOLD OUT" if item['stock'] == 0 else str(item['stock'])
-                embed.add_field(name=item['name'], value=f"> `Price: {item['price']} 🍬 | Stock: {stock_str}`", inline=False)
+                embed.add_field(name=item['name'], value=f"> `Price: {item['price']} 🍪 | Stock: {stock_str}`", inline=False)
         
         if shop['footer_text']:
             embed.set_footer(text=shop['footer_text'])

@@ -59,11 +59,20 @@ class EventTransactionModel:
         pilot_id = pirep_data['pilotid']
         flight_time_seconds = pirep_data.get('flighttime', 0)
         multiplier = float(pirep_data.get('multi', 1) or 1)
+        flightnum = pirep_data.get('flightnum', '')
+        
+        # Get cookie multiplier from flight number
+        from ..cogs.special_events import get_cookie_multiplier
+        cookie_mult = get_cookie_multiplier(flightnum)
+        
+        if cookie_mult < 1:
+            return False
         
         raw_flight_time_seconds = flight_time_seconds / multiplier if multiplier > 0 else flight_time_seconds
-        candy_amount = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+        base_cookies = max(1, int(raw_flight_time_seconds // 60)) if raw_flight_time_seconds else 1
+        final_cookie_amount = base_cookies * cookie_mult
         
-        reason = f"PIREP Reward: #{pirep_id}"
+        reason = f"PIREP Reward: #{pirep_id} ({cookie_mult}x)"
         
         if await self.check_duplicate(pilot_id, reason):
             return False
@@ -72,7 +81,7 @@ class EventTransactionModel:
         if not pilot_data:
             return False
             
-        return await self.add_transaction(pilot_id, candy_amount, reason)
+        return await self.add_transaction(pilot_id, final_cookie_amount, reason)
 
     async def get_candy_balance_report(self) -> List[Dict]:
         """Get candy balance for all members minus candy drops after Nov 1, 2025"""
