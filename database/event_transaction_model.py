@@ -8,14 +8,15 @@ class EventTransactionModel:
         self.currency_name = "Cookies"
 
     async def get_balance(self, pilot_id: int) -> int:
-        # Count: Old event negatives + Old event cookie drops + New event everything
+        # Count: Old event negatives (except nuclear reset) + Old event cookie drops + New event everything
         query = """SELECT COALESCE(SUM(amount), 0) AS balance 
                    FROM event_transactions 
                    WHERE pilot_id = %s AND (
-                       (event_name = %s AND (amount < 0 OR reason LIKE %s)) OR
+                       (event_name = %s AND amount < 0 AND reason NOT LIKE %s) OR
+                       (event_name = %s AND reason LIKE %s) OR
                        (event_name = %s)
                    )"""
-        result = await self.db.fetch_one(query, (pilot_id, 'christmas_2025', 'Cookie Drop%', self.event_name))
+        result = await self.db.fetch_one(query, (pilot_id, 'christmas_2025', 'Nuclear Reset:%', 'christmas_2025', 'Cookie Drop%', self.event_name))
         return int(result['balance']) if result else 0
 
     async def add_transaction(self, pilot_id: int, amount: int, reason: str) -> bool:
@@ -44,13 +45,14 @@ class EventTransactionModel:
                    FROM event_transactions et 
                    JOIN pilots p ON et.pilot_id = p.id 
                    WHERE p.status = 1 AND (
-                       (et.event_name = %s AND (et.amount < 0 OR et.reason LIKE %s)) OR
+                       (et.event_name = %s AND et.amount < 0 AND et.reason NOT LIKE %s) OR
+                       (et.event_name = %s AND et.reason LIKE %s) OR
                        (et.event_name = %s)
                    )
                    GROUP BY et.pilot_id, p.callsign 
                    ORDER BY total_cookies DESC 
                    LIMIT %s"""
-        return await self.db.fetch_all(query, ('christmas_2025', 'Cookie Drop%', self.event_name, limit))
+        return await self.db.fetch_all(query, ('christmas_2025', 'Nuclear Reset:%', 'christmas_2025', 'Cookie Drop%', self.event_name, limit))
 
     async def count_claims(self, reason: str) -> int:
         query = "SELECT COUNT(id) AS claim_count FROM event_transactions WHERE reason = %s"
