@@ -274,7 +274,9 @@ class ShopCog(commands.Cog, name="Shop"):
             for shop in shops:
                 if shop.get('message_id'):
                     view = ShopView(self, shop['shop_name'])
-                    self.bot.add_view(view)
+                    # Link the view to the specific message to prevent cross-contamination
+                    self.bot.add_view(view, message_id=shop['message_id'])
+                    print(f"Restored view for shop '{shop['shop_name']}' on message {shop['message_id']}")
         except Exception as e:
             print(f"Error restoring shop views: {e}")
 
