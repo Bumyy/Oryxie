@@ -74,7 +74,7 @@ class PersistentGiftView(discord.ui.View):
             msg = await interaction.followup.send(embed=embed)
             logger.info(f"DEBUG: Phase 1 sent, message ID: {msg.id}")
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.8)
             logger.info("DEBUG: Phase 1 sleep complete")
 
             # Animation Phase 2 - Progress 50%
@@ -87,7 +87,7 @@ class PersistentGiftView(discord.ui.View):
             await msg.edit(embed=embed)
             logger.info("DEBUG: Phase 2 edit complete")
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.8)
             logger.info("DEBUG: Phase 2 sleep complete")
 
             # Progress Phase 3 - 90%
@@ -100,7 +100,7 @@ class PersistentGiftView(discord.ui.View):
             await msg.edit(embed=embed)
             logger.info("DEBUG: Phase 3 edit complete")
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.8)
             logger.info("DEBUG: Phase 3 sleep complete")
 
             # Reveal Phase - Smart selection to avoid duplicates
@@ -160,8 +160,8 @@ class GiftBoxCog(commands.Cog):
     @app_commands.command(name="send_gift", description="Send a gift box to a pilot by their 3-digit callsign")
     @app_commands.describe(callsign="3-digit pilot callsign (e.g., 001, 123)")
     async def send_gift(self, interaction: discord.Interaction, callsign: str):
-        # Check if user has permission (you can modify this check)
-        if not interaction.user.guild_permissions.manage_messages:
+        # Check if user has administrator permission
+        if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ You don't have permission to send gift boxes!", ephemeral=True)
             return
             
