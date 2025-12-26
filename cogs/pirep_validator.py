@@ -10,15 +10,15 @@ def parse_api_datetime(date_string):
     if date_string.endswith('Z'):
         date_string = date_string[:-1] + '+00:00'
     
-    # Handle microseconds with more than 6 digits by truncating to 6
+    # Handle microseconds - pad to 6 digits or truncate if more than 6
     import re
-    if '+' in date_string or 'Z' in date_string:
-        # Find microseconds pattern and truncate if needed
-        microsecond_pattern = r'\.(\d{7,})([+-]|Z)'
-        match = re.search(microsecond_pattern, date_string)
-        if match:
-            microseconds = match.group(1)[:6]  # Keep only first 6 digits
-            date_string = re.sub(microsecond_pattern, f'.{microseconds}' + r'\g<2>', date_string)
+    microsecond_pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(\+\d{2}:\d{2}|Z)$'
+    match = re.match(microsecond_pattern, date_string)
+    if match:
+        date_part, microseconds, timezone = match.groups()
+        # Pad or truncate microseconds to exactly 6 digits
+        microseconds = microseconds.ljust(6, '0')[:6]
+        date_string = f"{date_part}.{microseconds}{timezone}"
     
     return datetime.fromisoformat(date_string)
 
