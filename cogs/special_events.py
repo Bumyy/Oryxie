@@ -433,9 +433,11 @@ async def setup(bot):
     await bot.add_cog(cog)
     bot.add_view(CookieDropView(cog))
     
-    if not cog.pirep_checker.is_running():
-        cog.tasks_started = True
-        cog.pirep_checker.start()
-        
-    if not cog.cookie_drop_scheduler.is_running():
-        cog.cookie_drop_scheduler.start()
+    # Comment out auto-start to prevent event from starting on bot restart
+    # Use /christmas start command to manually start the event
+    # if not cog.pirep_checker.is_running():
+    #     cog.tasks_started = True
+    #     cog.pirep_checker.start()
+    #     
+    # if not cog.cookie_drop_scheduler.is_running():
+    #     cog.cookie_drop_scheduler.start()
