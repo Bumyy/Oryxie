@@ -1,0 +1,262 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import re
+from datetime import datetime, timedelta
+
+class ActivityCheckCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.INACTIVE_ROLE_ID = 1224371905012961342
+        self.TRAINEE_ROLE_ID = 1137998383630524477
+
+    @app_commands.command(name="activity_check", description="Manage pilot activity checking")
+    @app_commands.describe(
+        action="What to do",
+        callsign="Pilot callsign (for check_pilot)"
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Run Full Activity Check", value="run_check"),
+        app_commands.Choice(name="Check Specific Pilot", value="check_pilot")
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def activity_check(self, interaction: discord.Interaction, action: str, callsign: str = None):
+        if action == "run_check":
+            await self._run_full_activity_check(interaction)
+        elif action == "check_pilot":
+            if not callsign:
+                await interaction.response.send_message("Callsign is required for pilot check.", ephemeral=True)
+                return
+            await self._check_specific_pilot(interaction, callsign)
+
+    async def _run_full_activity_check(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Get all server members
+        guild = interaction.guild
+        members = guild.members
+        
+        # Get roles
+        inactive_role = guild.get_role(self.INACTIVE_ROLE_ID)
+        trainee_role = guild.get_role(self.TRAINEE_ROLE_ID)
+        
+        if not inactive_role:
+            await interaction.followup.send("❌ Inactive role not found!", ephemeral=True)
+            return
+        
+        # Scan members for callsigns
+        pilots_found = []
+        no_callsign = []
+        
+        for member in members:
+            callsign_match = re.search(r'QRV\d{3,}', member.display_name, re.IGNORECASE)
+            if callsign_match:
+                callsign = callsign_match.group(0).upper()
+                pilots_found.append({
+                    'member': member,
+                    'callsign': callsign,
+                    'display_name': member.display_name
+                })
+            else:
+                no_callsign.append(member)
+        
+        # Process pilots for activity check
+        processed = 0
+        skipped_protected = 0
+        skipped_trainee = 0
+        skipped_already_inactive = 0
+        skipped_veteran = 0
+        skipped_active = 0
+        newly_inactive = []
+        
+        for pilot_info in pilots_found:
+            member = pilot_info['member']
+            callsign = pilot_info['callsign']
+            
+            # Skip protected callsigns (QRV001-QRV019)
+            callsign_num = int(callsign[3:])
+            if 1 <= callsign_num <= 19:
+                skipped_protected += 1
+                continue
+            
+            # Skip if has trainee role
+            if trainee_role and trainee_role in member.roles:
+                skipped_trainee += 1
+                continue
+            
+            # Skip if already has inactive role
+            if inactive_role in member.roles:
+                skipped_already_inactive += 1
+                continue
+            
+            # Check database for pilot data
+            try:
+                pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
+                if not pilot_data:
+                    continue
+                
+                # Check flight hours (skip veterans with 5000+ hours)
+                flight_hours = await self._get_pilot_flight_hours(pilot_data['id'])
+                if flight_hours and flight_hours >= 5000:
+                    skipped_veteran += 1
+                    continue
+                
+                # Check last PIREP
+                last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
+                if last_pirep_date:
+                    days_since = (datetime.now().date() - last_pirep_date).days
+                    if days_since < 60:
+                        skipped_active += 1
+                        continue
+                
+                # Assign inactive role
+                await member.add_roles(inactive_role, reason="No PIREP in 60+ days")
+                newly_inactive.append({
+                    'callsign': callsign,
+                    'member': member,
+                    'last_pirep': last_pirep_date.strftime('%Y-%m-%d') if last_pirep_date else 'Never',
+                    'days': days_since if last_pirep_date else 'Never'
+                })
+                processed += 1
+                
+            except Exception as e:
+                print(f"Error processing {callsign}: {e}")
+                continue
+        
+        # Send reports in multiple messages
+        await self._send_summary_report(interaction, len(members), len(pilots_found), len(no_callsign), 
+                                      processed, skipped_protected, skipped_trainee, skipped_already_inactive, 
+                                      skipped_veteran, skipped_active)
+        
+        if newly_inactive:
+            await self._send_inactive_list(interaction, newly_inactive)
+        
+        if no_callsign:
+            await self._send_no_callsign_list(interaction, no_callsign)
+
+    async def _check_specific_pilot(self, interaction: discord.Interaction, callsign: str):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Format callsign
+        if not callsign.upper().startswith('QRV'):
+            callsign = f"QRV{callsign}"
+        
+        # Get pilot data
+        pilot = await self.bot.pilots_model.get_pilot_by_callsign(callsign.upper())
+        if not pilot:
+            await interaction.followup.send(f"❌ Pilot {callsign} not found", ephemeral=True)
+            return
+        
+        # Get activity data
+        last_pirep_date = await self._get_pilot_last_pirep_date(pilot['id'])
+        flight_hours = await self._get_pilot_flight_hours(pilot['id'])
+        
+        report = f"Activity Report: {callsign}\n\n"
+        report += f"Last PIREP: {last_pirep_date.strftime('%Y-%m-%d') if last_pirep_date else 'Never'}\n"
+        report += f"Total Flight Hours: {flight_hours}\n"
+        
+        if last_pirep_date:
+            days_ago = (datetime.now().date() - last_pirep_date).days
+            status = "🟢 Active" if days_ago <= 60 else "🔴 Inactive"
+            report += f"Days Since Last PIREP: {days_ago}\n"
+            report += f"Status: {status}"
+        else:
+            report += "Status: 🔴 No PIREPs found"
+        
+        await interaction.followup.send(report, ephemeral=True)
+
+    async def _get_pilot_flight_hours(self, pilot_id):
+        """Get total flight hours for pilot from PIREPs"""
+        query = """
+        SELECT SUM(flighttime) as total_hours 
+        FROM pireps 
+        WHERE pilotid = %s AND status = 1
+        """
+        result = await self.bot.db_manager.fetch_one(query, (pilot_id,))
+        return result['total_hours'] if result and result['total_hours'] else 0
+
+    async def _get_pilot_last_pirep_date(self, pilot_id):
+        """Get pilot's most recent PIREP date"""
+        query = """
+        SELECT DATE(date) as pirep_date 
+        FROM pireps 
+        WHERE pilotid = %s AND status = 1 
+        ORDER BY date DESC 
+        LIMIT 1
+        """
+        result = await self.bot.db_manager.fetch_one(query, (pilot_id,))
+        return result['pirep_date'] if result else None
+
+    async def _send_summary_report(self, interaction, total_members, pilots_found, no_callsign_count, 
+                                 processed, skipped_protected, skipped_trainee, skipped_already_inactive, 
+                                 skipped_veteran, skipped_active):
+        """Send summary report"""
+        total_skipped = skipped_protected + skipped_trainee + skipped_already_inactive + skipped_veteran + skipped_active
+        
+        report = f"""Activity Check Complete!
+
+Server Members Scanned: {total_members}
+Pilots Found (QRV###): {pilots_found}
+No Callsign Found: {no_callsign_count}
+
+PROCESSED: {processed} pilots marked inactive
+SKIPPED: {total_skipped} pilots
+
+SKIPPED BREAKDOWN:
+- Protected (QRV001-019): {skipped_protected}
+- Trainees: {skipped_trainee}
+- Already Inactive: {skipped_already_inactive}
+- Veterans (5000+ hrs): {skipped_veteran}
+- Active (recent PIREPs): {skipped_active}"""
+        
+        await interaction.followup.send(report, ephemeral=True)
+
+    async def _send_inactive_list(self, interaction, newly_inactive):
+        """Send newly inactive pilots list"""
+        if not newly_inactive:
+            return
+        
+        report = f"NEWLY INACTIVE ({len(newly_inactive)}):\n"
+        
+        for pilot in newly_inactive:
+            line = f"{pilot['callsign']} @{pilot['member'].display_name} ({pilot['days']} days)\n"
+            
+            # Check if adding this line would exceed limit
+            if len(report + line) > 1900:
+                await interaction.followup.send(report, ephemeral=True)
+                report = "NEWLY INACTIVE (continued):\n" + line
+            else:
+                report += line
+        
+        if report.strip() != "NEWLY INACTIVE (continued):":
+            await interaction.followup.send(report, ephemeral=True)
+
+    async def _send_no_callsign_list(self, interaction, no_callsign_members):
+        """Send no callsign members list"""
+        if not no_callsign_members:
+            return
+        
+        report = f"NO CALLSIGN FOUND ({len(no_callsign_members)}):\n"
+        
+        for member in no_callsign_members:
+            line = f"@{member.display_name}, "
+            
+            # Check if adding this line would exceed limit
+            if len(report + line) > 1900:
+                await interaction.followup.send(report.rstrip(', '), ephemeral=True)
+                report = "NO CALLSIGN (continued):\n" + line
+            else:
+                report += line
+        
+        if report.strip() != "NO CALLSIGN (continued):":
+            await interaction.followup.send(report.rstrip(', '), ephemeral=True)
+
+    @activity_check.error
+    async def on_activity_check_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message("You need administrator permissions to use this command.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"An error occurred: {error}", ephemeral=True)
+
+async def setup(bot):
+    await bot.add_cog(ActivityCheckCog(bot))
