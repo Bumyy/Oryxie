@@ -153,7 +153,7 @@ class ActivityCheckCog(commands.Cog):
         
         report = f"Activity Report: {callsign}\n\n"
         report += f"Last PIREP: {last_pirep_date.strftime('%Y-%m-%d') if last_pirep_date else 'Never'}\n"
-        report += f"Total Flight Hours: {flight_hours}\n"
+        report += f"Total Flight Hours: {flight_hours:.1f}\n"
         
         if last_pirep_date:
             days_ago = (datetime.now().date() - last_pirep_date).days
@@ -168,12 +168,13 @@ class ActivityCheckCog(commands.Cog):
     async def _get_pilot_flight_hours(self, pilot_id):
         """Get total flight hours for pilot from PIREPs"""
         query = """
-        SELECT SUM(flighttime) as total_hours 
+        SELECT SUM(flighttime) as total_seconds 
         FROM pireps 
         WHERE pilotid = %s AND status = 1
         """
         result = await self.bot.db_manager.fetch_one(query, (pilot_id,))
-        return result['total_hours'] if result and result['total_hours'] else 0
+        total_seconds = result['total_seconds'] if result and result['total_seconds'] else 0
+        return total_seconds / 3600  # Convert seconds to hours
 
     async def _get_pilot_last_pirep_date(self, pilot_id):
         """Get pilot's most recent PIREP date"""
