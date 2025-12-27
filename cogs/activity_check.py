@@ -9,6 +9,7 @@ class ActivityCheckCog(commands.Cog):
         self.bot = bot
         self.INACTIVE_ROLE_ID = 1224371905012961342
         self.TRAINEE_ROLE_ID = 1137998383630524477
+        self.LOA_ROLE_ID = 1193185998859935755
 
     @app_commands.command(name="activity_check", description="Manage pilot activity checking")
     @app_commands.describe(
@@ -39,6 +40,7 @@ class ActivityCheckCog(commands.Cog):
         # Get roles
         inactive_role = guild.get_role(self.INACTIVE_ROLE_ID)
         trainee_role = guild.get_role(self.TRAINEE_ROLE_ID)
+        loa_role = guild.get_role(self.LOA_ROLE_ID)
         
         if not inactive_role:
             await interaction.followup.send("❌ Inactive role not found!", ephemeral=True)
@@ -49,6 +51,10 @@ class ActivityCheckCog(commands.Cog):
         no_callsign = []
         
         for member in members:
+            # Skip bots
+            if member.bot:
+                continue
+                
             callsign_match = re.search(r'QRV\d{3,}', member.display_name, re.IGNORECASE)
             if callsign_match:
                 callsign = callsign_match.group(0).upper()
@@ -58,12 +64,23 @@ class ActivityCheckCog(commands.Cog):
                     'display_name': member.display_name
                 })
             else:
-                no_callsign.append(member)
+                # Check if member exists in database by Discord ID
+                pilot_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(member.id))
+                if pilot_data and pilot_data.get('callsign'):
+                    pilots_found.append({
+                        'member': member,
+                        'callsign': pilot_data['callsign'],
+                        'display_name': member.display_name
+                    })
+                else:
+                    no_callsign.append(member)
         
         # Process pilots for activity check
         processed = 0
+        removed_inactive = 0
         skipped_protected = 0
         skipped_trainee = 0
+        skipped_loa = 0
         skipped_already_inactive = 0
         skipped_veteran = 0
         skipped_active = 0
@@ -82,6 +99,11 @@ class ActivityCheckCog(commands.Cog):
             # Skip if has trainee role
             if trainee_role and trainee_role in member.roles:
                 skipped_trainee += 1
+                continue
+            
+            # Skip if has LOA role
+            if loa_role and loa_role in member.roles:
+                skipped_loa += 1
                 continue
             
             # Skip if already has inactive role
@@ -106,6 +128,10 @@ class ActivityCheckCog(commands.Cog):
                 if last_pirep_date:
                     days_since = (datetime.now().date() - last_pirep_date).days
                     if days_since < 60:
+                        # Pilot is active - remove inactive role if they have it
+                        if inactive_role in member.roles:
+                            await member.remove_roles(inactive_role, reason="Activity restored")
+                            removed_inactive += 1
                         skipped_active += 1
                         continue
                 
@@ -125,7 +151,7 @@ class ActivityCheckCog(commands.Cog):
         
         # Send reports in multiple messages
         await self._send_summary_report(interaction, len(members), len(pilots_found), len(no_callsign), 
-                                      processed, skipped_protected, skipped_trainee, skipped_already_inactive, 
+                                      processed, removed_inactive, skipped_protected, skipped_trainee, skipped_loa, skipped_already_inactive, 
                                       skipped_veteran, skipped_active)
         
         if newly_inactive:
@@ -189,10 +215,10 @@ class ActivityCheckCog(commands.Cog):
         return result['pirep_date'] if result else None
 
     async def _send_summary_report(self, interaction, total_members, pilots_found, no_callsign_count, 
-                                 processed, skipped_protected, skipped_trainee, skipped_already_inactive, 
+                                 processed, removed_inactive, skipped_protected, skipped_trainee, skipped_loa, skipped_already_inactive, 
                                  skipped_veteran, skipped_active):
         """Send summary report"""
-        total_skipped = skipped_protected + skipped_trainee + skipped_already_inactive + skipped_veteran + skipped_active
+        total_skipped = skipped_protected + skipped_trainee + skipped_loa + skipped_already_inactive + skipped_veteran + skipped_active
         
         report = f"""Activity Check Complete!
 
@@ -201,11 +227,13 @@ Pilots Found (QRV###): {pilots_found}
 No Callsign Found: {no_callsign_count}
 
 PROCESSED: {processed} pilots marked inactive
+REMOVED INACTIVE: {removed_inactive} pilots reactivated
 SKIPPED: {total_skipped} pilots
 
 SKIPPED BREAKDOWN:
 - Protected (QRV001-019): {skipped_protected}
 - Trainees: {skipped_trainee}
+- LOA Members: {skipped_loa}
 - Already Inactive: {skipped_already_inactive}
 - Veterans (5000+ hrs): {skipped_veteran}
 - Active (recent PIREPs): {skipped_active}"""
