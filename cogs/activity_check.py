@@ -90,6 +90,56 @@ class ActivityCheckCog(commands.Cog):
             member = pilot_info['member']
             callsign = pilot_info['callsign']
             
+            # Check if member currently has inactive role
+            has_inactive_role = inactive_role in member.roles
+            
+            if has_inactive_role:
+                # Member has inactive role - check all conditions to see if they should keep it
+                should_remove = False
+                removal_reason = ""
+                
+                # Check protected callsigns
+                callsign_num = int(callsign[3:])
+                if 1 <= callsign_num <= 19:
+                    should_remove = True
+                    removal_reason = "Protected callsign (QRV001-019)"
+                # Check trainee role
+                elif trainee_role and trainee_role in member.roles:
+                    should_remove = True
+                    removal_reason = "Has trainee role"
+                # Check LOA role
+                elif loa_role and loa_role in member.roles:
+                    should_remove = True
+                    removal_reason = "Has LOA role"
+                else:
+                    # Check database conditions
+                    try:
+                        pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
+                        if pilot_data:
+                            # Check if veteran
+                            flight_hours = await self._get_pilot_flight_hours(pilot_data['id'])
+                            if flight_hours and flight_hours >= 5000:
+                                should_remove = True
+                                removal_reason = "Veteran (5000+ hours)"
+                            else:
+                                # Check if active
+                                last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
+                                if last_pirep_date:
+                                    days_since = (datetime.now().date() - last_pirep_date).days
+                                    if days_since < 60:
+                                        should_remove = True
+                                        removal_reason = "Active pilot (recent PIREPs)"
+                    except Exception as e:
+                        print(f"Error checking conditions for {callsign}: {e}")
+                
+                if should_remove:
+                    await member.remove_roles(inactive_role, reason=removal_reason)
+                    removed_inactive += 1
+                else:
+                    skipped_already_inactive += 1
+                continue
+            
+            # Member doesn't have inactive role - check if they should get it
             # Skip protected callsigns (QRV001-QRV019)
             callsign_num = int(callsign[3:])
             if 1 <= callsign_num <= 19:
@@ -104,11 +154,6 @@ class ActivityCheckCog(commands.Cog):
             # Skip if has LOA role
             if loa_role and loa_role in member.roles:
                 skipped_loa += 1
-                continue
-            
-            # Skip if already has inactive role
-            if inactive_role in member.roles:
-                skipped_already_inactive += 1
                 continue
             
             # Check database for pilot data
