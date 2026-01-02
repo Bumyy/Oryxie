@@ -191,12 +191,19 @@ class FlightClaimView(discord.ui.View):
                     reason=f"Flight briefing for {interaction.user.display_name}"
                 )
                 
+                # Add claimer to thread
+                await thread.add_user(interaction.user)
+                
+                # Add dispatchers to thread
+                dispatcher_role = discord.utils.get(interaction.guild.roles, name="Dispatcher")
+                if dispatcher_role:
+                    for member in interaction.guild.members:
+                        if dispatcher_role in member.roles:
+                            await thread.add_user(member)
+                
                 # Send message in thread with PDF
                 pdf_buffer = io.BytesIO(pdf_output)
                 flight_number = self.flight_data.flight_number if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('flight_number', 'Unknown')
-                
-                # Get dispatcher role for mention
-                dispatcher_role = discord.utils.get(interaction.guild.roles, name="Dispatcher")
                 
                 thread_message = f"""Hi {interaction.user.display_name}! 👋
 
@@ -206,7 +213,7 @@ Report any issues
 Inform about your PIREP when filled , for fast Approval
 and Maintaining secrecy of This classified operations
 
-{dispatcher_role.mention if dispatcher_role else 'Dispatchers'} can assist you if needed.
+Dispatchers can assist you if needed.
 
 Good luck with your Flight!
 
