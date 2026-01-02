@@ -1,35 +1,68 @@
 import os
+import logging
+import re
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+logger = logging.getLogger('oryxie')
 
 class AIService:
     def __init__(self):
         self.model = None
+        self.current_model = None
+        self.models = ['gemini-2.5-flash', 'gemma-3-12b-it']
+        self.model_index = 0
         self._initialize_ai()
     
     def _initialize_ai(self):
-        """Initialize Google AI model"""
         try:
             google_ai_key = os.getenv("GOOGLE_AI_KEY")
             if google_ai_key:
                 genai.configure(api_key=google_ai_key)
-                self.model = genai.GenerativeModel('gemini-2.5-pro')
+                self._try_next_model()
             else:
+                logger.warning("GOOGLE_AI_KEY not found, AI features disabled")
                 self.model = None
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to initialize AI model: {e}")
             self.model = None
     
-    async def generate_ai_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo, flight_type, deadline):
-        """Generate detailed AI scenario for flights when claimed"""
-        if flight_type == "amiri":
-            result = await self._generate_amiri_scenario(aircraft_name, dep_data, dest_data, passengers, cargo, deadline)
-        else:
-            result = await self._generate_executive_scenario(aircraft_name, dep_data, dest_data, passengers, cargo, deadline)
-        return result
+    def _try_next_model(self):
+        if self.model_index >= len(self.models):
+            logger.error("All AI models exhausted")
+            self.model = None
+            return
+        
+        try:
+            model_name = self.models[self.model_index]
+            self.model = genai.GenerativeModel(model_name)
+            self.current_model = model_name
+            logger.info(f"AI model initialized with {model_name}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize {self.models[self.model_index]}: {e}")
+            self.model_index += 1
+            self._try_next_model()
     
-    async def _generate_amiri_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo, deadline):
-        """Generate detailed Amiri flight scenario"""
+    def _sanitize_input(self, text: str) -> str:
+        if not isinstance(text, str): text = str(text)
+        text = re.sub(r'[\r\n\t]', ' ', text)
+        text = re.sub(r'[{}\[\]"\']', '', text)
+        return text[:200]
+
+    async def generate_ai_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo, flight_type, deadline):
+        if not self.model:
+            return await self._get_fallback(flight_type, passengers, cargo)
+            
+        if flight_type == "amiri":
+            return await self._generate_amiri_scenario(aircraft_name, dep_data, dest_data, passengers, cargo)
+        else:
+            return await self._generate_executive_scenario(aircraft_name, dep_data, dest_data, passengers, cargo)
+
+    async def _generate_amiri_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo):
         import json
         import random
+        
+        # Load dignitary names
         try:
             with open("assets/dignitary_names.json", 'r') as f:
                 dignitary_data = json.load(f)
@@ -39,132 +72,174 @@ class AIService:
                 else:
                     dignitary = random.choice(dignitary_data["official_roles"])
                     is_royal = False
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Could not load dignitary names: {e}")
             dignitary = "Senior Official"
             is_royal = False
 
-        if not self.model:
-            return {"dignitary": dignitary, "dignitary_intro": "Intro unavailable", "mission_briefing": "Briefing unavailable", "mission_type": "Official"}
+        prompt = f"""
+Generate a Qatar Amiri Flight briefing for a single event.
 
-        try:
-            prompt = f"""
-Act as a Diplomatic Protocol Officer briefing the Chief Pilot. 
-Create a rich, story-driven briefing for a high-profile Qatar Amiri Flight.
+FLIGHT DETAILS:
+- Principal: {dignitary}
+- Destination: {dest_data.get('municipality')}, {dest_data.get('iso_country')}
+- Passengers: {passengers} 
+- Cargo: {cargo}kg 
 
---- FLIGHT DATA ---
-1. PRINCIPAL: {dignitary} (Identify the real-world person holding this role if it is a generic title).
-2. DESTINATION: {dest_data.get('municipality', 'Unknown city')}, {dest_data.get('iso_country', 'International')}.
-3. CONTEXT: {passengers} passengers, {cargo}kg cargo.
+You MUST provide exactly 3 sections separated by ||| :
 
---- BRIEFING REQUIREMENTS ---
-**SECTION 1: THE PRINCIPAL** (Max 15 words)
-Identify who acts as the Lead Passenger. Use proper titles.
+1. Dossier (15-20 words): Principal's title and role in this specific mission
+2. Purpose (50-70 words): ONE clear event with specific counterpart and objective Based on Destination: {dest_data.get('municipality')}, {dest_data.get('iso_country')}. Focus on what will be accomplished in this with Clear Explanation of Dossier and Counterpart role 
+3. Payload (25-35 words): Give Details of {passengers} number and {cargo}kg 
 
-**SECTION 2: THE DIPLOMATIC BRIEFING** (Approx 80-100 words)
-Write a detailed diplomatic narrative focusing ONLY on the mission objective.
-1.  **The Mission:** Focus on the *High-Level Objective*. Is it a treaty? An energy deal? A secret mediation? Connect it specifically to the country we are visiting.
-2.  **The Counterpart:** **Explicitly name** the Ministry, Company, or real-world Leader they are meeting in {dest_data.get('municipality', 'that city')}.
-3.  **DO NOT mention passenger count or cargo weight in this section.**
+RULES:
+- Plain text only, no markdown formatting
+- Create ONE realistic diplomatic scenario, not multiple objectives
+- Be specific about the single event/meeting purpose
+- Use professional diplomatic language
+- Note: Sometimes Event is public so you can clearly give all details, sometimes Events is not public and Purpose of flights is not disclosed, so you can create any type of thing at your Choice 
+- CRITICAL: You MUST include ALL THREE sections. Do not stop after section 2.
+- CRITICAL: Each section MUST be separated by exactly ||| (three pipe symbols)
 
-**SECTION 3: MANIFEST DETAILS** (Approx 40-60 words)
-Explain the passenger count and cargo weight separately:
-1.  **Passenger Explanation:** Why this specific number of passengers? (delegation size, security team, etc.)
-2.  **Cargo Explanation:** What specific items justify this cargo weight? (vehicles, equipment, gifts, etc.)
+Example format: 
+Dossier text here ||| Purpose text here ||| Payload text here
 
-**TONE:** Serious, Sophisticated, "Inside Knowledge".
-
---- OUTPUT FORMAT ---
-[Section 1 Text] ||| [Section 2 Text] ||| [Section 3 Text]
+Format: [Dossier] ||| [Purpose] ||| [Payload]
 """
-            response = self.model.generate_content(prompt)
-            
-            if response and response.text and response.text.count('|||') == 2:
-                parts = response.text.strip().split('|||')
-                if len(parts) >= 3:
-                    return {
-                        "dignitary": dignitary, 
-                        "dignitary_intro": parts[0].strip(), 
-                        "mission_briefing": parts[1].strip(),
-                        "manifest_details": parts[2].strip(),
-                        "deadline_rationale": "N/A",
-                        "mission_type": "Royal Mission" if is_royal else "Official Mission"
-                    }
-            
-        except Exception:
-            pass
+
+        return await self._call_ai_api(prompt, "amiri", {"dignitary": dignitary, "is_royal": is_royal}, passengers, cargo)
+
+    async def _generate_executive_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo):
+        # Generate hypothetical names based on cities
+        dep_city = dep_data.get('municipality', 'Unknown')
+        dest_city = dest_data.get('municipality', 'Unknown')
         
-        return {
-            "dignitary": dignitary, 
-            "dignitary_intro": f"His Excellency {dignitary}", 
-            "mission_briefing": "Transporting diplomatic delegation for official state business.",
-            "manifest_details": f"Delegation of {passengers} officials with {cargo}kg of diplomatic materials and security equipment.",
-            "deadline_rationale": "N/A",
-            "mission_type": "Official Mission"
-        }
-    
-    async def _generate_executive_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo, deadline):
-        """Generate detailed Qatar Executive (Charter) flight scenario with Region-Aware Names"""
+        prompt = f"""
+Generate an charter briefing for a single event.
+
+FLIGHT DETAILS:
+- Route: {dep_city} to {dest_city}
+- Aircraft: {aircraft_name}
+- Passengers: {passengers} 
+- Cargo: {cargo}kg 
+
+You MUST provide exactly 3 sections separated by ||| :
+
+1. Client (12-18 words): Hypothetical executive name, title, and company Based on {dep_city} City.
+2. Purpose (50-60 words): First Explain little about Counterpart based on {dest_city} City and Country  (10-15 words) and then Explain a single Event Based on All Flight Details provided above (remaining words) 
+3. Manifest (25-35 words): {passengers} details and {cargo}kg contents for this specific event
+
+RULES:
+- Plain text only, no markdown formatting
+- Create ONE realistic scenario, not multiple meetings
+- Avoid Qatar/Qatari references in names
+- Be specific about the single Event
+- Note: Sometimes Event is public so you can clearly give all details, sometimes Events is not public and Purpose of flights is not disclosed, so you can create any type of thing at your Choice 
+- CRITICAL: You MUST include ALL THREE sections. Do not stop after section 2.
+- CRITICAL: Each section MUST be separated by exactly ||| (three pipe symbols)
+
+Example format: 
+Client text here ||| Purpose text here ||| Manifest text here
+
+Format: [Client] ||| [Purpose] ||| [Manifest]
+"""
         
-        if not self.model:
-            return {
-                "client": "VIP Charter", 
-                "client_intro": "Private Client", 
-                "mission_briefing": "Confidential charter flight.", 
-                "purpose": "Business"
+        return await self._call_ai_api(prompt, "executive", {}, passengers, cargo)
+
+    async def _call_ai_api(self, prompt, context_type, extra_data, passengers, cargo):
+        try:
+            # SAFETY SETTINGS: Prevent the AI from blocking "diplomatic" or "official" terms
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             }
-        
-        try:
-            prompt = f"""
-Act as a "Private jet airline " Dispatcher briefing the crew on a high-end charter flight.
 
---- FLIGHT VARIABLES ---
-1. DEPARTURE: {dep_data.get('municipality', 'Unknown')}, {dep_data.get('iso_country', 'Origin')}
-2. ARRIVAL: {dest_data.get('municipality', 'Unknown')}, {dest_data.get('iso_country', 'Destination')}
-3. LOAD: {passengers} passengers, {cargo}kg cargo
-4. AIRCRAFT: {aircraft_name}
+            response = self.model.generate_content(
+                prompt, 
+                generation_config={"temperature": 0.7, "max_output_tokens": 1000},
+                safety_settings=safety_settings
+            )
 
---- INSTRUCTIONS ---
-**SECTION 1: THE CLIENT** (Max 15 words)
-Invent a specific fictional name, title, and industry/profession.
-*   **CRITICAL:** The Name MUST sound native to either the **Departure Country** OR the **Arrival Country**.
-*   *Example:* If flying China -> UK, use a Chinese name OR a British name.
+            # Check for blocked content (safety filters)
+            if not response.candidates or len(response.candidates) == 0:
+                logger.warning(f"Model {self.current_model} blocked the content. Retrying with next model...")
+                self.model_index += 1
+                self._try_next_model()
+                if self.model:
+                    return await self._call_ai_api(prompt, context_type, extra_data, passengers, cargo)
+                return await self._get_fallback(context_type, passengers, cargo, extra_data)
 
-**SECTION 2: THE BACKSTORY** (Approx 60-80 words)
-Why are they flying specifically from {dep_data.get('municipality')} to {dest_data.get('municipality')}?
-1.  **The Context:** Connect the Client's industry to the location. (e.g., Tech CEO flying to San Francisco; Oil Baron flying to Norway).
-2.  **DO NOT mention passenger count or cargo weight in this section.**
+            txt = response.text
+            logger.info(f"AI Response: {txt[:200]}...")  # Debug log
 
-**SECTION 3: MANIFEST DETAILS** (Approx 30-50 words)
-Explain the passenger count and cargo weight separately:
-1.  **Passenger Explanation:** Why this {passengers} number of passengers? (entourage, staff, family, etc.)
-2.  **Cargo Explanation:** What specific items justify this {cargo} cargo weight? (equipment, personal items, etc.)
-    
-**TONE:** Discreet, Elite, "Inside information".
-
---- OUTPUT FORMAT ---
-[Section 1 Text] ||| [Section 2 Text] ||| [Section 3 Text]
-"""
-            response = self.model.generate_content(prompt)
-
-            if response and response.text and response.text.count('|||') == 2:
-                parts = response.text.strip().split('|||')
+            parts = []
+            if "|||" in txt:
+                parts = txt.split("|||")
+                logger.info(f"AI Parts found: {len(parts)} parts")
+                
+                # Handle incomplete responses by padding with fallback content
+                if len(parts) == 2:
+                    logger.info("AI returned only 2 parts, adding fallback third section")
+                    if context_type == "amiri":
+                        parts.append(f"Delegation of {passengers} officials with {cargo}kg of diplomatic materials and equipment.")
+                    else:
+                        parts.append(f"Business delegation of {passengers} passengers with {cargo}kg of equipment and documents.")
+                
                 if len(parts) >= 3:
-                    return {
-                        "client": "Private Client",
-                        "client_intro": parts[0].strip(),
-                        "mission_briefing": parts[1].strip(),
-                        "manifest_details": parts[2].strip(),
-                        "deadline_rationale": "N/A",
-                        "purpose": "Executive Charter"
-                    }
+                    if context_type == "amiri":
+                        return {
+                            "dignitary": extra_data.get("dignitary"),
+                            "dignitary_intro": parts[0].strip(),
+                            "mission_briefing": parts[1].strip(),
+                            "manifest_details": parts[2].strip(),
+                            "mission_type": "Royal Mission" if extra_data.get("is_royal") else "Official Mission"
+                        }
+                    else:
+                        return {
+                            "client": "Private Client",
+                            "client_intro": parts[0].strip(),
+                            "mission_briefing": parts[1].strip(),
+                            "manifest_details": parts[2].strip(),
+                            "purpose": "Executive Charter"
+                        }
+            else:
+                logger.warning("AI response does not contain ||| separators")
 
-        except Exception:
-            pass
+            # Only show error if we couldn't handle it
+            if not parts or len(parts) < 2:
+                separators_found = len(parts) - 1 if parts else 0
+                logger.warning(f"AI Format Error: Found {separators_found} separators, expected 2.")
+        except Exception as e:
+            # Check specifically for Quota/Rate Limit errors
+            error_msg = str(e).lower()
+            if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg:
+                logger.error(f"QUOTA EXHAUSTED for {self.current_model}. Switching permanently for this session.")
+                self.model_index += 1
+                self._try_next_model()
+                if self.model:
+                    return await self._call_ai_api(prompt, context_type, extra_data, passengers, cargo)
+            
+            logger.error(f"Unexpected AI Error: {e}")
         
+        return await self._get_fallback(context_type, passengers, cargo, extra_data)
+
+    async def _get_fallback(self, flight_type, passengers, cargo, extra_data=None):
+        logger.info(f"Returning {flight_type} fallback content")
+        if flight_type == "amiri":
+            dignitary = extra_data.get("dignitary", "Official") if extra_data else "Official"
+            return {
+                "dignitary": dignitary, 
+                "dignitary_intro": f"His Excellency {dignitary}", 
+                "mission_briefing": "Meeting with senior government officials for diplomatic consultations to advance bilateral relations and strategic partnerships in key sectors. This high priority mission involves time-sensitive diplomatic objectives requiring immediate attention and coordination.",
+                "manifest_details": f"Delegation of {passengers} officials with {cargo}kg of diplomatic materials and equipment.",
+                "mission_type": "Official Mission"
+            }
         return {
             "client": "VIP Charter", 
-            "client_intro": "Confidential Client", 
-            "mission_briefing": "Priority charter flight requested for global business travel.",
-            "manifest_details": f"Traveling with {passengers} passengers and {cargo}kg of business materials.",
+            "client_intro": "Executive Client, CEO requiring executive transportation services.", 
+            "mission_briefing": "Priority business charter flight to meet with international partners for corporate travel requirements and strategic business discussions.",
+            "manifest_details": f"Traveling with {passengers} passengers and {cargo}kg of business materials and equipment.",
             "purpose": "Executive Charter"
         }

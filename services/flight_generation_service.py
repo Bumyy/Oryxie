@@ -10,11 +10,11 @@ class FlightService:
         """Generate current date and deadline based on fuel stop requirements"""
         current_date = datetime.now()
         
-        # Amiri flights with fuel stop get 6 days, otherwise 4 days
-        if flight_type == "amiri" and fuel_stop_required:
-            deadline_days = 6
+        # Flights with fuel stop get 8 days, otherwise 5 days
+        if fuel_stop_required:
+            deadline_days = 8
         else:
-            deadline_days = 4
+            deadline_days = 5
             
         deadline_date = current_date + timedelta(days=deadline_days)
         return current_date.strftime("%d %B %Y"), deadline_date.strftime("%d %B %Y")
@@ -97,7 +97,7 @@ class FlightService:
             cargo = random.randint(aircraft_data['cargo_kg_range'][0], aircraft_data['cargo_kg_range'][1])
             fuel_stop_required = self.flight_data.needs_fuel_stop(distance, aircraft, flight_type, passengers, cargo)
             
-            # Executive flights always get 4 days (no special fuel stop logic)
+            # Generate dates with fuel stop logic (applies to all flight types)
             current_date, deadline = self.get_dates_with_fuel_logic(flight_type, fuel_stop_required)
             
             # No AI scenario generation here - only basic client info

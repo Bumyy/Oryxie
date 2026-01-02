@@ -138,17 +138,22 @@ class FlightClaimView(discord.ui.View):
             cog = interaction.client.get_cog("FlightGeneratorPDF")
             if cog:
                 print(f"[DEBUG] Starting AI scenario generation for {self.flight_type} flight")
-                dep_data = self.flight_brain.get_airport_data("OTHH")
-                # Parse destination from route format
+                # Parse departure and destination from route format
                 route = self.flight_data.route if isinstance(self.flight_data, FlightDetails) else self.flight_data['route']
                 print(f"[DEBUG] Route: {route}")
                 route_parts = route.split()
+                
+                # Parse departure ICAO (first part)
+                dep_icao = route_parts[0] if len(route_parts) >= 1 else "OTHH"
+                dep_data = self.flight_brain.get_airport_data(dep_icao)
+                
+                # Parse destination ICAO
                 if len(route_parts) >= 4:
                     dest_icao = route_parts[3]  # "OTHH 🇶🇦 to DEST"
                 else:
                     dest_icao = route_parts[2] if len(route_parts) >= 3 else "OTHH"  # Fallback
                 
-                print(f"[DEBUG] Destination ICAO: {dest_icao}")
+                print(f"[DEBUG] Departure ICAO: {dep_icao}, Destination ICAO: {dest_icao}")
                 dest_data = self.flight_brain.get_airport_data(dest_icao)
                 
                 if dep_data is not None and dest_data is not None:
@@ -170,16 +175,54 @@ class FlightClaimView(discord.ui.View):
                 else:
                     print(f"[DEBUG] Airport data missing - Dep: {dep_data is not None}, Dest: {dest_data is not None}")
 
+            # Generate PDF
             pdf_output = cog.pdf_service.generate_flight_pdf(self.flight_data, self.flight_type, interaction.user)
+            print(f"[DEBUG] PDF generation result: {pdf_output is not None}")
+            
             if pdf_output:
+                # Create private thread with only the claimer
+                thread_name = f"{'Mission Brief' if self.flight_type == 'amiri' else 'Flight Brief'} - {interaction.user.display_name}"
+                
+                # Create thread with only the claimer (no dispatchers)
+                thread = await interaction.channel.create_thread(
+                    name=thread_name,
+                    type=discord.ChannelType.private_thread,
+                    invitable=False,
+                    reason=f"Flight briefing for {interaction.user.display_name}"
+                )
+                
+                # Send message in thread with PDF
                 pdf_buffer = io.BytesIO(pdf_output)
                 flight_number = self.flight_data.flight_number if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('flight_number', 'Unknown')
-                await interaction.followup.send(f"✈️ Here are the flight documents for **{flight_number}**.", file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"))
-                await interaction.followup.send("✅ Flight claimed! The documents have been posted in the channel.", ephemeral=True)
+                
+                # Get dispatcher role for mention
+                dispatcher_role = discord.utils.get(interaction.guild.roles, name="Dispatcher")
+                
+                thread_message = f"""Hi {interaction.user.display_name}! 👋
+
+🔒 This private thread is opened for you to :
+Ask questions about your mission
+Report any issues
+Inform about your PIREP when filled , for fast Approval
+and Maintaining secrecy of This classified operations
+
+{dispatcher_role.mention if dispatcher_role else 'Dispatchers'} can assist you if needed.
+
+Good luck with your Flight!
+
+Here is your Details of Flight"""
+                
+                await thread.send(thread_message, file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"))
+                
+                await interaction.followup.send(f"✅ Flight claimed! Your private briefing thread has been created: {thread.mention}", ephemeral=True)
             else:
+                print(f"[DEBUG] PDF generation failed")
                 await interaction.followup.send("✅ Flight claimed! (But PDF generation failed).", ephemeral=True)
 
         except Exception as e:
+            print(f"[DEBUG] Exception in claim_flight: {e}")
+            import traceback
+            traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while claiming the flight.", ephemeral=True)
 
 class AmiriApprovalView(discord.ui.View):
