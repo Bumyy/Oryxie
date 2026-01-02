@@ -33,6 +33,11 @@ class ActivityCheckCog(commands.Cog):
     async def _run_full_activity_check(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
+        # Validate dependencies
+        if not hasattr(self.bot, 'pilots_model') or not hasattr(self.bot, 'db_manager'):
+            await interaction.followup.send("❌ Database services not available!", ephemeral=True)
+            return
+        
         # Get all server members
         guild = interaction.guild
         members = guild.members
@@ -51,7 +56,6 @@ class ActivityCheckCog(commands.Cog):
         no_callsign = []
         
         for member in members:
-            # Skip bots
             if member.bot:
                 continue
                 
@@ -64,15 +68,17 @@ class ActivityCheckCog(commands.Cog):
                     'display_name': member.display_name
                 })
             else:
-                # Check if member exists in database by Discord ID
-                pilot_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(member.id))
-                if pilot_data and pilot_data.get('callsign'):
-                    pilots_found.append({
-                        'member': member,
-                        'callsign': pilot_data['callsign'],
-                        'display_name': member.display_name
-                    })
-                else:
+                try:
+                    pilot_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(member.id))
+                    if pilot_data and pilot_data.get('callsign'):
+                        pilots_found.append({
+                            'member': member,
+                            'callsign': pilot_data['callsign'],
+                            'display_name': member.display_name
+                        })
+                    else:
+                        no_callsign.append(member)
+                except Exception:
                     no_callsign.append(member)
         
         # Process pilots for activity check
@@ -89,112 +95,61 @@ class ActivityCheckCog(commands.Cog):
         for pilot_info in pilots_found:
             member = pilot_info['member']
             callsign = pilot_info['callsign']
-            
-            # Check if member currently has inactive role
             has_inactive_role = inactive_role in member.roles
             
-            if has_inactive_role:
-                # Member has inactive role - check all conditions to see if they should keep it
-                should_remove = False
-                removal_reason = ""
-                
-                # Check protected callsigns
-                callsign_num = int(callsign[3:])
-                if 1 <= callsign_num <= 19:
-                    should_remove = True
-                    removal_reason = "Protected callsign (QRV001-019)"
-                # Check trainee role
-                elif trainee_role and trainee_role in member.roles:
-                    should_remove = True
-                    removal_reason = "Has trainee role"
-                # Check LOA role
-                elif loa_role and loa_role in member.roles:
-                    should_remove = True
-                    removal_reason = "Has LOA role"
-                else:
-                    # Check database conditions
+            # Determine if pilot should be inactive based on conditions
+            should_be_inactive = await self._should_pilot_be_inactive(callsign, member, trainee_role, loa_role)
+            
+            if should_be_inactive is None:
+                # Database error or pilot not found
+                continue
+            elif should_be_inactive == "protected":
+                skipped_protected += 1
+                if has_inactive_role:
+                    await member.remove_roles(inactive_role, reason="Protected callsign")
+                    removed_inactive += 1
+            elif should_be_inactive == "trainee":
+                skipped_trainee += 1
+                if has_inactive_role:
+                    await member.remove_roles(inactive_role, reason="Trainee role")
+                    removed_inactive += 1
+            elif should_be_inactive == "loa":
+                skipped_loa += 1
+                if has_inactive_role:
+                    await member.remove_roles(inactive_role, reason="LOA role")
+                    removed_inactive += 1
+            elif should_be_inactive == "veteran":
+                skipped_veteran += 1
+                if has_inactive_role:
+                    await member.remove_roles(inactive_role, reason="Veteran status")
+                    removed_inactive += 1
+            elif should_be_inactive == "active":
+                skipped_active += 1
+                if has_inactive_role:
+                    await member.remove_roles(inactive_role, reason="Recent activity")
+                    removed_inactive += 1
+            elif should_be_inactive == True:
+                # Should be inactive
+                if not has_inactive_role:
                     try:
                         pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
-                        if pilot_data:
-                            # Check if veteran
-                            flight_hours = await self._get_pilot_flight_hours(pilot_data['id'])
-                            if flight_hours and flight_hours >= 5000:
-                                should_remove = True
-                                removal_reason = "Veteran (5000+ hours)"
-                            else:
-                                # Check if active
-                                last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
-                                if last_pirep_date:
-                                    days_since = (datetime.now().date() - last_pirep_date).days
-                                    if days_since < 60:
-                                        should_remove = True
-                                        removal_reason = "Active pilot (recent PIREPs)"
+                        last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
+                        days_since = (datetime.now().date() - last_pirep_date).days if last_pirep_date else 'Never'
+                        
+                        await member.add_roles(inactive_role, reason="No PIREP in 60+ days")
+                        newly_inactive.append({
+                            'callsign': callsign,
+                            'member': member,
+                            'last_pirep': last_pirep_date.strftime('%Y-%m-%d') if last_pirep_date else 'Never',
+                            'days': days_since
+                        })
+                        processed += 1
                     except Exception as e:
-                        print(f"Error checking conditions for {callsign}: {e}")
-                
-                if should_remove:
-                    await member.remove_roles(inactive_role, reason=removal_reason)
-                    removed_inactive += 1
+                        print(f"Error adding inactive role to {callsign}: {e}")
                 else:
                     skipped_already_inactive += 1
-                continue
-            
-            # Member doesn't have inactive role - check if they should get it
-            # Skip protected callsigns (QRV001-QRV019)
-            callsign_num = int(callsign[3:])
-            if 1 <= callsign_num <= 19:
-                skipped_protected += 1
-                continue
-            
-            # Skip if has trainee role
-            if trainee_role and trainee_role in member.roles:
-                skipped_trainee += 1
-                continue
-            
-            # Skip if has LOA role
-            if loa_role and loa_role in member.roles:
-                skipped_loa += 1
-                continue
-            
-            # Check database for pilot data
-            try:
-                pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
-                if not pilot_data:
-                    continue
-                
-                # Check flight hours (skip veterans with 5000+ hours)
-                flight_hours = await self._get_pilot_flight_hours(pilot_data['id'])
-                if flight_hours and flight_hours >= 5000:
-                    skipped_veteran += 1
-                    continue
-                
-                # Check last PIREP
-                last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
-                if last_pirep_date:
-                    days_since = (datetime.now().date() - last_pirep_date).days
-                    if days_since < 60:
-                        # Pilot is active - remove inactive role if they have it
-                        if inactive_role in member.roles:
-                            await member.remove_roles(inactive_role, reason="Activity restored")
-                            removed_inactive += 1
-                        skipped_active += 1
-                        continue
-                
-                # Assign inactive role
-                await member.add_roles(inactive_role, reason="No PIREP in 60+ days")
-                newly_inactive.append({
-                    'callsign': callsign,
-                    'member': member,
-                    'last_pirep': last_pirep_date.strftime('%Y-%m-%d') if last_pirep_date else 'Never',
-                    'days': days_since if last_pirep_date else 'Never'
-                })
-                processed += 1
-                
-            except Exception as e:
-                print(f"Error processing {callsign}: {e}")
-                continue
         
-        # Send reports in multiple messages
+        # Send reports
         await self._send_summary_report(interaction, len(members), len(pilots_found), len(no_callsign), 
                                       processed, removed_inactive, skipped_protected, skipped_trainee, skipped_loa, skipped_already_inactive, 
                                       skipped_veteran, skipped_active)
@@ -204,6 +159,46 @@ class ActivityCheckCog(commands.Cog):
         
         if no_callsign:
             await self._send_no_callsign_list(interaction, no_callsign)
+    
+    async def _should_pilot_be_inactive(self, callsign: str, member, trainee_role, loa_role):
+        """Determine if pilot should be inactive. Returns True/False/reason string or None for error"""
+        try:
+            # Check protected callsigns (QRV001-QRV019)
+            callsign_num = int(callsign[3:])
+            if 1 <= callsign_num <= 19:
+                return "protected"
+            
+            # Check trainee role
+            if trainee_role and trainee_role in member.roles:
+                return "trainee"
+            
+            # Check LOA role
+            if loa_role and loa_role in member.roles:
+                return "loa"
+            
+            # Check database conditions
+            pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
+            if not pilot_data:
+                return None
+            
+            # Check if veteran (5000+ hours)
+            flight_hours = await self._get_pilot_flight_hours(pilot_data['id'])
+            if flight_hours and flight_hours >= 5000:
+                return "veteran"
+            
+            # Check activity (last PIREP within 60 days)
+            last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
+            if last_pirep_date:
+                days_since = (datetime.now().date() - last_pirep_date).days
+                if days_since < 60:
+                    return "active"
+            
+            # Should be inactive
+            return True
+            
+        except Exception as e:
+            print(f"Error checking pilot status for {callsign}: {e}")
+            return None
 
     async def _check_specific_pilot(self, interaction: discord.Interaction, callsign: str):
         await interaction.response.defer(ephemeral=True)
