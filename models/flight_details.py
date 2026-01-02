@@ -21,6 +21,10 @@ class FlightDetails:
     # Optional AI-generated fields
     dignitary_intro: Optional[str] = None
     mission_briefing: Optional[str] = None
+    counterpart_intro: Optional[str] = None
+    mission_purpose: Optional[str] = None
+    mission_urgency: Optional[str] = None
+    manifest_details: Optional[str] = None
     deadline_rationale: Optional[str] = None
     client_intro: Optional[str] = None
     

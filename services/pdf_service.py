@@ -3,15 +3,39 @@ import os
 from datetime import datetime
 from typing import Optional, Union
 from models.flight_details import FlightDetails
+from services.ai_service import AIService
 
 class PDFService:
     def __init__(self):
-        pass
+        self.ai_service = AIService()
+    
+    def _get_model_code(self):
+        model = getattr(self.ai_service, 'current_model', 'unknown')
+        if 'gemini-2.5-flash' in model:
+            return 'FLG25'
+        elif 'gemma-3-12b' in model:
+            return 'G312'
+        return 'UNK'
     
     def generate_flight_pdf(self, flight_data: Union[FlightDetails, dict], flight_type: str, pilot_user) -> Optional[bytes]:
         """Generate professional PDF flight document"""
+        print(f"[PDF DEBUG] PDF generation started for {flight_type} flight")
         try:
             from fpdf import FPDF
+            
+            # Convert to dict if dataclass
+            if isinstance(flight_data, FlightDetails):
+                data = flight_data.to_dict()
+            else:
+                data = flight_data
+            
+            # DEBUG: Print all available data keys
+            print(f"[PDF DEBUG] Available data keys: {list(data.keys())}")
+            print(f"[PDF DEBUG] Dignitary intro: {data.get('dignitary_intro')}")
+            print(f"[PDF DEBUG] Counterpart intro: {data.get('counterpart_intro')}")
+            print(f"[PDF DEBUG] Mission purpose: {data.get('mission_purpose')}")
+            print(f"[PDF DEBUG] Mission urgency: {data.get('mission_urgency')}")
+            print(f"[PDF DEBUG] Manifest details: {data.get('manifest_details')}")
             
             pdf = FPDF()
             pdf.add_page()
@@ -39,7 +63,7 @@ class PDFService:
             pdf.set_font('Arial', 'B', 18)
             pdf.cell(0, 15, f'QATARI VIRTUAL {"AMIRI" if flight_type == "amiri" else "EXECUTIVE"}', 0, 1, 'C')
             pdf.set_font('Arial', 'B', 14)
-            pdf.cell(0, 10, 'OPERATIONAL DOCUMENT', 0, 1, 'C')
+            pdf.cell(0, 10, f'{"MISSION BRIEF" if flight_type == "amiri" else "FLIGHT BRIEF"}', 0, 1, 'C')
             pdf.ln(10)
             
             # Flight Information
@@ -47,12 +71,6 @@ class PDFService:
             pdf.cell(0, 8, 'FLIGHT INFORMATION', 0, 1)
             pdf.line(10, pdf.get_y(), 200, pdf.get_y())
             pdf.ln(5)
-            
-            # Convert to dict if dataclass
-            if isinstance(flight_data, FlightDetails):
-                data = flight_data.to_dict()
-            else:
-                data = flight_data
             
             pdf.set_font('Arial', '', 10)
             flight_info = [
@@ -89,34 +107,56 @@ class PDFService:
             pdf.ln(5)
             
             if flight_type == "amiri":
-                briefing_data = [
-                    (f"Dossier: {self._clean_text(data.get('dignitary', 'N/A'))}", 
-                     self._clean_text(data.get('dignitary_intro', 'No introduction available.'))),
-                    ('Mission Objectives:', 
-                     self._clean_text(data.get('mission_briefing', 'No briefing available.')))
-                ]
+                # Dossier
+                if data.get('dignitary_intro'):
+                    pdf.set_font('Arial', 'B', 10)
+                    pdf.cell(0, 6, 'Dossier:', 0, 1)
+                    pdf.set_font('Arial', '', 10)
+                    dossier_text = self._clean_text(data.get('dignitary_intro')).replace('**', '').replace('*', '')
+                    pdf.multi_cell(0, 5, dossier_text.strip())
+                    pdf.ln(3)
+                
+                # Purpose
+                if data.get('mission_briefing'):
+                    pdf.set_font('Arial', 'B', 10)
+                    pdf.cell(0, 6, 'Purpose:', 0, 1)
+                    pdf.set_font('Arial', '', 10)
+                    purpose_text = self._clean_text(data.get('mission_briefing')).replace('**', '').replace('*', '')
+                    pdf.multi_cell(0, 5, purpose_text.strip())
+                    pdf.ln(3)
+                
+                # Payload
+                if data.get('manifest_details'):
+                    pdf.set_font('Arial', 'B', 10)
+                    pdf.cell(0, 6, 'Payload:', 0, 1)
+                    pdf.set_font('Arial', '', 10)
+                    payload_text = self._clean_text(data.get('manifest_details')).replace('**', '').replace('*', '')
+                    pdf.multi_cell(0, 5, payload_text.strip())
+                    
             else:
-                briefing_data = [
-                    (f"Client Profile: {self._clean_text(data.get('client', 'N/A'))}", 
-                     self._clean_text(data.get('client_intro', 'No client introduction available.'))),
-                    ('Flight Purpose:', 
-                     self._clean_text(data.get('mission_briefing', 'No briefing available.')))
-                ]
-            
-            for title, content in briefing_data:
-                pdf.set_font('Arial', 'B', 10)
-                pdf.cell(0, 6, title, 0, 1)
-                pdf.set_font('Arial', '', 10)
-                pdf.multi_cell(0, 5, content)
-                pdf.ln(3)
-            
-            # Manifest Details Section
-            if data.get('manifest_details'):
-                pdf.set_font('Arial', 'B', 10)
-                pdf.cell(0, 6, 'Manifest Details:', 0, 1)
-                pdf.set_font('Arial', '', 10)
-                pdf.multi_cell(0, 5, self._clean_text(data.get('manifest_details', '')))
-                pdf.ln(3)
+                # Executive flight sections
+                if data.get('client_intro'):
+                    pdf.set_font('Arial', 'B', 10)
+                    pdf.cell(0, 6, 'Client:', 0, 1)
+                    pdf.set_font('Arial', '', 10)
+                    client_text = self._clean_text(data.get('client_intro')).replace('**', '').replace('*', '')
+                    pdf.multi_cell(0, 5, client_text.strip())
+                    pdf.ln(3)
+                
+                if data.get('mission_briefing'):
+                    pdf.set_font('Arial', 'B', 10)
+                    pdf.cell(0, 6, 'Purpose:', 0, 1)
+                    pdf.set_font('Arial', '', 10)
+                    purpose_text = self._clean_text(data.get('mission_briefing')).replace('**', '').replace('*', '')
+                    pdf.multi_cell(0, 5, purpose_text.strip())
+                    pdf.ln(3)
+                
+                if data.get('manifest_details'):
+                    pdf.set_font('Arial', 'B', 10)
+                    pdf.cell(0, 6, 'Manifest:', 0, 1)
+                    pdf.set_font('Arial', '', 10)
+                    manifest_text = self._clean_text(data.get('manifest_details')).replace('**', '').replace('*', '')
+                    pdf.multi_cell(0, 5, manifest_text.strip())
 
             # Crew Assignment
             pdf.ln(8)
@@ -135,14 +175,18 @@ class PDFService:
                 pdf.cell(60, 6, label, 0, 0)
                 pdf.cell(0, 6, str(value), 0, 1)
             
-            # Footer
+            # Footer with metadata
             pdf.ln(15)
             pdf.line(10, pdf.get_y(), 200, pdf.get_y())
             pdf.ln(5)
             
-            pdf.set_font('Arial', 'I', 11)
-            pdf.set_text_color(0, 102, 153)
-            pdf.cell(0, 6, 'Generated by Qatari Virtual - Flight Operations Department', 0, 1, 'C')
+            # Document metadata
+            model_code = self._get_model_code()
+            doc_id = f"QRV-{flight_type.upper()[:3]}-{model_code}-{datetime.now().strftime('%Y-%m')}-{data['flight_number'].replace('QRV', '')}"
+            pdf.set_font('Arial', '', 8)
+            pdf.set_text_color(80, 80, 80)
+            pdf.cell(0, 4, f'Document ID: {doc_id} | Version: 1 beta', 0, 1, 'C')
+            pdf.cell(0, 4, f'Generated: {datetime.now().strftime("%d %B %Y at %H:%M UTC")} | Oryxie Bot', 0, 1, 'C')
             
             pdf.ln(3)
             pdf.set_fill_color(240, 240, 240)
@@ -160,7 +204,10 @@ class PDFService:
             pdf.set_text_color(0, 0, 0)
             
             return pdf.output()
-        except (ImportError, Exception):
+        except (ImportError, Exception) as e:
+            print(f"[PDF DEBUG] Exception in PDF generation: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _clean_text(self, text) -> str:
