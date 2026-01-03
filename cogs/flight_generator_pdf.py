@@ -16,6 +16,7 @@ FLIGHT_REQUEST_CHANNEL_ID = int(os.getenv("FLIGHT_REQUEST_CHANNEL_ID"))
 DISPATCH_CHANNEL_ID = int(os.getenv("DISPATCH_CHANNEL_ID"))
 AMIRI_CHANNEL_ID = int(os.getenv("AMIRI_CHANNEL_ID"))
 EXECUTIVE_CHANNEL_ID = int(os.getenv("EXECUTIVE_CHANNEL_ID"))
+
 # UI view for flight request buttons
 class FlightRequestView(discord.ui.View):
     def __init__(self):
@@ -111,16 +112,17 @@ class DispatchClaimView(discord.ui.View):
             message += f"\n**Note:** The pilot requested a flight to **{self.continent}**."
         await interaction.followup.send(message)
 
-# UI view for pilots to claim generated flights
-class FlightClaimView(discord.ui.View):
-    def __init__(self, flight_data, flight_type: str, flight_brain: FlightData):
-        super().__init__(timeout=None)
+# UI view for confirmation dialog
+class FlightClaimConfirmView(discord.ui.View):
+    def __init__(self, flight_data, flight_type: str, flight_brain: FlightData, original_message):
+        super().__init__(timeout=60)
         self.flight_data = flight_data
         self.flight_type = flight_type
         self.flight_brain = flight_brain
+        self.original_message = original_message
 
-    @discord.ui.button(label="Claim Flight", style=discord.ButtonStyle.success, emoji="✈️", custom_id="claim_flight_pdf")
-    async def claim_flight(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Yes, Claim Flight", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -130,9 +132,12 @@ class FlightClaimView(discord.ui.View):
             if error_msg:
                 return await interaction.followup.send(error_msg, ephemeral=True)
 
-            button.disabled = True
-            button.label = f"Claimed by {interaction.user.display_name}"
-            await interaction.message.edit(view=self)
+            # Update original message button
+            for item in self.original_message.components[0].children:
+                if item.custom_id == "claim_flight_pdf":
+                    item.disabled = True
+                    item.label = f"Claimed by {interaction.user.display_name}"
+            await self.original_message.edit(view=discord.ui.View.from_message(self.original_message))
 
             # Generate AI scenario now when flight is claimed
             cog = interaction.client.get_cog("FlightGeneratorPDF")
@@ -180,10 +185,9 @@ class FlightClaimView(discord.ui.View):
             print(f"[DEBUG] PDF generation result: {pdf_output is not None}")
             
             if pdf_output:
-                # Create private thread with only the claimer
+                # Create private thread
                 thread_name = f"{'Mission Brief' if self.flight_type == 'amiri' else 'Flight Brief'} - {interaction.user.display_name}"
                 
-                # Create thread with only the claimer (no dispatchers)
                 thread = await interaction.channel.create_thread(
                     name=thread_name,
                     type=discord.ChannelType.private_thread,
@@ -191,21 +195,14 @@ class FlightClaimView(discord.ui.View):
                     reason=f"Flight briefing for {interaction.user.display_name}"
                 )
                 
-                # Add claimer to thread
-                await thread.add_user(interaction.user)
-                
-                # Add dispatchers to thread
-                dispatcher_role = discord.utils.get(interaction.guild.roles, name="Dispatcher")
-                if dispatcher_role:
-                    for member in interaction.guild.members:
-                        if dispatcher_role in member.roles:
-                            await thread.add_user(member)
-                
                 # Send message in thread with PDF
                 pdf_buffer = io.BytesIO(pdf_output)
                 flight_number = self.flight_data.flight_number if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('flight_number', 'Unknown')
                 
-                thread_message = f"""Hi {interaction.user.display_name}! 👋
+                # Get dispatcher role for mention
+                dispatcher_role = discord.utils.get(interaction.guild.roles, name="Dispatcher")
+                
+                thread_message = f"""Hi {interaction.user.mention}! 👋
 
 🔒 This private thread is opened for you to :
 Ask questions about your mission
@@ -213,7 +210,7 @@ Report any issues
 Inform about your PIREP when filled , for fast Approval
 and Maintaining secrecy of This classified operations
 
-Dispatchers can assist you if needed.
+{dispatcher_role.mention if dispatcher_role else 'Dispatchers'} can assist you if needed.
 
 Good luck with your Flight!
 
@@ -227,10 +224,34 @@ Here is your Details of Flight"""
                 await interaction.followup.send("✅ Flight claimed! (But PDF generation failed).", ephemeral=True)
 
         except Exception as e:
-            print(f"[DEBUG] Exception in claim_flight: {e}")
+            print(f"[DEBUG] Exception in confirm_claim: {e}")
             import traceback
             traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while claiming the flight.", ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("❌ Flight claim cancelled.", ephemeral=True)
+
+# UI view for pilots to claim generated flights
+class FlightClaimView(discord.ui.View):
+    def __init__(self, flight_data, flight_type: str, flight_brain: FlightData):
+        super().__init__(timeout=None)
+        self.flight_data = flight_data
+        self.flight_type = flight_type
+        self.flight_brain = flight_brain
+
+    @discord.ui.button(label="Claim Flight", style=discord.ButtonStyle.success, emoji="✈️", custom_id="claim_flight_pdf")
+    async def claim_flight(self, interaction: discord.Interaction, button: discord.ui.Button):
+        aircraft_name = self.flight_data.aircraft_name if isinstance(self.flight_data, FlightDetails) else self.flight_data['aircraft_name']
+        route = self.flight_data.route if isinstance(self.flight_data, FlightDetails) else self.flight_data['route']
+        
+        confirm_view = FlightClaimConfirmView(self.flight_data, self.flight_type, self.flight_brain, interaction.message)
+        await interaction.response.send_message(
+            f"Do you want to claim this flight?\n\n**Aircraft:** {aircraft_name}\n**Route:** {route}", 
+            view=confirm_view, 
+            ephemeral=True
+        )
 
 class AmiriApprovalView(discord.ui.View):
     def __init__(self, cog, aircraft: str, interaction: discord.Interaction):
@@ -357,8 +378,6 @@ class FlightGeneratorPDF(commands.Cog):
         self.pdf_service = bot.pdf_service
         self.bot.add_view(FlightRequestView())
 
-
-
     # FLIGHT REQUEST COMMANDS & LOGIC
     
     @app_commands.command(name="setup_request", description="Setup flight request interface (Staff only)")
@@ -480,8 +499,6 @@ class FlightGeneratorPDF(commands.Cog):
             await exec_channel.send(embed=embed, view=claim_view)
         
         await interaction.followup.send("✅ Executive flight posted!")
-
-
 
 
 async def setup(bot: commands.Bot):
