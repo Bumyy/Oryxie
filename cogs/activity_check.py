@@ -10,6 +10,7 @@ class ActivityCheckCog(commands.Cog):
         self.INACTIVE_ROLE_ID = 1224371905012961342
         self.TRAINEE_ROLE_ID = 1137998383630524477
         self.LOA_ROLE_ID = 1193185998859935755
+        self.CODESHARE_REP_ROLE_ID = 1120952921299894354
 
     @app_commands.command(name="activity_check", description="Manage pilot activity checking")
     @app_commands.describe(
@@ -46,6 +47,7 @@ class ActivityCheckCog(commands.Cog):
         inactive_role = guild.get_role(self.INACTIVE_ROLE_ID)
         trainee_role = guild.get_role(self.TRAINEE_ROLE_ID)
         loa_role = guild.get_role(self.LOA_ROLE_ID)
+        codeshare_rep_role = guild.get_role(self.CODESHARE_REP_ROLE_ID)
         
         if not inactive_role:
             await interaction.followup.send("❌ Inactive role not found!", ephemeral=True)
@@ -90,6 +92,7 @@ class ActivityCheckCog(commands.Cog):
         skipped_already_inactive = 0
         skipped_veteran = 0
         skipped_active = 0
+        skipped_codeshare_rep = 0
         newly_inactive = []
         
         for pilot_info in pilots_found:
@@ -98,7 +101,7 @@ class ActivityCheckCog(commands.Cog):
             has_inactive_role = inactive_role in member.roles
             
             # Determine if pilot should be inactive based on conditions
-            should_be_inactive = await self._should_pilot_be_inactive(callsign, member, trainee_role, loa_role)
+            should_be_inactive = await self._should_pilot_be_inactive(callsign, member, trainee_role, loa_role, codeshare_rep_role)
             
             if should_be_inactive is None:
                 # Database error or pilot not found
@@ -118,6 +121,11 @@ class ActivityCheckCog(commands.Cog):
                 if has_inactive_role:
                     await member.remove_roles(inactive_role, reason="LOA role")
                     removed_inactive += 1
+            elif should_be_inactive == "codeshare_rep":
+                skipped_codeshare_rep += 1
+                if has_inactive_role:
+                    await member.remove_roles(inactive_role, reason="Codeshare representative")
+                    removed_inactive += 1
             elif should_be_inactive == "veteran":
                 skipped_veteran += 1
                 if has_inactive_role:
@@ -136,7 +144,7 @@ class ActivityCheckCog(commands.Cog):
                         last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
                         days_since = (datetime.now().date() - last_pirep_date).days if last_pirep_date else 'Never'
                         
-                        await member.add_roles(inactive_role, reason="No PIREP in 60+ days")
+                        await member.add_roles(inactive_role, reason="No PIREP in 30+ days")
                         newly_inactive.append({
                             'callsign': callsign,
                             'member': member,
@@ -152,7 +160,7 @@ class ActivityCheckCog(commands.Cog):
         # Send reports
         await self._send_summary_report(interaction, len(members), len(pilots_found), len(no_callsign), 
                                       processed, removed_inactive, skipped_protected, skipped_trainee, skipped_loa, skipped_already_inactive, 
-                                      skipped_veteran, skipped_active)
+                                      skipped_veteran, skipped_active, skipped_codeshare_rep)
         
         if newly_inactive:
             await self._send_inactive_list(interaction, newly_inactive)
@@ -160,7 +168,7 @@ class ActivityCheckCog(commands.Cog):
         if no_callsign:
             await self._send_no_callsign_list(interaction, no_callsign)
     
-    async def _should_pilot_be_inactive(self, callsign: str, member, trainee_role, loa_role):
+    async def _should_pilot_be_inactive(self, callsign: str, member, trainee_role, loa_role, codeshare_rep_role):
         """Determine if pilot should be inactive. Returns True/False/reason string or None for error"""
         try:
             # Check protected callsigns (QRV001-QRV019)
@@ -176,6 +184,10 @@ class ActivityCheckCog(commands.Cog):
             if loa_role and loa_role in member.roles:
                 return "loa"
             
+            # Check Codeshare representative role
+            if codeshare_rep_role and codeshare_rep_role in member.roles:
+                return "codeshare_rep"
+            
             # Check database conditions
             pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
             if not pilot_data:
@@ -186,11 +198,11 @@ class ActivityCheckCog(commands.Cog):
             if flight_hours and flight_hours >= 5000:
                 return "veteran"
             
-            # Check activity (last PIREP within 60 days)
+            # Check activity (last PIREP within 30 days)
             last_pirep_date = await self._get_pilot_last_pirep_date(pilot_data['id'])
             if last_pirep_date:
                 days_since = (datetime.now().date() - last_pirep_date).days
-                if days_since < 60:
+                if days_since < 30:
                     return "active"
             
             # Should be inactive
@@ -223,7 +235,7 @@ class ActivityCheckCog(commands.Cog):
         
         if last_pirep_date:
             days_ago = (datetime.now().date() - last_pirep_date).days
-            status = "🟢 Active" if days_ago <= 60 else "🔴 Inactive"
+            status = "🟢 Active" if days_ago <= 30 else "🔴 Inactive"
             report += f"Days Since Last PIREP: {days_ago}\n"
             report += f"Status: {status}"
         else:
@@ -256,9 +268,9 @@ class ActivityCheckCog(commands.Cog):
 
     async def _send_summary_report(self, interaction, total_members, pilots_found, no_callsign_count, 
                                  processed, removed_inactive, skipped_protected, skipped_trainee, skipped_loa, skipped_already_inactive, 
-                                 skipped_veteran, skipped_active):
+                                 skipped_veteran, skipped_active, skipped_codeshare_rep):
         """Send summary report"""
-        total_skipped = skipped_protected + skipped_trainee + skipped_loa + skipped_already_inactive + skipped_veteran + skipped_active
+        total_skipped = skipped_protected + skipped_trainee + skipped_loa + skipped_already_inactive + skipped_veteran + skipped_active + skipped_codeshare_rep
         
         report = f"""Activity Check Complete!
 
@@ -276,7 +288,8 @@ SKIPPED BREAKDOWN:
 - LOA Members: {skipped_loa}
 - Already Inactive: {skipped_already_inactive}
 - Veterans (5000+ hrs): {skipped_veteran}
-- Active (recent PIREPs): {skipped_active}"""
+- Active (recent PIREPs): {skipped_active}
+- Codeshare Representatives: {skipped_codeshare_rep}"""
         
         await interaction.followup.send(report, ephemeral=True)
 
