@@ -235,6 +235,44 @@ class PilotsModel:
             'error_message': 'Your Discord ID and callsign are not matching. Please contact Ayush or any staff.'
         }
 
+    async def get_pilot_total_hours(self, pilot_id: int, callsign: str) -> float:
+        """
+        Calculates total flight hours for a pilot (transfer hours + PIREP hours).
+        
+        Args:
+            pilot_id: The pilot's database ID
+            callsign: The pilot's callsign
+            
+        Returns:
+            Total hours as float (transfer + PIREP hours)
+        """
+        # Get transfer hours (in seconds)
+        transfer_seconds = await self.get_pilot_transfer_hours(callsign)
+        
+        # Get PIREP hours (in seconds) - need to access pireps_model through db manager
+        from .pireps_model import PirepsModel
+        pireps_model = PirepsModel(self.db)
+        pirep_seconds = await pireps_model.get_total_flight_time_seconds(pilot_id)
+        
+        # Convert total seconds to hours
+        total_seconds = transfer_seconds + pirep_seconds
+        return total_seconds / 3600
+
+    async def get_pilot_transfer_hours(self, callsign: str) -> int:
+        """
+        Retrieves a pilot's transfer hours using their callsign.
+
+        Args:
+            callsign: The pilot's callsign (e.g., 'QRV475').
+
+        Returns:
+            Transfer hours in seconds, or 0 if pilot not found.
+        """
+        query = "SELECT transhours FROM pilots WHERE callsign = %s AND status = 1"
+        args = (callsign,)
+        result = await self.db.fetch_one(query, args)
+        return result['transhours'] if result and result['transhours'] else 0
+
     def get_html_template(self):
         """Returns HTML template for pilot documentation"""
         import os

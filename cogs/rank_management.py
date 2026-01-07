@@ -59,7 +59,7 @@ RANK_MESSAGES = {
     "Captain": {
         "content": (
             "🎉 **CONGRATULATIONS** {user_mention}\n\n"
-            "You have been promoted to **Captain Rank**! 👨✈️\n"
+            "You have been promoted to **Captain Rank**! ✈️\n"
             "You have successfully reached **100 Flight Hours**.\n\n"
             "🔓 **Aircraft Unlocked:**\n"
             "• Boeing 777-200LR/ER\n"
@@ -95,8 +95,8 @@ RANK_MESSAGES = {
             "• Qatar Airways A319 (for Qatar Amiri flights)\n\n"
             "👑 **Perks:**\n"
             "• **Callsign:** You can now change your callsign (Range 40-100)\n\n"
-            "🔐 **Staff Access**\n"
-            "A Manager or Executive Member will soon send you a DM with the Staff joining link!!\n\n"
+            "🔐 **Staff Server Access**\n"
+            "A Manager or Executive Member will soon send you a DM with the Staff Server joining link!!\n\n"
             f"{FOOTER_RUBY}"
         )
     },
@@ -110,8 +110,6 @@ RANK_MESSAGES = {
             "• Airbus A319\n"
             "• Airbus A340\n"
             "• Boeing 747-8 BBJ\n\n"
-            "👑 **Perks:**\n"
-            "• **Callsign:** You can now change your callsign (Range 30-40)\n\n"
             f"{FOOTER_SAPPHIRE}"
         )
     },
@@ -141,7 +139,7 @@ RANK_MESSAGES = {
     "Oryx": {
         "content": (
             "👑 **THE ULTIMATE ACHIEVEMENT** {user_mention}\n\n"
-            "You have achieved **The Oryx Award**! 🦌\n"
+            "You have achieved **The Oryx Award**! \n"
             "You have reached **5,000 Flight Hours**.\n\n"
             "🔓 **The Pinnacle Unlock:**\n"
             "• **Qatari Executive**\n\n"
@@ -376,9 +374,8 @@ class RankManagement(commands.Cog):
             await interaction.response.send_message(f"⚠️ Pilot **{full_callsign}** found but has no Discord ID linked.", ephemeral=True)
             return
 
-        # Fetch Approved Flight Time
-        total_seconds = await self.bot.pireps_model.get_total_flight_time_seconds(pilot_id)
-        total_hours = total_seconds / 3600
+        # Fetch Total Flight Time (including transfer hours)
+        total_hours = await self.bot.pilots_model.get_pilot_total_hours(pilot_id, pilot['callsign'])
         formatted_hours = f"{total_hours:.2f}"
 
         # Calculate Rank
@@ -422,11 +419,10 @@ class RankManagement(commands.Cog):
                     stats["skipped"] += 1
                     continue
 
-                # 2. Calculate correct rank
+                # 2. Calculate correct rank using total hours (transfer + PIREP)
                 pilot_id = pilot_data['id']
-                seconds = await self.bot.pireps_model.get_total_flight_time_seconds(pilot_id)
-                hours = seconds / 3600
-                correct_rank_name = self._get_rank_from_hours(hours)
+                total_hours = await self.bot.pilots_model.get_pilot_total_hours(pilot_id, pilot_data['callsign'])
+                correct_rank_name = self._get_rank_from_hours(total_hours)
                 
                 # 3. Strict Check: If they don't have exactly the right roles, Update.
                 # To be efficient, we check if they ALREADY have the correct Main Role.
