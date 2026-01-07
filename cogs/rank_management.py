@@ -59,7 +59,7 @@ RANK_MESSAGES = {
     "Captain": {
         "content": (
             "🎉 **CONGRATULATIONS** {user_mention}\n\n"
-            "You have been promoted to **Captain Rank**! 👨✈️\n"
+            "You have been promoted to **Captain Rank**! ✈️\n"
             "You have successfully reached **100 Flight Hours**.\n\n"
             "🔓 **Aircraft Unlocked:**\n"
             "• Boeing 777-200LR/ER\n"
@@ -95,8 +95,8 @@ RANK_MESSAGES = {
             "• Qatar Airways A319 (for Qatar Amiri flights)\n\n"
             "👑 **Perks:**\n"
             "• **Callsign:** You can now change your callsign (Range 40-100)\n\n"
-            "🔐 **Staff Access**\n"
-            "A Manager or Executive Member will soon send you a DM with the Staff joining link!!\n\n"
+            "🔐 **Staff Server Access**\n"
+            "A Manager or Executive Member will soon send you a DM with the Staff Server joining link!!\n\n"
             f"{FOOTER_RUBY}"
         )
     },
@@ -110,8 +110,6 @@ RANK_MESSAGES = {
             "• Airbus A319\n"
             "• Airbus A340\n"
             "• Boeing 747-8 BBJ\n\n"
-            "👑 **Perks:**\n"
-            "• **Callsign:** You can now change your callsign (Range 30-40)\n\n"
             f"{FOOTER_SAPPHIRE}"
         )
     },
@@ -141,7 +139,7 @@ RANK_MESSAGES = {
     "Oryx": {
         "content": (
             "👑 **THE ULTIMATE ACHIEVEMENT** {user_mention}\n\n"
-            "You have achieved **The Oryx Award**! 🦌\n"
+            "You have achieved **The Oryx Award**! \n"
             "You have reached **5,000 Flight Hours**.\n\n"
             "🔓 **The Pinnacle Unlock:**\n"
             "• **Qatari Executive**\n\n"
