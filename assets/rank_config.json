@@ -1,0 +1,47 @@
+{
+  "ask_for_cargo_channel_id": 1144177587212525678,
+  "qatari_emoji": "<:qatari:1094679033205227580>",
+  "ranks": {
+    "Cadet": {
+      "min_hours": 0,
+      "role_id": 1090755316624408696
+    },
+    "Second Officer": {
+      "min_hours": 10,
+      "role_id": 1090755686104825977
+    },
+    "First Officer": {
+      "min_hours": 25,
+      "role_id": 1090755990569357312
+    },
+    "Captain": {
+      "min_hours": 100,
+      "role_id": 1090756112158044230,
+      "cargo_role_id": 1144183014658670643
+    },
+    "Senior Captain": {
+      "min_hours": 250,
+      "role_id": 1090756368631341056
+    },
+    "Ruby": {
+      "min_hours": 500,
+      "role_id": 1090757434617888889
+    },
+    "Sapphire": {
+      "min_hours": 1000,
+      "role_id": 1090757602230673448
+    },
+    "Emerald": {
+      "min_hours": 2500,
+      "role_id": 1090757780085940375
+    },
+    "OneWorld": {
+      "min_hours": 3000,
+      "role_id": 1171821033154691182
+    },
+    "Oryx": {
+      "min_hours": 5000,
+      "role_id": 1308739377739993088
+    }
+  }
+}
