@@ -162,9 +162,8 @@ class FlightData:
             if not pilot_data:
                 return None, None, "❌ Pilot not found in database. Please contact staff."
             
-            # Get pilot's total flight hours
-            total_seconds = await pireps_model.get_total_flight_time_seconds(pilot_data['id'])
-            total_hours = total_seconds / 3600  # Convert to hours
+            # Get pilot's total flight hours (transfer + PIREP hours)
+            total_hours = await pilots_model.get_pilot_total_hours(pilot_data['id'], pilot_data['callsign'])
             
             # Determine rank based on hours
             rank = self.get_rank_from_hours(total_hours)

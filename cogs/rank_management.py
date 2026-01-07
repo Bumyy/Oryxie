@@ -376,9 +376,8 @@ class RankManagement(commands.Cog):
             await interaction.response.send_message(f"⚠️ Pilot **{full_callsign}** found but has no Discord ID linked.", ephemeral=True)
             return
 
-        # Fetch Approved Flight Time
-        total_seconds = await self.bot.pireps_model.get_total_flight_time_seconds(pilot_id)
-        total_hours = total_seconds / 3600
+        # Fetch Total Flight Time (including transfer hours)
+        total_hours = await self.bot.pilots_model.get_pilot_total_hours(pilot_id, pilot['callsign'])
         formatted_hours = f"{total_hours:.2f}"
 
         # Calculate Rank
@@ -422,11 +421,10 @@ class RankManagement(commands.Cog):
                     stats["skipped"] += 1
                     continue
 
-                # 2. Calculate correct rank
+                # 2. Calculate correct rank using total hours (transfer + PIREP)
                 pilot_id = pilot_data['id']
-                seconds = await self.bot.pireps_model.get_total_flight_time_seconds(pilot_id)
-                hours = seconds / 3600
-                correct_rank_name = self._get_rank_from_hours(hours)
+                total_hours = await self.bot.pilots_model.get_pilot_total_hours(pilot_id, pilot_data['callsign'])
+                correct_rank_name = self._get_rank_from_hours(total_hours)
                 
                 # 3. Strict Check: If they don't have exactly the right roles, Update.
                 # To be efficient, we check if they ALREADY have the correct Main Role.
