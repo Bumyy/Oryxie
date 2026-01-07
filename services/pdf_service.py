@@ -17,7 +17,7 @@ class PDFService:
             return 'G312'
         return 'UNK'
     
-    def generate_flight_pdf(self, flight_data: Union[FlightDetails, dict], flight_type: str, pilot_user) -> Optional[bytes]:
+    def generate_flight_pdf(self, flight_data: Union[FlightDetails, dict], flight_type: str, pilot_user, pilot_info: dict = None) -> Optional[bytes]:
         """Generate professional PDF flight document"""
         print(f"[PDF DEBUG] PDF generation started for {flight_type} flight")
         try:
@@ -165,9 +165,24 @@ class PDFService:
             pdf.line(10, pdf.get_y(), 200, pdf.get_y())
             pdf.ln(5)
             
+            # Get formatted pilot info
+            if pilot_info and 'callsign' in pilot_info and 'rank' in pilot_info:
+                # Extract clean name from display name
+                import re
+                name_match = re.sub(r'QRV\d{3,}', '', pilot_user.display_name).strip()
+                pilot_name = name_match if name_match else pilot_user.display_name
+                
+                formatted_pilot = f"Senior Captain {pilot_name} | {pilot_info['callsign']} | {pilot_info['rank']} Award Holder"
+            else:
+                # Fallback
+                import re
+                name_match = re.sub(r'QRV\d{3,}', '', pilot_user.display_name).strip()
+                pilot_name = name_match if name_match else pilot_user.display_name
+                formatted_pilot = f"Senior Captain {pilot_name}"
+            
             pdf.set_font('Arial', '', 10)
             crew_info = [
-                ('Pilot in Command:', self._clean_text(pilot_user.display_name)),
+                ('Pilot in Command:', self._clean_text(formatted_pilot)),
                 ('Claim Time (UTC):', datetime.now().strftime('%d %B %Y at %H:%M UTC'))
             ]
             
@@ -185,7 +200,7 @@ class PDFService:
             doc_id = f"QRV-{flight_type.upper()[:3]}-{model_code}-{datetime.now().strftime('%Y-%m')}-{data['flight_number'].replace('QRV', '')}"
             pdf.set_font('Arial', '', 8)
             pdf.set_text_color(80, 80, 80)
-            pdf.cell(0, 4, f'Document ID: {doc_id} | Version: 1 beta', 0, 1, 'C')
+            pdf.cell(0, 4, f'Document ID: {doc_id} | Version: 1.2 beta', 0, 1, 'C')
             pdf.cell(0, 4, f'Generated: {datetime.now().strftime("%d %B %Y at %H:%M UTC")} | Oryxie Bot', 0, 1, 'C')
             
             pdf.ln(3)

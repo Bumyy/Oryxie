@@ -29,18 +29,33 @@ class FlightData:
         try:
             with open("assets/aircraft_data.json", 'r') as f:
                 self.AIRCRAFT_DATA = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning: Could not load aircraft_data.json: {e}")
+            self.AIRCRAFT_DATA = {}
+            
+        try:
             with open("assets/rank_permissions.json", 'r') as f:
                 self.RANK_PERMISSIONS = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning: Could not load rank_permissions.json: {e}")
+            self.RANK_PERMISSIONS = {}
+            
+        try:
+            with open("assets/rank_config.json", 'r') as f:
+                self.RANK_CONFIG = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning: Could not load rank_config.json: {e}")
+            self.RANK_CONFIG = {}
+            
+        try:
             with open("assets/dignitary_names.json", 'r') as f:
                 dignitary_data = json.load(f)
                 self.ROYAL_NAMES = dignitary_data["royal_names"]
                 self.OFFICIAL_ROLES = dignitary_data["official_roles"]
                 self.DIGNITARY_SCENARIOS = dignitary_data.get("dignitary_scenarios", [])
                 self.ROYAL_SCENARIOS = dignitary_data.get("royal_scenarios", [])
-        except (FileNotFoundError, json.JSONDecodeError):
-            # Fallback to empty data if files not found
-            self.AIRCRAFT_DATA = {}
-            self.RANK_PERMISSIONS = {}
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning: Could not load dignitary_names.json: {e}")
             self.ROYAL_NAMES = []
             self.OFFICIAL_ROLES = []
             self.DIGNITARY_SCENARIOS = []
@@ -122,35 +137,63 @@ class FlightData:
         deadline_date = current_date + timedelta(days=4)
         return current_date.strftime("%d %B %Y"), deadline_date.strftime("%d %B %Y")
 
-    def get_user_rank(self, user_roles) -> Optional[str]:
-        """Get user's highest rank from Discord roles"""
-        role_names = [role.name for role in user_roles]
-        for rank in ["Oryx", "OWD", "Emerald", "Sapphire", "Ruby"]:
-            if rank in role_names:
-                return rank
-        return None
+    def get_rank_from_hours(self, total_hours: float) -> str:
+        """Get pilot rank based on flight hours"""
+        if not self.RANK_CONFIG or 'ranks' not in self.RANK_CONFIG:
+            return "Cadet"
+        
+        # Convert seconds to hours if needed
+        if total_hours > 10000:  # Assume it's in seconds if > 10000
+            total_hours = total_hours / 3600
+        
+        # Find highest rank pilot qualifies for
+        qualified_rank = "Cadet"
+        for rank_name, rank_data in self.RANK_CONFIG['ranks'].items():
+            if total_hours >= rank_data['min_hours']:
+                qualified_rank = rank_name
+        
+        return qualified_rank
 
-    def get_available_aircraft(self, user_roles, flight_type: str) -> list:
-        """Get available aircraft for user's rank"""
-        rank = self.get_user_rank(user_roles)
+    async def get_pilot_rank_and_aircraft(self, discord_id: str, pilots_model, pireps_model) -> tuple:
+        """Get pilot's rank and available aircraft based on flight hours"""
+        try:
+            # Find pilot by Discord ID
+            pilot_data = await pilots_model.get_pilot_by_discord_id(discord_id)
+            if not pilot_data:
+                return None, None, "❌ Pilot not found in database. Please contact staff."
+            
+            # Get pilot's total flight hours
+            total_seconds = await pireps_model.get_total_flight_time_seconds(pilot_data['id'])
+            total_hours = total_seconds / 3600  # Convert to hours
+            
+            # Determine rank based on hours
+            rank = self.get_rank_from_hours(total_hours)
+            
+            return rank, total_hours, None
+        except Exception as e:
+            return None, None, f"❌ Database error: {str(e)}"
+
+    def get_available_aircraft_by_rank(self, rank: str, flight_type: str) -> list:
+        """Get available aircraft for a rank and flight type"""
         if not rank or rank not in self.RANK_PERMISSIONS:
             return []
         permissions = self.RANK_PERMISSIONS[rank]
-        return permissions["amiri_aircraft"] if flight_type == "amiri" else permissions["executive_aircraft"]
+        return permissions.get(f"{flight_type}_aircraft", [])
 
-    def check_permissions(self, user_roles, flight_type: str, aircraft_code: str = None) -> Optional[str]:
-        """Check user permissions for flight requests and claims"""
-        rank = self.get_user_rank(user_roles)
-        if not rank:
-            return "❌ You need a rank role to perform this action."
-
-        available_aircraft = self.get_available_aircraft(user_roles, flight_type)
+    async def check_pilot_permissions(self, discord_id: str, flight_type: str, aircraft_code: str, pilots_model, pireps_model) -> Optional[str]:
+        """Check pilot permissions based on flight hours instead of roles"""
+        rank, hours, error = await self.get_pilot_rank_and_aircraft(discord_id, pilots_model, pireps_model)
+        
+        if error:
+            return error
+        
+        available_aircraft = self.get_available_aircraft_by_rank(rank, flight_type)
         if not available_aircraft:
-            return f"❌ Your rank ({rank}) does not permit you to request {flight_type} flights."
-
+            return f"❌ Your rank ({rank}) does not permit you to request {flight_type} flights. You need more flight hours."
+        
         if aircraft_code and aircraft_code not in available_aircraft:
-            return f"❌ Your rank ({rank}) cannot claim the **{aircraft_code}**."
-            
+            return f"❌ Your rank ({rank} - {hours:.1f}h) cannot claim the **{aircraft_code}**. You need more flight hours."
+        
         return None
 
     def has_staff_permissions(self, user_roles) -> bool:

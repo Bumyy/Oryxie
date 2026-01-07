@@ -62,19 +62,22 @@ class AIService:
         import json
         import random
         
-        # Load dignitary names
+        # Load dignitary names and scenarios
         try:
             with open("assets/dignitary_names.json", 'r') as f:
                 dignitary_data = json.load(f)
                 if random.random() > 0.6:
                     dignitary = random.choice(dignitary_data["royal_names"])
+                    scenario = random.choice(dignitary_data["royal_scenarios"])
                     is_royal = True
                 else:
                     dignitary = random.choice(dignitary_data["official_roles"])
+                    scenario = random.choice(dignitary_data["dignitary_scenarios"])
                     is_royal = False
         except Exception as e:
             logger.warning(f"Could not load dignitary names: {e}")
             dignitary = "Senior Official"
+            scenario = "Official"
             is_royal = False
 
         prompt = f"""
@@ -82,19 +85,20 @@ Generate a Qatar Amiri Flight briefing for a single event.
 
 FLIGHT DETAILS:
 - Principal: {dignitary}
+- Mission Type: {scenario}
 - Destination: {dest_data.get('municipality')}, {dest_data.get('iso_country')}
 - Passengers: {passengers} 
 - Cargo: {cargo}kg 
 
 You MUST provide exactly 3 sections separated by ||| :
 
-1. Dossier (15-20 words): Principal's title and role in this specific mission
-2. Purpose (50-70 words): ONE clear event with specific counterpart and objective Based on Destination: {dest_data.get('municipality')}, {dest_data.get('iso_country')}. Focus on what will be accomplished in this with Clear Explanation of Dossier and Counterpart role 
+1. Dossier (15-20 words): Principal's title and role in this specific {scenario} mission
+2. Purpose (50-70 words): ONE clear {scenario} event with specific counterpart and objective Based on Destination: {dest_data.get('municipality')}, {dest_data.get('iso_country')}. Focus on what will be accomplished in this {scenario} mission with Clear Explanation of Dossier and Counterpart role 
 3. Payload (25-35 words): Give Details of {passengers} number and {cargo}kg 
 
 RULES:
 - Plain text only, no markdown formatting
-- Create ONE realistic diplomatic scenario, not multiple objectives
+- Create ONE realistic {scenario} scenario, not multiple objectives
 - Be specific about the single event/meeting purpose
 - Use professional diplomatic language
 - Note: Sometimes Event is public so you can clearly give all details, sometimes Events is not public and Purpose of flights is not disclosed, so you can create any type of thing at your Choice 
@@ -107,7 +111,7 @@ Dossier text here ||| Purpose text here ||| Payload text here
 Format: [Dossier] ||| [Purpose] ||| [Payload]
 """
 
-        return await self._call_ai_api(prompt, "amiri", {"dignitary": dignitary, "is_royal": is_royal}, passengers, cargo)
+        return await self._call_ai_api(prompt, "amiri", {"dignitary": dignitary, "is_royal": is_royal, "scenario": scenario}, passengers, cargo)
 
     async def _generate_executive_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo):
         # Generate hypothetical names based on cities

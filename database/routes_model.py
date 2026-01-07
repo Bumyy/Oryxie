@@ -186,7 +186,16 @@ class RoutesModel:
                 r.dep, r.fltnum
         """
         
+        print(f"\n=== DB QUERY DEBUG for {arr_icao} ===")
+        print(f"Query: {query}")
+        
         results = await self.db.fetch_all(query, (arr_icao,))
+        print(f"Raw query results count: {len(results) if results else 0}")
+        
+        if results:
+            print("First 3 raw results:")
+            for i, row in enumerate(results[:3]):
+                print(f"  [{i}] {dict(row)}")
         
         if not results:
             return []
@@ -213,8 +222,15 @@ class RoutesModel:
                 }
                 if aircraft_info not in routes_dict[route_key]['aircraft']:
                     routes_dict[route_key]['aircraft'].append(aircraft_info)
+                    print(f"  Added aircraft: ICAO='{row['aircraft_icao']}', Name='{row['aircraft_name']}'")
+            else:
+                print(f"  No aircraft data: ICAO='{row['aircraft_icao']}', Name='{row['aircraft_name']}'")
         
-        return list(routes_dict.values())
+        final_routes = list(routes_dict.values())
+        print(f"Final grouped routes count: {len(final_routes)}")
+        print(f"=== END DB QUERY DEBUG ===\n")
+        
+        return final_routes
 
     async def get_all_liveries(self) -> List[str]:
         """

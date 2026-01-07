@@ -1,7 +1,7 @@
 {
   "amiri": {
     "A319": {
-      "name": "Airbus A319 (ACJ)",
+      "name": "Airbus A319-100",
       "pax_range": [16, 32, 60],
       "cargo_kg_range": [2000, 3000, 4500],
       "range_nm": [1500, 2000, 3700]

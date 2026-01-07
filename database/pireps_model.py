@@ -61,8 +61,6 @@ class PirepsModel:
 
         return pending_reports
 
-
-
     async def get_accepted_pireps(self) -> list[dict]:
         """
         Fetches all PIREPs with a status of 1 (accepted), joining with the pilots
@@ -283,4 +281,114 @@ class PirepsModel:
         args = (callsign_pattern, departure, arrival)
         
         result = await self.db.fetch_one(query, args)
-        return result if result else {"pilot_name": None, "callsign": None, "flight_count": 0}
+        
+        if result:
+            return {
+                'pilot_name': result['pilot_name'],
+                'callsign': result['callsign'],
+                'flight_count': result['flight_count']
+            }
+        else:
+            return {'flight_count': 0}
+
+    async def get_2025_year_stats(self) -> dict:
+        """
+        Gets comprehensive 2025 year statistics including top aircraft, routes, airports and totals.
+        
+        Returns:
+            Dictionary with all 2025 statistics
+        """
+        # Top 5 aircraft by raw flight hours
+        aircraft_query = """
+            SELECT 
+                a.name AS aircraft_name,
+                COUNT(p.id) AS flight_count,
+                SUM(p.flighttime / p.multi) AS raw_hours
+            FROM pireps p
+            INNER JOIN aircraft a ON p.aircraftid = a.id
+            WHERE YEAR(p.date) = 2025 
+                AND p.status = 1 
+                AND p.flighttime > 0
+            GROUP BY a.id, a.name
+            ORDER BY raw_hours DESC
+            LIMIT 5
+        """
+        
+        # Top 3 routes by frequency - Fixed collation issue
+        routes_query = """
+            SELECT 
+                CONCAT(CONVERT(p.departure USING utf8mb4), ' → ', CONVERT(p.arrival USING utf8mb4)) AS route,
+                COUNT(p.id) AS flight_count
+            FROM pireps p
+            WHERE YEAR(p.date) = 2025 
+                AND p.status = 1 
+                AND p.flighttime > 0
+            GROUP BY p.departure, p.arrival
+            ORDER BY flight_count DESC
+            LIMIT 3
+        """
+        
+        # Top 3 airports by traffic
+        airports_query = """
+            SELECT airport, SUM(traffic) AS total_traffic FROM (
+                SELECT departure AS airport, COUNT(*) AS traffic
+                FROM pireps 
+                WHERE YEAR(date) = 2025 AND status = 1 AND flighttime > 0
+                GROUP BY departure
+                UNION ALL
+                SELECT arrival AS airport, COUNT(*) AS traffic
+                FROM pireps 
+                WHERE YEAR(date) = 2025 AND status = 1 AND flighttime > 0
+                GROUP BY arrival
+            ) AS combined
+            GROUP BY airport
+            ORDER BY total_traffic DESC
+            LIMIT 3
+        """
+        
+        # Total raw hours and approved PIREPs
+        totals_query = """
+            SELECT 
+                COUNT(p.id) AS total_pireps,
+                SUM(p.flighttime / p.multi) AS total_raw_hours
+            FROM pireps p
+            WHERE YEAR(p.date) = 2025 
+                AND p.status = 1 
+                AND p.flighttime > 0
+        """
+        
+        aircraft_data = await self.db.fetch_all(aircraft_query)
+        routes_data = await self.db.fetch_all(routes_query)
+        airports_data = await self.db.fetch_all(airports_query)
+        totals_data = await self.db.fetch_one(totals_query)
+        
+        return {
+            'top_aircraft': aircraft_data,
+            'top_routes': routes_data,
+            'top_airports': airports_data,
+            'totals': totals_data
+        }
+
+    async def get_total_flight_time_seconds(self, pilot_id: int) -> int:
+        """
+        Calculates the total approved flight time in seconds for a specific pilot.
+        
+        Args:
+            pilot_id: The database ID of the pilot.
+            
+        Returns:
+            Total seconds (int). Returns 0 if no flights are found.
+        """
+        query = """
+            SELECT SUM(flighttime) as total_seconds 
+            FROM pireps 
+            WHERE pilotid = %s AND status = 1
+        """
+        args = (pilot_id,)
+        
+        result = await self.db.fetch_one(query, args)
+        
+        if result and result['total_seconds'] is not None:
+            # Decimal handling for some databases, forcing to int
+            return int(result['total_seconds'])
+        return 0
