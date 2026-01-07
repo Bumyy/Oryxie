@@ -322,9 +322,9 @@ class RankManagement(commands.Cog):
             await interaction.followup.send(f"✅ Roles updated to **{rank_name}**, but no specific promo message is defined for this rank.", ephemeral=True)
 
 
-    @app_commands.command(name="check_roles", description="Check if all configured role IDs exist in the server.")
+    @app_commands.command(name="verify_roles", description="Check if all configured role IDs exist in the server.")
     @app_commands.checks.has_permissions(administrator=True)
-    async def check_roles(self, interaction: discord.Interaction):
+    async def verify_roles(self, interaction: discord.Interaction):
         """Verify all role IDs from config exist in the server."""
         guild = interaction.guild
         role_status = []
