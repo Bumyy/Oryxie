@@ -372,6 +372,7 @@ class PirepsModel:
     async def get_total_flight_time_seconds(self, pilot_id: int) -> int:
         """
         Calculates the total approved flight time in seconds for a specific pilot.
+        Only includes PIREPs with flight time > 5 minutes and status = 1.
         
         Args:
             pilot_id: The database ID of the pilot.
@@ -382,7 +383,7 @@ class PirepsModel:
         query = """
             SELECT SUM(flighttime) as total_seconds 
             FROM pireps 
-            WHERE pilotid = %s AND status = 1
+            WHERE pilotid = %s AND status = 1 AND flighttime > 300
         """
         args = (pilot_id,)
         
@@ -392,3 +393,88 @@ class PirepsModel:
             # Decimal handling for some databases, forcing to int
             return int(result['total_seconds'])
         return 0
+
+    async def get_pilot_flight_count(self, pilot_id: int) -> int:
+        """
+        Counts the total number of approved flights (status=1) for a pilot.
+        Only includes PIREPs with flight time > 5 minutes.
+        """
+        query = "SELECT COUNT(*) as count FROM pireps WHERE pilotid = %s AND status = 1 AND flighttime > 300"
+        result = await self.db.fetch_one(query, (pilot_id,))
+        return result['count'] if result else 0
+
+    async def get_pilot_favorite_aircraft(self, pilot_id: int) -> str:
+        """
+        Finds the aircraft name the pilot uses the most.
+        Only includes PIREPs with flight time > 5 minutes and status = 1.
+        If most used aircraft is ROTW, returns 2nd most used aircraft.
+        """
+        query = """
+            SELECT a.name 
+            FROM pireps p
+            JOIN aircraft a ON p.aircraftid = a.id
+            WHERE p.pilotid = %s AND p.status = 1 AND p.flighttime > 300
+            GROUP BY a.id, a.name
+            ORDER BY COUNT(p.id) DESC
+            LIMIT 2
+        """
+        results = await self.db.fetch_all(query, (pilot_id,))
+        
+        if not results:
+            return "N/A"
+        
+        # If most used aircraft is ROTW and there's a 2nd option, return 2nd
+        if len(results) > 1 and results[0]['name'] == "ROTW":
+            return results[1]['name']
+        
+        return results[0]['name']
+
+    async def get_pilot_cargo_stats(self, pilot_id: int) -> dict:
+        """
+        Gets cargo-specific statistics for a pilot (PIREPs starting with QC).
+        Only includes PIREPs with flight time > 5 minutes and status = 1.
+        
+        Returns:
+            Dictionary with cargo flight count and total cargo hours
+        """
+        query = """
+            SELECT 
+                COUNT(*) as cargo_flights,
+                SUM(flighttime) as cargo_seconds
+            FROM pireps 
+            WHERE pilotid = %s 
+                AND status = 1 
+                AND flighttime > 300
+                AND flightnum LIKE 'QC%%'
+        """
+        result = await self.db.fetch_one(query, (pilot_id,))
+        
+        if result:
+            cargo_hours = (result['cargo_seconds'] or 0) / 3600
+            return {
+                'cargo_flights': result['cargo_flights'] or 0,
+                'cargo_hours': cargo_hours
+            }
+        return {'cargo_flights': 0, 'cargo_hours': 0.0}
+
+    async def get_pilot_favorite_dest(self, pilot_id: int) -> str:
+        """
+        Finds the most visited airport (Dep or Arr) excluding the Hub (OTHH).
+        Only includes PIREPs with flight time > 5 minutes and status = 1.
+        """
+        query = """
+            SELECT airport, COUNT(*) as cnt FROM (
+                SELECT departure as airport FROM pireps 
+                WHERE pilotid = %s AND status = 1 AND flighttime > 300 AND departure != 'OTHH'
+                
+                UNION ALL
+                
+                SELECT arrival as airport FROM pireps 
+                WHERE pilotid = %s AND status = 1 AND flighttime > 300 AND arrival != 'OTHH'
+            ) as trips
+            GROUP BY airport
+            ORDER BY cnt DESC
+            LIMIT 1
+        """
+        result = await self.db.fetch_one(query, (pilot_id, pilot_id))
+        return result['airport'] if result else "N/A"
