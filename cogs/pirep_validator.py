@@ -33,8 +33,8 @@ def format_flight_time(seconds: int) -> str:
     h, m = divmod(m, 60)
     return f"{h:02d}:{m:02d}"
 
-def get_multiplier_text(pirep_time, api_time):
-    """Calculate and return multiplier information."""
+def get_multiplier_text(pirep_time, api_time, pirep_multiplier):
+    """Calculate and return multiplier information with time difference."""
     if api_time == 0:
         return "⚠️ **INVALID** - API flight time is 0"
     
@@ -44,20 +44,37 @@ def get_multiplier_text(pirep_time, api_time):
     if api_minutes == 0:
         return "⚠️ **INVALID** - API flight time is 0"
     
-    multiplier = pirep_minutes / api_minutes
+    # Check for excessive multiplier first
+    if pirep_multiplier > 3:
+        return f"❌ **{pirep_multiplier}x** - Multiplier too high"
     
-    if multiplier < 1:
-        return "❌ **INVALID** - PIREP time is less than actual flight time"
-    elif multiplier <= 1.1:
-        return "✅ **1x** - Normal speed"
-    elif multiplier <= 1.7:
-        return "✅ **1.5x** - 1.5x multiplier detected"
-    elif multiplier <= 2.3:
-        return "✅ **2x** - 2x multiplier detected"
-    elif multiplier <= 3.3:
-        return "✅ **3x** - 3x multiplier detected"
+    # Calculate expected time with PIREP's multiplier
+    expected_time_sec = api_time * pirep_multiplier
+    expected_minutes = expected_time_sec // 60
+    
+    # Calculate difference
+    time_diff_sec = pirep_time - expected_time_sec
+    time_diff_minutes = abs(time_diff_sec) // 60
+    
+    # Format multiplier display
+    if pirep_multiplier == 1:
+        multiplier_display = "1x"
+    elif pirep_multiplier == 1.5:
+        multiplier_display = "1.5x"
+    elif pirep_multiplier == 2:
+        multiplier_display = "2x"
+    elif pirep_multiplier == 3:
+        multiplier_display = "3x"
     else:
-        return f"⚠️ **{multiplier:.1f}x** - Unusually high multiplier"
+        multiplier_display = f"{pirep_multiplier}x"
+    
+    # Format time difference
+    if time_diff_sec > 300:  # More than 5 minutes difference
+        return f"⚠️ **{multiplier_display}** (+{time_diff_minutes}min vs IF time)"
+    elif time_diff_sec < -300:  # Less than 5 minutes difference
+        return f"⚠️ **{multiplier_display}** (-{time_diff_minutes}min vs IF time)"
+    else:
+        return f"✅ **{multiplier_display}** - Accurate time"
 
 class PirepPaginationView(discord.ui.View):
     def __init__(self, bot, pending_pireps, current_index=0, count_message=None):
@@ -152,6 +169,110 @@ class PirepPaginationView(discord.ui.View):
 class PirepValidator(commands.Cog):
     def __init__(self, bot: 'MyBot'):
         self.bot = bot
+        # REPLACE THIS WITH YOUR CHANNEL ID (Integer, not string)
+        self.WATCH_CHANNEL_ID = 1459564652945084578
+
+    # ------------------------------------------------------------------
+    # AUTOMATIC WEBHOOK LISTENER
+    # ------------------------------------------------------------------
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # 1. Check Channel
+        if message.channel.id != self.WATCH_CHANNEL_ID:
+            return
+
+        # 2. Check if it's a Webhook
+        if not message.webhook_id:
+            return
+
+        # 3. Check for Embeds and Title
+        if not message.embeds:
+            return
+        
+        embed = message.embeds[0]
+        if not embed.title or "New PIREP Filed" not in embed.title:
+            return
+
+        # 4. Parse Data using Regex
+        description = embed.description
+        
+        # Regex to find content inside parentheses for Pilot ID
+        pilot_match = re.search(r"Pilot: .* \((.*)\)", description)
+        # Regex to find Flight Number
+        flight_match = re.search(r"Flight Number: (.*)", description)
+
+        if not pilot_match or not flight_match:
+            print(f"Error: Could not parse PIREP Webhook. Desc: {description[:50]}...")
+            return
+
+        pilot_id_str = pilot_match.group(1).strip()
+        flight_num_str = flight_match.group(1).strip()
+
+        # 5. Create Thread immediately
+        try:
+            thread = await message.create_thread(
+                name=f"Validating {flight_num_str} ({pilot_id_str})",
+                auto_archive_duration=60
+            )
+        except Exception as e:
+            print(f"Could not create thread: {e}")
+            return
+
+        # 6. Find the full DB object
+        target_pirep = await self.find_pirep_from_webhook(pilot_id_str, flight_num_str)
+
+        if not target_pirep:
+            await thread.send(
+                f"⚠️ **Could not find PIREP in database.**\n"
+                f"Pilot: `{pilot_id_str}` | Flight: `{flight_num_str}`\n"
+                f"The database might be slow to update. Try running `/validate_pireps` manually in a moment."
+            )
+            return
+
+        # 7. Run Validation
+        await thread.send("🔍 **Analyzing flight data...**")
+        
+        try:
+            report_embed = await self.validate_single_pirep(target_pirep)
+            await thread.send(embed=report_embed)
+        except Exception as e:
+            await thread.send(f"❌ **Error during validation:** {str(e)}")
+
+    async def find_pirep_from_webhook(self, pilot_id_str, flight_num_str):
+        """
+        Helper to find the specific PIREP dictionary from the pending list
+        based on Webhook data.
+        """
+        # Give the DB a second to sync if the webhook was instant
+        import asyncio
+        await asyncio.sleep(2) 
+
+        pending_pireps = await self.bot.pireps_model.get_pending_pireps()
+        
+        if not pending_pireps:
+            return None
+
+        # Iterate and find match
+        for pirep in pending_pireps:
+            # Check if the ID from webhook is inside the DB pilotid (or equal)
+            db_pilot_id = str(pirep['pilotid'])
+            db_flight_num = str(pirep.get('flightnum', ''))
+
+            # Check Pilot ID Match (Flexible)
+            id_match = (pilot_id_str == db_pilot_id) or (db_pilot_id in pilot_id_str)
+            
+            # Check Flight Number Match
+            flight_match = (flight_num_str == db_flight_num)
+
+            # If both match, this is our guy
+            if id_match and flight_match:
+                return pirep
+        
+        return None
+
+    # ------------------------------------------------------------------
+    # EXISTING CODE BELOW
+    # ------------------------------------------------------------------
 
     async def resolve_livery_name(self, aircraft_id: str, livery_id: str) -> str:
         """Resolve livery name from cache or API."""
@@ -305,7 +426,8 @@ class PirepValidator(commands.Cog):
         
         time_pirep_sec = pirep.get('flighttime', 0)
         time_api_sec = int(matching_flight.get('totalTime', 0) * 60)
-        multiplier_text = get_multiplier_text(time_pirep_sec, time_api_sec)
+        pirep_multiplier = pirep.get('multi', 1)
+        multiplier_text = get_multiplier_text(time_pirep_sec, time_api_sec, pirep_multiplier)
         
         livery_name = await self.resolve_livery_name(matching_flight.get('aircraftId'), matching_flight.get('liveryId'))
         
@@ -330,20 +452,21 @@ class PirepValidator(commands.Cog):
         elif not route_valid:
             issues.append("Flight number not valid for route")
         
-        multiplier_used = False
-        high_multiplier = False
-        time_pirep_minutes = time_pirep_sec // 60
-        time_api_minutes = time_api_sec // 60
-        if time_api_minutes > 0:
-            actual_multiplier = time_pirep_minutes / time_api_minutes
-            if actual_multiplier > 1.1:
-                multiplier_used = True
-            if actual_multiplier > 3.3:
-                high_multiplier = True
-                issues.append("Multiplier higher than 3x")
+        multiplier_used = pirep_multiplier > 1
+        high_multiplier = pirep_multiplier > 3
+        
+        # Check if time difference is significant (more than 5 minutes off)
+        expected_time = time_api_sec * pirep_multiplier
+        time_diff = abs(time_pirep_sec - expected_time)
+        significant_time_error = time_diff > 300  # 5 minutes
+        
+        if high_multiplier:
+            issues.append("Multiplier higher than 3x")
+        if significant_time_error:
+            issues.append("Significant time discrepancy")
         
         icon_aircraft = "✅" if aircraft_match else "❌"
-        icon_time = "❌" if ("INVALID" in multiplier_text or "❌" in multiplier_text or high_multiplier) else "✅"
+        icon_time = "❌" if ("INVALID" in multiplier_text or "❌" in multiplier_text or high_multiplier or significant_time_error) else "✅"
         
         overall_valid = len(issues) == 0
         

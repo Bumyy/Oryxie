@@ -26,16 +26,13 @@ class PilotsModel:
 
     async def get_pilot_full_data(self, callsign: str) -> Optional[Dict]:
         """
-        Retrieves full pilot data including ifuserid and ifc fields.
-
-        Args:
-            callsign: The pilot's callsign (e.g., 'QRV001').
-
-        Returns:
-            A dictionary of the pilot's full data if found, otherwise None.
+        Retrieves full pilot data including Name, ifuserid and ifc fields.
         """
+        # ADDED 'name' to this query
         query = """
-            SELECT id, callsign, discordid, ifuserid, ifc FROM pilots WHERE callsign = %s AND status = 1
+            SELECT id, name, callsign, discordid, ifuserid, ifc 
+            FROM pilots 
+            WHERE callsign = %s AND status = 1
         """
         args = (callsign,)
         return await self.db.fetch_one(query, args)
