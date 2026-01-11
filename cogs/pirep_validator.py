@@ -196,7 +196,7 @@ class PirepValidator(commands.Cog):
         # 4. Parse Data using Regex
         description = embed.description
         
-        # Regex to find content inside parentheses for Pilot ID
+        # Regex to find callsign in parentheses
         pilot_match = re.search(r"Pilot: .* \((.*)\)", description)
         # Regex to find Flight Number
         flight_match = re.search(r"Flight Number: (.*)", description)
@@ -205,13 +205,13 @@ class PirepValidator(commands.Cog):
             print(f"Error: Could not parse PIREP Webhook. Desc: {description[:50]}...")
             return
 
-        pilot_id_str = pilot_match.group(1).strip()
+        callsign_str = pilot_match.group(1).strip()  # This is the callsign (QRV004)
         flight_num_str = flight_match.group(1).strip()
 
         # 5. Create Thread immediately
         try:
             thread = await message.create_thread(
-                name=f"Validating {flight_num_str} ({pilot_id_str})",
+                name=f"Validating {flight_num_str} ({callsign_str})",
                 auto_archive_duration=60
             )
         except Exception as e:
@@ -219,12 +219,12 @@ class PirepValidator(commands.Cog):
             return
 
         # 6. Find the full DB object
-        target_pirep = await self.find_pirep_from_webhook(pilot_id_str, flight_num_str)
+        target_pirep = await self.find_pirep_from_webhook(callsign_str, flight_num_str)
 
         if not target_pirep:
             await thread.send(
                 f"⚠️ **Could not find PIREP in database.**\n"
-                f"Pilot: `{pilot_id_str}` | Flight: `{flight_num_str}`\n"
+                f"Callsign: `{callsign_str}` | Flight: `{flight_num_str}`\n"
                 f"The database might be slow to update. Try running `/validate_pireps` manually in a moment."
             )
             return
@@ -238,36 +238,43 @@ class PirepValidator(commands.Cog):
         except Exception as e:
             await thread.send(f"❌ **Error during validation:** {str(e)}")
 
-    async def find_pirep_from_webhook(self, pilot_id_str, flight_num_str):
+    async def find_pirep_from_webhook(self, callsign_str, flight_num_str):
         """
         Helper to find the specific PIREP dictionary from the pending list
-        based on Webhook data.
+        based on callsign and flight number.
         """
         # Give the DB a second to sync if the webhook was instant
         import asyncio
         await asyncio.sleep(2) 
 
+        # Get pilot info from callsign first
+        pilot_info = await self.bot.pilots_model.get_pilot_by_callsign(callsign_str)
+        if not pilot_info:
+            print(f"Could not find pilot with callsign: {callsign_str}")
+            return None
+            
+        pilot_id = pilot_info['id']
+        print(f"DEBUG: Found pilot ID {pilot_id} for callsign {callsign_str}")
+
         pending_pireps = await self.bot.pireps_model.get_pending_pireps()
+        print(f"DEBUG: Found {len(pending_pireps)} pending PIREPs")
         
         if not pending_pireps:
             return None
 
-        # Iterate and find match
+        # Find matching PIREP by pilot ID and flight number
         for pirep in pending_pireps:
-            # Check if the ID from webhook is inside the DB pilotid (or equal)
-            db_pilot_id = str(pirep['pilotid'])
+            db_pilot_id = pirep['pilotid']
             db_flight_num = str(pirep.get('flightnum', ''))
-
-            # Check Pilot ID Match (Flexible)
-            id_match = (pilot_id_str == db_pilot_id) or (db_pilot_id in pilot_id_str)
             
-            # Check Flight Number Match
-            flight_match = (flight_num_str == db_flight_num)
-
-            # If both match, this is our guy
-            if id_match and flight_match:
+            print(f"DEBUG: Checking PIREP - pilot_id={db_pilot_id}, flight={db_flight_num}")
+            
+            # Match by pilot ID and flight number
+            if db_pilot_id == pilot_id and db_flight_num == flight_num_str:
+                print(f"DEBUG: MATCH FOUND! Returning PIREP ID {pirep['pirep_id']}")
                 return pirep
         
+        print("DEBUG: No match found")
         return None
 
     # ------------------------------------------------------------------
