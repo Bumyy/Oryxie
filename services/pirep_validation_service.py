@@ -72,9 +72,50 @@ def get_multiplier_text(pirep_time, api_time, pirep_multiplier):
     else:
         return f"✅ **{multiplier_display}** - Accurate time"
 
+import logging
+from typing import TYPE_CHECKING, Optional, Dict, List
+import asyncio
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
 class PirepValidationService:
     def __init__(self, bot: 'MyBot'):
         self.bot = bot
+        self.max_retries = int(os.getenv('PIREP_MAX_RETRIES', '3'))
+        self.timeout = int(os.getenv('PIREP_VALIDATION_TIMEOUT', '300'))
+
+    async def find_pirep_by_callsign_flight_and_route(self, callsign: str, flight_number: str, departure: str, arrival: str) -> Optional[Dict]:
+        """Find PIREP by callsign, flight number, and route with validation."""
+        if not all([callsign, flight_number, departure, arrival]):
+            logger.warning("Invalid search parameters provided")
+            return None
+            
+        try:
+            await asyncio.sleep(2)  # DB sync delay
+            
+            pilot_info = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
+            if not pilot_info:
+                logger.info(f"Pilot not found for callsign: {callsign}")
+                return None
+                
+            pilot_id = pilot_info['id']
+            pending_pireps = await self.bot.pireps_model.get_pending_pireps()
+            
+            for pirep in pending_pireps:
+                if (pirep['pilotid'] == pilot_id and 
+                    str(pirep.get('flightnum', '')) == flight_number and
+                    pirep.get('departure', '') == departure and
+                    pirep.get('arrival', '') == arrival):
+                    logger.info(f"Found PIREP {pirep['pirep_id']} for {callsign}")
+                    return pirep
+            
+            logger.info(f"No matching PIREP found for {callsign} {flight_number} {departure}-{arrival}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error searching for PIREP: {e}")
+            return None
 
     async def find_pirep_by_callsign_and_flight(self, callsign: str, flight_number: str) -> Optional[Dict]:
         """Find PIREP by callsign and flight number."""
@@ -166,7 +207,7 @@ class PirepValidationService:
         try:
             user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
         except Exception as e:
-            print(f"API error getting user flights: {e}")
+            logger.error(f"API error getting user flights for {ifuserid}: {e}")
             user_flights_data = None
         
         if not user_flights_data or not user_flights_data.get('result'):
@@ -192,14 +233,14 @@ class PirepValidationService:
                         matching_flight = flight
                         break
                 except Exception as e:
-                    print(f"Error parsing flight date: {e}")
+                    logger.debug(f"Error parsing flight date: {e}")
                     continue
 
         try:
             route_valid = await self.check_route_database(pirep['departure'], pirep['arrival'], pirep.get('flightnum'))
             route_exists = await self.check_route_exists(pirep['departure'], pirep['arrival'])
         except Exception as e:
-            print(f"Error checking route database: {e}")
+            logger.error(f"Error checking route database: {e}")
             route_valid = False
             route_exists = False
 

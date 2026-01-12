@@ -2,21 +2,80 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from typing import TYPE_CHECKING
+import os
+import logging
 import re
+from collections import defaultdict
+from datetime import datetime, timedelta
 from services.pirep_validation_service import PirepValidationService
 
 if TYPE_CHECKING:
     from ..bot import MyBot
 
+logger = logging.getLogger(__name__)
+
+class PirepRetryView(discord.ui.View):
+    def __init__(self, callsign: str, flight_num: str, departure: str = None, arrival: str = None):
+        super().__init__(timeout=None)
+        self.callsign = callsign
+        self.flight_num = flight_num
+        self.departure = departure
+        self.arrival = arrival
+    
+    @discord.ui.button(label="🔄 Retry Validation", style=discord.ButtonStyle.primary, custom_id="pirep_retry")
+    async def retry_validation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any("staff" in role.name.lower() for role in interaction.user.roles):
+            return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
+        
+        await interaction.response.defer()
+        
+        validation_service = PirepValidationService(interaction.client)
+        
+        if self.departure and self.arrival:
+            target_pirep = await validation_service.find_pirep_by_callsign_flight_and_route(self.callsign, self.flight_num, self.departure, self.arrival)
+        else:
+            target_pirep = await validation_service.find_pirep_by_callsign_and_flight(self.callsign, self.flight_num)
+        
+        if not target_pirep:
+            return await interaction.followup.send("⚠️ PIREP still not found in database. Please wait longer or check manually.", ephemeral=True)
+        
+        try:
+            report_embed = await validation_service.validate_pirep(target_pirep)
+            view = PirepThreadView(target_pirep['pirep_id'], interaction.message.id, self.callsign, self.flight_num, self.departure, self.arrival)
+            await interaction.followup.send(embed=report_embed, view=view)
+        except Exception as e:
+            await interaction.followup.send(f"❌ **Error during validation:** {str(e)}", ephemeral=True)
+
 class PirepThreadView(discord.ui.View):
-    def __init__(self, pirep_id: int, webhook_message_id: int):
+    def __init__(self, pirep_id: int, webhook_message_id: int, callsign: str = None, flight_num: str = None, departure: str = None, arrival: str = None):
         super().__init__(timeout=None)  # Must be None for persistent views
         self.pirep_id = pirep_id
         self.webhook_message_id = webhook_message_id
+        self.callsign = callsign
+        self.flight_num = flight_num
+        self.departure = departure
+        self.arrival = arrival
     
     def _check_staff_role(self, user) -> bool:
         """Check if user has staff role."""
         return any("staff" in role.name.lower() for role in user.roles)
+    
+    async def _get_pirep(self, interaction):
+        """Get PIREP using multiple methods."""
+        # Try by ID first
+        pirep = await interaction.client.pireps_model.get_pirep_by_id(self.pirep_id)
+        if pirep:
+            return pirep
+        
+        # Fallback to search by callsign/flight/route if available
+        if self.callsign and self.flight_num:
+            validation_service = PirepValidationService(interaction.client)
+            if self.departure and self.arrival:
+                return await validation_service.find_pirep_by_callsign_flight_and_route(self.callsign, self.flight_num, self.departure, self.arrival)
+            else:
+                return await validation_service.find_pirep_by_callsign_and_flight(self.callsign, self.flight_num)
+        
+        return None
     
     @discord.ui.button(label="🐛 Debug", style=discord.ButtonStyle.secondary, custom_id="pirep_debug")
     async def debug_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -25,9 +84,9 @@ class PirepThreadView(discord.ui.View):
         
         await interaction.response.defer(ephemeral=True)
         
-        validator_service = PirepValidationService(interaction.client)
-        pirep = await interaction.client.pireps_model.get_pirep_by_id(self.pirep_id)
+        pirep = await self._get_pirep(interaction)
         if pirep:
+            validator_service = PirepValidationService(interaction.client)
             debug_messages = await validator_service.get_debug_info(pirep)
             for msg in debug_messages:
                 await interaction.followup.send(msg, ephemeral=True)
@@ -41,9 +100,9 @@ class PirepThreadView(discord.ui.View):
         
         await interaction.response.defer(ephemeral=True)
         
-        validator_service = PirepValidationService(interaction.client)
-        pirep = await interaction.client.pireps_model.get_pirep_by_id(self.pirep_id)
+        pirep = await self._get_pirep(interaction)
         if pirep:
+            validator_service = PirepValidationService(interaction.client)
             history_embeds = await validator_service.get_flight_history(pirep)
             for embed in history_embeds:
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -62,7 +121,7 @@ class PirepThreadView(discord.ui.View):
             webhook_message = await interaction.channel.parent.fetch_message(self.webhook_message_id)
             await webhook_message.add_reaction("✅")
         except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-            print(f"Could not add reaction to webhook message: {e}")
+            logger.error(f"Could not add reaction to webhook message: {e}")
         
         # Send approval message
         await interaction.followup.send(f"✅ **PIREP approved by {interaction.user.mention}**")
@@ -139,7 +198,7 @@ class PirepPaginationView(discord.ui.View):
             try:
                 await self.count_message.edit(content=f"📋 **{len(self.pending_pireps)} PIREPs pending validation**")
             except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-                print(f"Could not update count message: {e}")
+                logger.error(f"Could not update count message: {e}")
         
         self.current_index = 0
         embed = await self.validation_service.validate_pirep(self.pending_pireps[0])
@@ -175,15 +234,35 @@ class PirepPaginationView(discord.ui.View):
 class PirepValidator(commands.Cog):
     def __init__(self, bot: 'MyBot'):
         self.bot = bot
-        self.WATCH_CHANNEL_ID = 1459564652945084578
+        self.WATCH_CHANNEL_ID = 1459564652945084578  # Hardcoded for side development
         self.validation_service = PirepValidationService(bot)
+        self.rate_limit = defaultdict(list)
+        self.max_requests_per_minute = 5
         
-        # Add persistent view for button handling after bot restart
+        # Add persistent views for button handling after bot restart
         try:
-            dummy_view = PirepThreadView(0, 0)
-            self.bot.add_view(dummy_view)
+            dummy_thread_view = PirepThreadView(0, 0, "", "", "", "")
+            dummy_retry_view = PirepRetryView("", "", "", "")
+            self.bot.add_view(dummy_thread_view)
+            self.bot.add_view(dummy_retry_view)
         except Exception as e:
-            print(f"Could not add persistent view: {e}")
+            logger.error(f"Could not add persistent views: {e}")
+    
+    def _check_rate_limit(self, user_id: int) -> bool:
+        """Check if user is rate limited."""
+        now = datetime.now()
+        minute_ago = now - timedelta(minutes=1)
+        
+        # Clean old requests
+        self.rate_limit[user_id] = [req_time for req_time in self.rate_limit[user_id] if req_time > minute_ago]
+        
+        # Check limit
+        if len(self.rate_limit[user_id]) >= self.max_requests_per_minute:
+            return False
+        
+        # Add current request
+        self.rate_limit[user_id].append(now)
+        return True
 
     # ------------------------------------------------------------------
     # WEBHOOK THREAD SYSTEM
@@ -197,16 +276,24 @@ class PirepValidator(commands.Cog):
         if not message.embeds or "New PIREP Filed" not in message.embeds[0].title:
             return
 
-        # Parse webhook data
-        description = message.embeds[0].description
-        pilot_match = re.search(r"Pilot: .* \((.+)\)", description)
-        flight_match = re.search(r"Flight Number: (.+)", description)
+        # Parse webhook data with validation
+        try:
+            description = message.embeds[0].description
+            pilot_match = re.search(r"Pilot: .* \((.+)\)", description)
+            flight_match = re.search(r"Flight Number: (.+)", description)
+            route_match = re.search(r"Route: (.+) - (.+)", description)
 
-        if not pilot_match or not flight_match:
+            if not pilot_match or not flight_match or not route_match:
+                logger.warning(f"Invalid webhook format in message {message.id}")
+                return
+
+            callsign_str = pilot_match.group(1).strip()
+            flight_num_str = flight_match.group(1).strip()
+            departure_str = route_match.group(1).strip()
+            arrival_str = route_match.group(2).strip()
+        except (IndexError, AttributeError) as e:
+            logger.error(f"Failed to parse webhook data: {e}")
             return
-
-        callsign_str = pilot_match.group(1).strip()
-        flight_num_str = flight_match.group(1).strip()
 
         # Create thread
         try:
@@ -215,17 +302,19 @@ class PirepValidator(commands.Cog):
                 auto_archive_duration=60
             )
         except Exception as e:
-            print(f"Could not create thread: {e}")
+            logger.error(f"Could not create thread for {flight_num_str}: {e}")
             return
 
         # Find and validate PIREP
-        target_pirep = await self.validation_service.find_pirep_by_callsign_and_flight(callsign_str, flight_num_str)
+        target_pirep = await self.validation_service.find_pirep_by_callsign_flight_and_route(callsign_str, flight_num_str, departure_str, arrival_str)
 
         if not target_pirep:
+            retry_view = PirepRetryView(callsign_str, flight_num_str, departure_str, arrival_str)
             await thread.send(
                 f"⚠️ **Could not find PIREP in database.**\n"
-                f"Callsign: `{callsign_str}` | Flight: `{flight_num_str}`\n"
-                f"The database might be slow to update. Try running `/validate_pireps` manually in a moment."
+                f"Callsign: `{callsign_str}` | Flight: `{flight_num_str}` | Route: `{departure_str} - {arrival_str}`\n"
+                f"This may happen if the pilot hasn't despawned yet. Use the button below to retry validation once the pilot has despawned.",
+                view=retry_view
             )
             return
 
@@ -233,7 +322,7 @@ class PirepValidator(commands.Cog):
         
         try:
             report_embed = await self.validation_service.validate_pirep(target_pirep)
-            view = PirepThreadView(target_pirep['pirep_id'], message.id)
+            view = PirepThreadView(target_pirep['pirep_id'], message.id, callsign_str, flight_num_str, departure_str, arrival_str)
             await thread.send(embed=report_embed, view=view)
         except Exception as e:
             await thread.send(f"❌ **Error during validation:** {str(e)}")
@@ -243,9 +332,13 @@ class PirepValidator(commands.Cog):
     # ------------------------------------------------------------------
     @app_commands.command(name="validate_pireps", description="Validate pending PIREPs one at a time.")
     async def validate_pireps(self, interaction: discord.Interaction):
-        """Manual PIREP validation with pagination."""
+        """Manual PIREP validation with pagination and rate limiting."""
         if not any("staff" in role.name.lower() for role in interaction.user.roles):
             return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
+        
+        # Rate limiting
+        if not self._check_rate_limit(interaction.user.id):
+            return await interaction.response.send_message("Rate limit exceeded. Please wait before trying again.", ephemeral=True)
             
         await interaction.response.defer(ephemeral=False)
         
@@ -262,7 +355,7 @@ class PirepValidator(commands.Cog):
             await interaction.followup.send(embed=embed, view=view, ephemeral=False)
             
         except Exception as e:
-            print(f"SLASH ERROR: {e}")
+            logger.error(f"SLASH ERROR: {e}")
             await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
 
 async def setup(bot: 'MyBot'):
