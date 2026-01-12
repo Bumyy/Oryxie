@@ -82,8 +82,6 @@ logger = logging.getLogger(__name__)
 class PirepValidationService:
     def __init__(self, bot: 'MyBot'):
         self.bot = bot
-        self.max_retries = int(os.getenv('PIREP_MAX_RETRIES', '3'))
-        self.timeout = int(os.getenv('PIREP_VALIDATION_TIMEOUT', '300'))
 
     async def find_pirep_by_callsign_flight_and_route(self, callsign: str, flight_number: str, departure: str, arrival: str) -> Optional[Dict]:
         """Find PIREP by callsign, flight number, and route with validation."""
