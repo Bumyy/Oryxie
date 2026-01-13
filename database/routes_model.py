@@ -116,16 +116,9 @@ class RoutesModel:
         
         args = (fltnum, start_pattern, middle_pattern, end_pattern)
         
-        print(f"DEBUG ROUTES: Searching for flight number: '{fltnum}'")
-        print(f"DEBUG ROUTES: Query patterns - exact: '{fltnum}', start: '{start_pattern}', middle: '{middle_pattern}', end: '{end_pattern}'")
-        
         results = await self.db.fetch_all(query, args)
-        print(f"DEBUG ROUTES: Query returned {len(results) if results else 0} results")
-        if results:
-            print(f"DEBUG ROUTES: First result: {results[0]}")
         
         if not results:
-            print(f"DEBUG ROUTES: No results found for flight number: '{fltnum}'")
             return None
         
         # Get the livery from the first aircraft result
@@ -186,16 +179,7 @@ class RoutesModel:
                 r.dep, r.fltnum
         """
         
-        print(f"\n=== DB QUERY DEBUG for {arr_icao} ===")
-        print(f"Query: {query}")
-        
         results = await self.db.fetch_all(query, (arr_icao,))
-        print(f"Raw query results count: {len(results) if results else 0}")
-        
-        if results:
-            print("First 3 raw results:")
-            for i, row in enumerate(results[:3]):
-                print(f"  [{i}] {dict(row)}")
         
         if not results:
             return []
@@ -222,15 +206,8 @@ class RoutesModel:
                 }
                 if aircraft_info not in routes_dict[route_key]['aircraft']:
                     routes_dict[route_key]['aircraft'].append(aircraft_info)
-                    print(f"  Added aircraft: ICAO='{row['aircraft_icao']}', Name='{row['aircraft_name']}'")
-            else:
-                print(f"  No aircraft data: ICAO='{row['aircraft_icao']}', Name='{row['aircraft_name']}'")
         
-        final_routes = list(routes_dict.values())
-        print(f"Final grouped routes count: {len(final_routes)}")
-        print(f"=== END DB QUERY DEBUG ===\n")
-        
-        return final_routes
+        return list(routes_dict.values())
 
     async def get_all_liveries(self) -> List[str]:
         """

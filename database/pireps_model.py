@@ -478,3 +478,37 @@ class PirepsModel:
         """
         result = await self.db.fetch_one(query, (pilot_id, pilot_id))
         return result['airport'] if result else "N/A"
+
+    async def get_first_accepted_pireps_qrv001_to_qrv019(self) -> list[dict]:
+        """
+        Gets the first accepted PIREP (status=1) filed by each pilot from QRV001 to QRV019.
+        
+        Returns:
+            List of dictionaries with pilot callsign and their first accepted PIREP details
+        """
+        query = """
+            SELECT 
+                pi.callsign,
+                pi.name AS pilot_name,
+                p.id AS pirep_id,
+                p.flightnum,
+                p.departure,
+                p.arrival,
+                p.date,
+                p.status
+            FROM pilots pi
+            INNER JOIN (
+                SELECT 
+                    pilotid,
+                    MIN(date) as first_accepted_date
+                FROM pireps
+                WHERE status = 1
+                GROUP BY pilotid
+            ) first_accepted ON pi.id = first_accepted.pilotid
+            INNER JOIN pireps p ON pi.id = p.pilotid AND p.date = first_accepted.first_accepted_date AND p.status = 1
+            WHERE pi.callsign REGEXP '^QRV(00[1-9]|01[0-9])$'
+            ORDER BY pi.callsign
+        """
+        
+        results = await self.db.fetch_all(query)
+        return results if results else []
