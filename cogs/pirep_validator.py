@@ -41,8 +41,30 @@ class PirepRetryView(discord.ui.View):
         
         try:
             report_embed = await validation_service.validate_pirep(target_pirep)
-            view = PirepThreadView(target_pirep['pirep_id'], interaction.message.id, self.callsign, self.flight_num, self.departure, self.arrival)
-            await interaction.followup.send(embed=report_embed, view=view)
+            
+            # Get the original webhook message ID from the thread's parent channel
+            webhook_message_id = None
+            try:
+                # Look for the original webhook message in the parent channel
+                async for message in interaction.channel.parent.history(limit=50):
+                    if (message.embeds and 
+                        "New PIREP Filed" in message.embeds[0].title and
+                        self.callsign in message.embeds[0].description and
+                        self.flight_num in message.embeds[0].description):
+                        webhook_message_id = message.id
+                        break
+            except Exception as e:
+                logger.error(f"Could not find webhook message: {e}")
+            
+            # Check if validation failed to find a match (for retry button)
+            if "MATCH NOT FOUND" in str(report_embed.fields[0].name if report_embed.fields else ""):
+                # Still no match, show retry again
+                retry_view = PirepRetryView(self.callsign, self.flight_num, self.departure, self.arrival)
+                await interaction.followup.send(embed=report_embed, view=retry_view)
+            else:
+                # Success! Show thread view with correct webhook message ID
+                view = PirepThreadView(target_pirep['pirep_id'], webhook_message_id or 0, self.callsign, self.flight_num, self.departure, self.arrival)
+                await interaction.followup.send(embed=report_embed, view=view)
         except Exception as e:
             await interaction.followup.send(f"❌ **Error during validation:** {str(e)}", ephemeral=True)
 
@@ -234,7 +256,8 @@ class PirepPaginationView(discord.ui.View):
 class PirepValidator(commands.Cog):
     def __init__(self, bot: 'MyBot'):
         self.bot = bot
-        self.WATCH_CHANNEL_ID = 1459564652945084578  # Hardcoded for side development
+        self.WATCH_CHANNEL_ID = 1459564652945084578  # Production channel
+        self.TEST_CHANNEL_ID = 1422286417618407504   # Test channel
         self.validation_service = PirepValidationService(bot)
         self.rate_limit = defaultdict(list)
         self.max_requests_per_minute = 5
@@ -270,9 +293,15 @@ class PirepValidator(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Automatic webhook listener for thread validation."""
-        if message.channel.id != self.WATCH_CHANNEL_ID or not message.webhook_id:
+        # Watch both production and test channels
+        if message.channel.id not in [self.WATCH_CHANNEL_ID, self.TEST_CHANNEL_ID]:
             return
-
+        
+        # For test channel, accept any message with embed (not just webhooks)
+        # For production channel, only accept webhook messages
+        if message.channel.id == self.WATCH_CHANNEL_ID and not message.webhook_id:
+            return
+        
         if not message.embeds or "New PIREP Filed" not in message.embeds[0].title:
             return
 
@@ -281,7 +310,7 @@ class PirepValidator(commands.Cog):
             description = message.embeds[0].description
             pilot_match = re.search(r"Pilot: .* \((.+)\)", description)
             flight_match = re.search(r"Flight Number: (.+)", description)
-            route_match = re.search(r"Route: (.+) - (.+)", description)
+            route_match = re.search(r"Route: (.+?)[-–](.+)", description)  # Handle both - and – with optional spaces
 
             if not pilot_match or not flight_match or not route_match:
                 logger.warning(f"Invalid webhook format in message {message.id}")
@@ -322,8 +351,16 @@ class PirepValidator(commands.Cog):
         
         try:
             report_embed = await self.validation_service.validate_pirep(target_pirep)
-            view = PirepThreadView(target_pirep['pirep_id'], message.id, callsign_str, flight_num_str, departure_str, arrival_str)
-            await thread.send(embed=report_embed, view=view)
+            
+            # Check if validation failed to find a match (for retry button)
+            if "MATCH NOT FOUND" in str(report_embed.fields[0].name if report_embed.fields else ""):
+                # Add retry button for failed matches (player didn't despawn)
+                retry_view = PirepRetryView(callsign_str, flight_num_str, departure_str, arrival_str)
+                await thread.send(embed=report_embed, view=retry_view)
+            else:
+                # Normal validation with thread buttons
+                view = PirepThreadView(target_pirep['pirep_id'], message.id, callsign_str, flight_num_str, departure_str, arrival_str)
+                await thread.send(embed=report_embed, view=view)
         except Exception as e:
             await thread.send(f"❌ **Error during validation:** {str(e)}")
 
