@@ -126,8 +126,10 @@ class FlightDetailsModal(discord.ui.Modal):
         return chunks
 
     async def on_submit(self, interaction: discord.Interaction):
+        logger.info("FlightDetailsModal.on_submit started")
         try:
             gate_lines = [line.strip() for line in self.gates.value.strip().split('\n') if line.strip()]
+            logger.info(f"Processing {len(gate_lines)} gate lines")
             
             assignable_gates = []
             for line in gate_lines:
@@ -140,6 +142,7 @@ class FlightDetailsModal(discord.ui.Modal):
                 await self.send_with_retry(interaction, error_msg)
                 return
 
+            logger.info("Building gate assignment text")
             gate_assignment_text = "\n\n**📍 Gate Assignments:**\n"
             
             # Parse gates and create assignments
@@ -184,66 +187,10 @@ class FlightDetailsModal(discord.ui.Modal):
             event_rules = f"\n\n**Event Rules:**\n1) {organiser_rule}\n2) On air, everyone should maintain at least 5nm distance separation\n3) All participants should have the same cruise speed and cruise altitude before setting flight in AP+\n4) Taxi speed will not exceed 25 knots in straight lines and 10 knots during turns\n5) During turns, always keep an eye on surroundings - blocking other pilot paths and high-speed taxi will not be tolerated\n6) Any violation of the above rules will result in warnings and retraining\n7) Enjoy your flight!"
             
             final_message = self.message_content.value + self.event_organiser_text + gate_assignment_text + event_rules
+            logger.info("Final message built successfully")
             
-            # Assign team roles if priority service is available and role IDs are set
-            if self.priority_service and self.priority_service.TEAM_A_ROLE_ID and self.priority_service.TEAM_B_ROLE_ID:
-                role_errors = []
-                try:
-                    team_a, team_b = await self.priority_service.assign_teams(self.sorted_attendees)
-                    guild = interaction.guild
-                    team_a_role = guild.get_role(self.priority_service.TEAM_A_ROLE_ID)
-                    team_b_role = guild.get_role(self.priority_service.TEAM_B_ROLE_ID)
-                    
-                    if team_a_role and team_b_role:
-                        # Remove existing team roles from all attendees first
-                        for member in self.sorted_attendees:
-                            try:
-                                if team_a_role in member.roles:
-                                    await member.remove_roles(team_a_role)
-                                    await asyncio.sleep(0.2)  # Rate limit delay
-                                if team_b_role in member.roles:
-                                    await member.remove_roles(team_b_role)
-                                    await asyncio.sleep(0.2)  # Rate limit delay
-                            except Exception as e:
-                                role_errors.append(f"Failed to remove roles from {member.display_name}: {str(e)}")
-                        
-                        # Small delay before adding new roles
-                        await asyncio.sleep(0.5)
-                        
-                        # Assign new team roles
-                        for member in team_a:
-                            try:
-                                await member.add_roles(team_a_role)
-                                await asyncio.sleep(0.2)  # Rate limit delay
-                            except Exception as e:
-                                role_errors.append(f"Failed to add Team A role to {member.display_name}: {str(e)}")
-                        
-                        for member in team_b:
-                            try:
-                                await member.add_roles(team_b_role)
-                                await asyncio.sleep(0.2)  # Rate limit delay
-                            except Exception as e:
-                                role_errors.append(f"Failed to add Team B role to {member.display_name}: {str(e)}")
-                        
-                        logger.info(f"Assigned {len(team_a)} members to Team A and {len(team_b)} members to Team B")
-                        
-                        # Send role error debug if any failures occurred
-                        if role_errors:
-                            error_message = "**⚠️ Role Assignment Issues:**\n" + "\n".join(role_errors)
-                            try:
-                                await interaction.followup.send(error_message, ephemeral=True)
-                            except:
-                                pass  # Don't fail if we can't send debug message
-                                
-                except Exception as e:
-                    logger.error(f"Error assigning team roles: {e}")
-                    # Send debug message about the failure
-                    try:
-                        await interaction.followup.send(f"**❌ Team Role Assignment Failed:**\n{str(e)}", ephemeral=True)
-                    except:
-                        pass
-            
-            # Handle long messages by splitting
+            # Send the main message first
+            logger.info("Sending main message")
             message_chunks = self.split_message(final_message)
             
             if len(message_chunks) == 1:
@@ -264,27 +211,78 @@ class FlightDetailsModal(discord.ui.Modal):
                         else:
                             logger.error(f"Failed to send message part {i + 1}: {e}")
             
+            logger.info("Main message sent, starting role assignment")
+            
+            # Assign team roles if priority service is available and role IDs are set
+            if self.priority_service and self.priority_service.TEAM_A_ROLE_ID and self.priority_service.TEAM_B_ROLE_ID:
+                try:
+                    team_a, team_b = await self.priority_service.assign_teams(self.sorted_attendees)
+                    guild = interaction.guild
+                    team_a_role = guild.get_role(self.priority_service.TEAM_A_ROLE_ID)
+                    team_b_role = guild.get_role(self.priority_service.TEAM_B_ROLE_ID)
+                    
+                    if not team_a_role:
+                        raise Exception(f"Team A role not found with ID: {self.priority_service.TEAM_A_ROLE_ID}")
+                    if not team_b_role:
+                        raise Exception(f"Team B role not found with ID: {self.priority_service.TEAM_B_ROLE_ID}")
+                    
+                    logger.info(f"Found roles: Team A = {team_a_role.name}, Team B = {team_b_role.name}")
+                    
+                    # Remove existing team roles from all attendees first
+                    for member in self.sorted_attendees:
+                        if team_a_role in member.roles:
+                            await member.remove_roles(team_a_role)
+                            await asyncio.sleep(0.1)
+                        if team_b_role in member.roles:
+                            await member.remove_roles(team_b_role)
+                            await asyncio.sleep(0.1)
+                    
+                    # Small delay before adding new roles
+                    await asyncio.sleep(0.3)
+                    
+                    # Assign new team roles
+                    for member in team_a:
+                        await member.add_roles(team_a_role)
+                        await asyncio.sleep(0.1)
+                    
+                    for member in team_b:
+                        await member.add_roles(team_b_role)
+                        await asyncio.sleep(0.1)
+                    
+                    logger.info(f"Successfully assigned {len(team_a)} members to Team A and {len(team_b)} members to Team B")
+                    
+                except Exception as role_error:
+                    logger.error(f"Role assignment failed: {role_error}")
+                    # This will cause the entire operation to fail and show detailed error
+                    raise Exception(f"Team role assignment failed: {str(role_error)}")
+            else:
+                logger.info("Role assignment skipped - priority service or role IDs not available")
+            
+            logger.info("FlightDetailsModal.on_submit completed successfully")
+            
         except discord.HTTPException as e:
             logger.error(f"Discord API error in FlightDetailsModal.on_submit: {e}")
-            error_msg = "Discord API error occurred. Please try again in a moment."
+            error_msg = f"**❌ Discord API Error:**\n```{str(e)}```\n\n**Error Code:** {getattr(e, 'status', 'Unknown')}\n**Error Text:** {getattr(e, 'text', 'No additional info')}"
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(error_msg, ephemeral=True)
                 else:
                     await interaction.followup.send(error_msg, ephemeral=True)
-            except:
-                pass
+            except Exception as send_error:
+                logger.error(f"Failed to send Discord API error message: {send_error}")
                 
         except Exception as e:
             logger.error(f"Unexpected error in FlightDetailsModal.on_submit: {e}")
-            error_msg = "An unexpected error occurred. Please try again."
+            import traceback
+            error_traceback = traceback.format_exc()
+            error_msg = f"**❌ Unexpected Error:**\n```{str(e)}```\n\n**Full Traceback:**\n```{error_traceback[:1500]}```"
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(error_msg, ephemeral=True)
                 else:
                     await interaction.followup.send(error_msg, ephemeral=True)
-            except:
-                pass
+            except Exception as send_error:
+                logger.error(f"Failed to send unexpected error message: {send_error}")
 
 class GateAssignmentView(discord.ui.View):
     def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str, event_organiser_text: str = "", event_organiser_mention: str = "", priority_service=None):
