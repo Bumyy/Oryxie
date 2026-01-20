@@ -187,6 +187,7 @@ class FlightDetailsModal(discord.ui.Modal):
             
             # Assign team roles if priority service is available and role IDs are set
             if self.priority_service and self.priority_service.TEAM_A_ROLE_ID and self.priority_service.TEAM_B_ROLE_ID:
+                role_errors = []
                 try:
                     team_a, team_b = await self.priority_service.assign_teams(self.sorted_attendees)
                     guild = interaction.guild
@@ -196,20 +197,51 @@ class FlightDetailsModal(discord.ui.Modal):
                     if team_a_role and team_b_role:
                         # Remove existing team roles from all attendees first
                         for member in self.sorted_attendees:
-                            if team_a_role in member.roles:
-                                await member.remove_roles(team_a_role)
-                            if team_b_role in member.roles:
-                                await member.remove_roles(team_b_role)
+                            try:
+                                if team_a_role in member.roles:
+                                    await member.remove_roles(team_a_role)
+                                    await asyncio.sleep(0.2)  # Rate limit delay
+                                if team_b_role in member.roles:
+                                    await member.remove_roles(team_b_role)
+                                    await asyncio.sleep(0.2)  # Rate limit delay
+                            except Exception as e:
+                                role_errors.append(f"Failed to remove roles from {member.display_name}: {str(e)}")
+                        
+                        # Small delay before adding new roles
+                        await asyncio.sleep(0.5)
                         
                         # Assign new team roles
                         for member in team_a:
-                            await member.add_roles(team_a_role)
+                            try:
+                                await member.add_roles(team_a_role)
+                                await asyncio.sleep(0.2)  # Rate limit delay
+                            except Exception as e:
+                                role_errors.append(f"Failed to add Team A role to {member.display_name}: {str(e)}")
+                        
                         for member in team_b:
-                            await member.add_roles(team_b_role)
+                            try:
+                                await member.add_roles(team_b_role)
+                                await asyncio.sleep(0.2)  # Rate limit delay
+                            except Exception as e:
+                                role_errors.append(f"Failed to add Team B role to {member.display_name}: {str(e)}")
                         
                         logger.info(f"Assigned {len(team_a)} members to Team A and {len(team_b)} members to Team B")
+                        
+                        # Send role error debug if any failures occurred
+                        if role_errors:
+                            error_message = "**⚠️ Role Assignment Issues:**\n" + "\n".join(role_errors)
+                            try:
+                                await interaction.followup.send(error_message, ephemeral=True)
+                            except:
+                                pass  # Don't fail if we can't send debug message
+                                
                 except Exception as e:
                     logger.error(f"Error assigning team roles: {e}")
+                    # Send debug message about the failure
+                    try:
+                        await interaction.followup.send(f"**❌ Team Role Assignment Failed:**\n{str(e)}", ephemeral=True)
+                    except:
+                        pass
             
             # Handle long messages by splitting
             message_chunks = self.split_message(final_message)
