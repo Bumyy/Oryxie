@@ -24,7 +24,7 @@ def format_duration(seconds: int) -> str:
         return ""
 
 class FlightDetailsModal(discord.ui.Modal):
-    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str, event_organiser_text: str = "", event_organiser_mention: str = ""):
+    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str, event_organiser_text: str = "", event_organiser_mention: str = "", priority_service=None):
 
         
         try:
@@ -34,6 +34,7 @@ class FlightDetailsModal(discord.ui.Modal):
             self.sorted_attendees = sorted_attendees
             self.event_organiser_text = event_organiser_text
             self.event_organiser_mention = event_organiser_mention
+            self.priority_service = priority_service
 
             # Ensure default message fits in modal
             safe_default = default_message[:1800] if len(default_message) > 1800 else default_message
@@ -140,24 +141,75 @@ class FlightDetailsModal(discord.ui.Modal):
                 return
 
             gate_assignment_text = "\n\n**📍 Gate Assignments:**\n"
+            
+            # Parse gates and create assignments
+            gate_assignments = []
+            current_terminal = ""
             attendee_index = 0
             
             for line in gate_lines:
                 if any(word in line.lower() for word in ['terminal', 'concourse', 'pier']) or len(line) > 6:
-                    gate_assignment_text += f"\n**{line}**\n"
+                    current_terminal = line
                 else:
                     if attendee_index < len(self.sorted_attendees):
                         attendee = self.sorted_attendees[attendee_index]
-                        gate_assignment_text += f"- {line.upper()}: {attendee.mention}\n"
+                        gate_assignments.append({
+                            'terminal': current_terminal,
+                            'gate': line.upper(),
+                            'pilot': attendee,
+                            'position': attendee_index + 1
+                        })
                         attendee_index += 1
-                    else:
-                        gate_assignment_text += f"- {line.upper()}: Vacant\n"
+            
+            # Separate into teams based on position
+            team_a_assignments = [assignment for assignment in gate_assignments if assignment['position'] % 2 == 1]
+            team_b_assignments = [assignment for assignment in gate_assignments if assignment['position'] % 2 == 0]
+            
+            # Build team A section
+            if team_a_assignments:
+                gate_assignment_text += "\n**Team A**\n"
+                for assignment in team_a_assignments:
+                    terminal_gate = f"{assignment['terminal']} {assignment['gate']}" if assignment['terminal'] else assignment['gate']
+                    gate_assignment_text += f"- {terminal_gate}: {assignment['pilot'].mention}\n"
+            
+            # Build team B section
+            if team_b_assignments:
+                gate_assignment_text += "\n**Team B**\n"
+                for assignment in team_b_assignments:
+                    terminal_gate = f"{assignment['terminal']} {assignment['gate']}" if assignment['terminal'] else assignment['gate']
+                    gate_assignment_text += f"- {terminal_gate}: {assignment['pilot'].mention}\n"
             
             # Add event rules with dynamic event organiser mention
             organiser_rule = f"Copy flight plan from {self.event_organiser_mention} only" if self.event_organiser_mention else "Copy flight plan from @event organiser only"
             event_rules = f"\n\n**Event Rules:**\n1) {organiser_rule}\n2) On air, everyone should maintain at least 5nm distance separation\n3) All participants should have the same cruise speed and cruise altitude before setting flight in AP+\n4) Taxi speed will not exceed 25 knots in straight lines and 10 knots during turns\n5) During turns, always keep an eye on surroundings - blocking other pilot paths and high-speed taxi will not be tolerated\n6) Any violation of the above rules will result in warnings and retraining\n7) Enjoy your flight!"
             
             final_message = self.message_content.value + self.event_organiser_text + gate_assignment_text + event_rules
+            
+            # Assign team roles if priority service is available and role IDs are set
+            if self.priority_service and self.priority_service.TEAM_A_ROLE_ID and self.priority_service.TEAM_B_ROLE_ID:
+                try:
+                    team_a, team_b = await self.priority_service.assign_teams(self.sorted_attendees)
+                    guild = interaction.guild
+                    team_a_role = guild.get_role(self.priority_service.TEAM_A_ROLE_ID)
+                    team_b_role = guild.get_role(self.priority_service.TEAM_B_ROLE_ID)
+                    
+                    if team_a_role and team_b_role:
+                        # Remove existing team roles from all attendees first
+                        for member in self.sorted_attendees:
+                            if team_a_role in member.roles:
+                                await member.remove_roles(team_a_role)
+                            if team_b_role in member.roles:
+                                await member.remove_roles(team_b_role)
+                        
+                        # Assign new team roles
+                        for member in team_a:
+                            await member.add_roles(team_a_role)
+                        for member in team_b:
+                            await member.add_roles(team_b_role)
+                        
+                        logger.info(f"Assigned {len(team_a)} members to Team A and {len(team_b)} members to Team B")
+                except Exception as e:
+                    logger.error(f"Error assigning team roles: {e}")
             
             # Handle long messages by splitting
             message_chunks = self.split_message(final_message)
@@ -203,7 +255,7 @@ class FlightDetailsModal(discord.ui.Modal):
                 pass
 
 class GateAssignmentView(discord.ui.View):
-    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str, event_organiser_text: str = "", event_organiser_mention: str = ""):
+    def __init__(self, event_name: str, sorted_attendees: list, default_message: str, flight_number: str, event_organiser_text: str = "", event_organiser_mention: str = "", priority_service=None):
 
         
         try:
@@ -216,6 +268,7 @@ class GateAssignmentView(discord.ui.View):
             self.flight_number = flight_number
             self.event_organiser_text = event_organiser_text
             self.event_organiser_mention = event_organiser_mention
+            self.priority_service = priority_service
             
         except Exception as e:
             logger.error(f"GateAssignmentView initialization failed: {e}")
@@ -228,7 +281,7 @@ class GateAssignmentView(discord.ui.View):
         try:
             # Truncate default message if too long for modal
             truncated_message = self.default_message[:1800] if len(self.default_message) > 1800 else self.default_message
-            modal = FlightDetailsModal(self.event_name, self.sorted_attendees, truncated_message, self.flight_number, self.event_organiser_text, self.event_organiser_mention)
+            modal = FlightDetailsModal(self.event_name, self.sorted_attendees, truncated_message, self.flight_number, self.event_organiser_text, self.event_organiser_mention, self.priority_service)
             await interaction.response.send_modal(modal)
             
         except discord.InteractionResponded as e:
@@ -274,6 +327,11 @@ class GateAssignment(commands.Cog):
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"CRITICAL: Error reading assets/rank.json: {e}. The gate assignment command will not work.")
             return []
+
+    def set_team_roles(self, team_a_id: int, team_b_id: int):
+        """Set the team role IDs for automatic assignment"""
+        self.priority_service.set_team_role_ids(team_a_id, team_b_id)
+        logger.info(f"Team role IDs set: Team A = {team_a_id}, Team B = {team_b_id}")
 
 
     
@@ -323,14 +381,35 @@ class GateAssignment(commands.Cog):
 
         attendees = [member for user in user_list if (member := interaction.guild.get_member(user.id)) is not None]
         
+        # Get event organiser ID if provided
+        event_organiser_id = None
+        if event_organiser:
+            event_organiser = event_organiser.strip()
+            if event_organiser.isdigit() and len(event_organiser) == 3:
+                full_callsign = f"QRV{event_organiser}"
+                try:
+                    pilot_data = await self.bot.pilots_model.get_pilot_by_callsign(full_callsign)
+                    if pilot_data and pilot_data.get('discordid'):
+                        event_organiser_id = pilot_data['discordid']
+                except Exception as e:
+                    logger.error(f"Error looking up event organiser: {e}")
+        
         # Sort attendees by priority
-        sorted_attendees = await self.priority_service.sort_members_by_priority(attendees)
+        sorted_attendees = await self.priority_service.sort_members_by_priority(attendees, event_organiser_id)
+        
+        # Assign teams
+        team_a, team_b = await self.priority_service.assign_teams(sorted_attendees)
         
         # Get debug info
-        debug_info = await self.priority_service.get_priority_debug_info(sorted_attendees)
+        debug_info = await self.priority_service.get_priority_debug_info(sorted_attendees, event_organiser_id)
+        
+        # Add team assignment info to debug
+        team_info = []
+        team_info.append(f"\n**Team A ({len(team_a)} members):** {', '.join([m.mention for m in team_a])}")
+        team_info.append(f"**Team B ({len(team_b)} members):** {', '.join([m.mention for m in team_b])}")
         
         # Send debug info as ephemeral message
-        debug_message = "**🔍 Priority Debug Info:**\n" + "\n".join(debug_info)
+        debug_message = "**🔍 Priority Debug Info:**\n" + "\n".join(debug_info) + "\n" + "\n".join(team_info)
         await interaction.followup.send(debug_message, ephemeral=True)
         
 
@@ -401,7 +480,7 @@ class GateAssignment(commands.Cog):
 **💨 Cruise Speed:** M"""
         
         try:
-            view = GateAssignmentView(scheduled_event.name, sorted_attendees, default_message, flight_number, event_organiser_text, event_organiser_mention)
+            view = GateAssignmentView(scheduled_event.name, sorted_attendees, default_message, flight_number, event_organiser_text, event_organiser_mention, self.priority_service)
             await interaction.followup.send(status_message, view=view, ephemeral=True)
         except Exception as e:
             logger.error(f"Failed to create view or send message: {e}")
