@@ -1,0 +1,168 @@
+{
+  "checklist": [
+    {
+      "title": "NOTAMS",
+      "text_section": [
+        "1) This Checklist covers FLIGHT OPERATIONS ONLY. It does NOT include ATC or UNICOM communications procedures. Please refer to the INFINITE FLIGHT USER GUIDE for all communication protocols.",
+        "2) In Active Airspace, ATC instructions may override checklist speeds and altitudes. ALWAYS follow ATC instructions over checklist procedures.",
+        "3) This checklist is for simulation purposes only. QRV assumes NO responsibility for any violations or incidents.",
+        "4) LNAV and VNAV engagement timing is at pilot discretion based on flight conditions and ATC clearances.",
+        "5) Weather conditions, runway conditions, and airport-specific procedures may require deviations from this checklist."
+      ]
+    },
+    {
+      "title": "SPAWN IN",
+      "items": [
+        { "text": "GROUND SERVICES", "value": "CONNECTED" },
+        { "text": "MASTER SWITCH", "value": "ON" },
+        { "text": "APU", "value": "START (ON)" },
+        { "text": "NAV LIGHTS", "value": "ON" },
+        { "text": "NO SMOKING SIGNS", "value": "ON" }
+      ]
+    },
+    {
+      "title": "FLIGHT BRIEFING",
+      "items": [
+        { "text": "DEPARTURE INFO (METAR/ATIS)", "value": "CHECKED" },
+        { "text": "AIRPLANE LOAD", "value": "{load_percentage}% SET", "is_dynamic": true },
+        { "text": "FLIGHT PLAN", "value": "ENTERED" },
+        { "text": "RECOMMENDED CRUISE ALTITUDE", "value": "{cruise_altitude}", "is_dynamic": true },
+        { "text": "DEPARTURE RUNWAY/SID", "value": "CHECKED" },
+        { "text": "TAXI ROUTING", "value": "CONFIRMED" }
+      ]
+    },
+    {
+      "title": "BEFORE PUSHBACK",
+      "items": [
+        { "text": "TAKEOFF RUNWAY", "value": "VERIFIED" },
+        { "text": "SPOILERS", "value": "ARMED" },
+        { "text": "FUEL QUANTITY", "value": "CHECKED" },
+        { "text": "GROUND SERVICES", "value": "DISCONNECTED" },
+        { "text": "PUSHBACK TUG", "value": "ON" },
+        { "text": "BEACON LIGHT", "value": "ON" },
+        { "text": "SEATBELT SIGNS", "value": "ON" },
+        { "text": "PUSHBACK COMPLETED", "value": "DONE" }
+      ]
+    },
+    {
+      "title": "ENGINE STARTUP",
+      "special_section": "engine_start"
+    },
+    {
+      "title": "BEFORE TAXI",
+      "items": [
+        { "text": "APU", "value": "OFF" },
+        { "text": "TAKEOFF FLAPS", "value": "{takeoff_flaps} SET", "is_dynamic": true },
+        { "text": "FLIGHT CONTROLS", "value": "CHECKED" },
+        { "text": "BRAKES", "value": "RELEASED" }
+      ]
+    },
+    {
+      "title": "NOTAMS",
+      "text_section": [
+        " while Taxi , Always maintain 25 knots or below in Straight Line and 10 knots or below during Taxi Turns"]
+    },
+    {
+      "title": "BEFORE ENTERING RUNWAY",
+      "items": [
+        { "text": "TAKEOFF TRIM", "value": "CHECKED" },
+        { "text": "CABIN", "value": "READY" },
+        { "text": "STROBE LIGHTS", "value": "ON" },
+        { "text": "LANDING LIGHTS", "value": "ON" }
+       
+      ]
+    },
+    {
+      "title": "TAKE OFF INFO",
+      "items": [
+        { "text": "TAKEOFF N1 TARGET", "value": "{n1_target}", "is_dynamic": true },
+        { "text": "TAKEOFF SPEEDS", "value": "VR: {vr_speed} | V-LIFT: {va_speed}", "is_dynamic": true },
+        { "text": "AT VR", "value": "ROTATE" },
+        { "text": "POSITIVE CLIMB", "value": "GEAR UP" },
+        { "text": "PITCH & SPEED", "value": "AIM FOR {initial_climb_vs} VS & {initial_speed} KTS", "is_dynamic": true }
+      ]
+    },
+    {
+      "title": "FLAP RETRACTION SCHEDULE",
+      "special_section": "flap_retraction_below_10k"
+    },
+    {
+      "title": "CLIMB",
+      "items": [
+        { "text": "SPOILERS", "value": "OFF" },
+        { "text": "AT 5,000 FT", "value": "REDUCE VS TO {vs_5k}", "is_dynamic": true },
+        { "text": "PASSING 10,000 FT", "value": "LANDING LIGHTS OFF" },
+        { "text": "PASSING 10,000 FT", "value": "ACCELERATE TO {accel_speed_10k} KTS", "is_dynamic": true }
+      ],
+      "special_section": "flap_retraction_above_10k",
+      "items_after_special": [
+        { "text": "AT FL150", "value": "REDUCE VS TO {vs_15k}", "is_dynamic": true },
+        { "text": "AT 20,000 FT", "value": "SEAT BELTS OFF" },
+        { "text": "AT FL240", "value": "REDUCE VS TO {vs_24k}", "is_dynamic": true },
+        { "text": "AT FL280", "value": "SET SPEED TO MACH {mach_speed}", "is_dynamic": true }
+      ]
+    },
+    {
+      "title": "CRUISE",
+      "items": [
+        { "text": "INITIAL CRUISE ALTITUDE", "value": "{cruise_altitude} REACHED", "is_dynamic": true }
+      ],
+      "special_section": "step_climb"
+    },
+    {
+      "title": "DESCENDING (Cruise to FL100)",
+      "items": [
+        { "text": "FUEL QUANTITY", "value": "CHECKED" },
+        { "text": "FUEL DUMP (if Required)", "value": "DONE" },
+        { "text": "VNAV", "value": "ENGAGED" },
+        { "text": "ARRIVAL AIRPORT INFORMATION, METAR & ATIS", "value": "CHECKED" },
+        { "text": "ARRIVAL AIRPORT PARKING TERMINAL", "value": "CHECKED" },
+        { "text": "SEAT BELTS", "value": "ON" }
+      ],
+      "text_section": [
+        "If ATC is not present, descend with this Speed profile:"
+      ],
+      "special_section": "descent_speed_profile",
+      "special_section_2": "flap_deploy_above_10k"
+    },
+    {
+      "title": "DESCENDING (FL100 to LANDING)",
+      "items": [
+        { "text": "LANDING LIGHTS", "value": "ON (below 10,000ft)" }
+      ],
+      "special_section": "flap_deploy_below_10k",
+      "items_after_special": [
+        { "text": "APPR", "value": "ENGAGED" },
+        { "text": "LANDING TRIM", "value": "SET" },
+        { "text": "SPOILERS", "value": "ARMED (AT 6nm from Runway)" },
+        { "text": "GEAR", "value": "DOWN (AT 6nm from Runway)" },
+        { "text": "APPR", "value": "DISENGAGE (AT 2nm from Runway)" }
+      ],
+      "special_section_2": "landing_data_table"
+    },
+    {
+      "title": "AFTER LANDING (or during exiting of runway)",
+      "items": [
+        { "text": "STROBE LIGHTS", "value": "OFF" },
+        { "text": "LANDING LIGHTS", "value": "OFF" },
+        { "text": "SPOILERS", "value": "RETRACTED" },
+        { "text": "FLAPS", "value": "0" },
+        { "text": "TRIM", "value": "0%" }
+      ]
+    },
+    {
+      "title": "SHUTDOWN",
+      "items": [
+        { "text": "BRAKES", "value": "SET" },
+        { "text": "THROTTLE", "value": "IDLE" },
+        { "text": "ENGINES", "value": "SHUTDOWN" },
+        { "text": "SEAT BELTS", "value": "OFF" },
+        { "text": "BEACON LIGHTS", "value": "OFF" },
+        { "text": "GROUND SERVICES", "value": "CONNECT" },
+        { "text": "NO SMOKING SIGNS", "value": "OFF" },
+        { "text": "NAV LIGHT", "value": "OFF" },
+        { "text": "MASTER SWITCH", "value": "OFF" }
+      ]
+    }
+  ]
+}

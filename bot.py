@@ -18,6 +18,9 @@ from api.manager import InfiniteFlightAPIManager
 from services.ai_service import AIService
 from services.flight_generation_service import FlightService
 from services.pdf_service import PDFService
+from services.route_map_service import RouteMapService
+from services.checklist_pdf_service import ChecklistPDFService
+from services.simbrief_service import SimBriefService
 
 load_dotenv()
 
@@ -46,6 +49,9 @@ class MyBot(commands.Bot):
         self.ai_service: AIService = None
         self.flight_service: FlightService = None
         self.pdf_service: PDFService = None
+        self.route_map_service: RouteMapService = None
+        self.checklist_pdf_service: ChecklistPDFService = None
+        self.simbrief_service: SimBriefService = None
 
     async def setup_hook(self):
         """
@@ -68,6 +74,9 @@ class MyBot(commands.Bot):
         self.ai_service = AIService()
         self.flight_service = FlightService(self.flightdata)
         self.pdf_service = PDFService()
+        self.route_map_service = RouteMapService()
+        self.checklist_pdf_service = ChecklistPDFService()
+        self.simbrief_service = SimBriefService()
         print("DatabaseManager, FlightData, and Services instances created.")
         
         # --- Initialize API Manager ---
@@ -93,13 +102,13 @@ class MyBot(commands.Bot):
         print("Loading extensions...")
         try:
             await self.load_extension('cogs.pingpong')
-            await self.load_extension('cogs.pireps')
+          #  await self.load_extension('cogs.pireps') 
             await self.load_extension('cogs.roster')
             await self.load_extension('cogs.training')
             await self.load_extension('cogs.cargo_training')
             await self.load_extension('cogs.utils')
             await self.load_extension('cogs.flight_generator_pdf')
-            await self.load_extension('cogs.shop_cog')
+          #  await self.load_extension('cogs.shop_cog')
             await self.load_extension('cogs.mission')
             await self.load_extension('cogs.gate_assignment')
             await self.load_extension('cogs.callsign_finder')
@@ -107,11 +116,13 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.ticket_system')
             await self.load_extension('cogs.pirep_validator')
             await self.load_extension('cogs.message_cleaner')
-            await self.load_extension('cogs.special_events')
-            await self.load_extension('cogs.gift_box')
-            await self.load_extension('cogs.activity_check')
+          #  await self.load_extension('cogs.special_events')
+          # await self.load_extension('cogs.gift_box')
+          #   await self.load_extension('cogs.activity_check')
             await self.load_extension('cogs.rank_management')
-            await self.load_extension('cogs.dossier')
+         #   await self.load_extension('cogs.dossier')
+            await self.load_extension('cogs.checklist_cog')
+            await self.load_extension('cogs.flight_board_cog')
             
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
