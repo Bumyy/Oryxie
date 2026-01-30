@@ -79,20 +79,24 @@ class MyBot(commands.Bot):
         self.simbrief_service = SimBriefService()
         print("DatabaseManager, FlightData, and Services instances created.")
         
-        # --- Initialize API Manager ---
+        # --- Initialize API Manager (SAFE STARTUP) ---
+        self.if_api_manager = None
+        aircraft_data = None
+
         try:
             self.if_api_manager = InfiniteFlightAPIManager(self)
             await self.if_api_manager.connect()
             print("Infinite Flight API Manager initialized.")
-        except ValueError as e:
-            print(f"ERROR: {e}")
 
-         # --- Populate the aircraft name map ---
-        aircraft_data = await self.if_api_manager.get_aircraft()
-        
+            aircraft_data = await self.if_api_manager.get_aircraft()
+        except Exception as e:
+            print(f"[IF API ERROR] {e}")
+            self.if_api_manager = None
+            aircraft_data = None
+
         if aircraft_data and aircraft_data.get('result'):
             self.aircraft_name_map = {
-                aircraft['id']: aircraft['name'] 
+                aircraft['id']: aircraft['name']
                 for aircraft in aircraft_data['result']
             }
             print(f"Successfully loaded {len(self.aircraft_name_map)} aircraft names.")
@@ -131,15 +135,18 @@ class MyBot(commands.Bot):
             print("All cogs loaded.")
         except Exception as e:
             print(f"Failed to load one or more cogs: {e}")
+            logging.error(f"Failed to load one or more cogs: {e}")
 
     async def on_ready(self):
         """
         Called when the bot has successfully connected to Discord.
         """
         print(f'Logged in as {self.user} (ID: {self.user.id})')
+        logging.info(f'Logged in as {self.user} (ID: {self.user.id})')
 
         if self.db_manager and self.db_manager._pool is None:
             await self.db_manager.connect()
+            logging.info("Database connection pool established.")
 
         print("Database connection pool established.")
 
@@ -147,8 +154,10 @@ class MyBot(commands.Bot):
             print("Syncing slash commands...")
             synced = await self.tree.sync()
             print(f"Synced {len(synced)} slash command(s) globally.")
+            logging.info(f"Synced {len(synced)} slash command(s) globally.")
         except Exception as e:
             print(f"Failed to sync slash commands globally: {e}")
+            logging.error(f"Failed to sync slash commands globally: {e}")
 
     async def on_disconnect(self):
         """
@@ -173,6 +182,7 @@ async def start_bot():
     if TOKEN is None:
         print("ERROR: DISCORD_BOT_TOKEN environment variable not set.")
         print("Please create a .env file in the same directory as this script and add DISCORD_BOT_TOKEN=YOUR_TOKEN_HERE")
+        logging.critical("DISCORD_BOT_TOKEN environment variable not set.")
 
     async with bot:
         await bot.start(TOKEN)
@@ -202,3 +212,4 @@ if __name__ == '__main__':
         asyncio.run(start_bot())
     except KeyboardInterrupt:
         print("Bot shut down by user.")
+        logging.info("Bot shut down by user.")
