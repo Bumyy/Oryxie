@@ -1,3 +1,4 @@
+print("BOT FILE EXECUTED")
 import discord
 from discord.ext import commands
 import os
@@ -175,6 +176,7 @@ async def start_bot():
     """
     Function to create and run the bot.
     """
+    print("START_BOT FUNCTION ENTERED")
     handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
     bot = MyBot()
@@ -185,6 +187,7 @@ async def start_bot():
         logging.critical("DISCORD_BOT_TOKEN environment variable not set.")
 
     async with bot:
+        print("ABOUT TO CALL bot.start()")
         await bot.start(TOKEN)
        # logger # 
 if __name__ == '__main__':
