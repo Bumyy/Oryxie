@@ -223,6 +223,12 @@ class FlightBoardView(discord.ui.View):
             elif label == "Status":
                 item.custom_id = f"fb:status:{uid}:{expiry}"
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if str(interaction.user.id) != str(self.flight_data.get('pilot_id')):
+            await interaction.response.send_message("❌ You are not the pilot of this flight.", ephemeral=True)
+            return False
+        return True
+
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, emoji="✏️")
     async def edit_flight(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = FlightEditModal(self.flight_data, message=interaction.message)
