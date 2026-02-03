@@ -193,43 +193,53 @@ class ChecklistPDFService:
             
             if 'special_section' in section:
                 if section['special_section'] == 'engine_start':
+                    # Get engine stable percentage from aircraft data, default to 20%
+                    engine_stable_pct = aircraft_info.get('engine_stable_percentage', 20)
                     for eng_num in aircraft_info.get('engine_start_sequence', []):
                         pdf.checklist_item(f"ENGINE {eng_num}", "START")
-                        pdf.checklist_item(f"ENGINE {eng_num}", "STABLE (20%)", indent=10)
+                        pdf.checklist_item(f"ENGINE {eng_num}", f"STABLE ({engine_stable_pct}%)", indent=10)
 
                 elif section['special_section'] == 'flap_retraction_below_10k':
-                    aircraft_code = aircraft_type
+                    # Get speed threshold for above/below 10k separation, default to 250
+                    speed_threshold = aircraft_info.get('speed_threshold_10k', 250)
                     
-                    # Use hardcoded schedule for A321 and A350, dynamic for B77W
-                    if aircraft_code in ['A321', 'A350']:
+                    # Check if aircraft has flap_retraction_schedule, use it; otherwise use dynamic logic
+                    if 'flap_retraction_schedule' in aircraft_info:
                         flap_schedule = aircraft_info.get('flap_retraction_schedule', [])
                         for flap_step in flap_schedule:
-                            if flap_step['speed'] <= 250:
+                            if flap_step['speed'] <= speed_threshold:
                                 pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_step['speed']} KTS", f"SET FLAPS {flap_step['setting']}", is_dynamic=True)
-                    
-                    elif aircraft_code == 'B77W':
-                        # Dynamic logic for B77W only
+                    else:
+                        # Dynamic logic for aircraft without flap_retraction_schedule
                         takeoff_flap = perf.get('takeoff_flaps', '5')
+                        flap_speeds = ac_data.get('flap_speeds', {})
+                        
+                        # Get flap 1 speed, fallback to 245 if not found
+                        flap_1_speed = flap_speeds.get('1', 245)
+                        flap_5_speed = flap_speeds.get('5', 230)
                         
                         if takeoff_flap == '5':
-                            pdf.checklist_item("AS SPEED INCREASES, AT 245 KTS", "SET FLAPS 1", is_dynamic=True)
+                            pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 1", is_dynamic=True)
                         elif takeoff_flap == '15':
-                            pdf.checklist_item("AS SPEED INCREASES, AT 230 KTS", "SET FLAPS 5", is_dynamic=True)
-                            pdf.checklist_item("AS SPEED INCREASES, AT 245 KTS", "SET FLAPS 1", is_dynamic=True)
+                            pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_5_speed} KTS", "SET FLAPS 5", is_dynamic=True)
+                            pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 1", is_dynamic=True)
                 
                 elif section['special_section'] == 'flap_retraction_above_10k':
-                    aircraft_code = aircraft_type
+                    # Get speed threshold for above/below 10k separation, default to 250
+                    speed_threshold = aircraft_info.get('speed_threshold_10k', 250)
                     
-                    # Use hardcoded schedule for A321 and A350, dynamic for B77W
-                    if aircraft_code in ['A321', 'A350']:
+                    # Check if aircraft has flap_retraction_schedule, use it; otherwise use dynamic logic
+                    if 'flap_retraction_schedule' in aircraft_info:
                         flap_schedule = aircraft_info.get('flap_retraction_schedule', [])
                         for flap_step in flap_schedule:
-                            if flap_step['speed'] > 250:
+                            if flap_step['speed'] > speed_threshold:
                                 pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_step['speed']} KTS", f"SET FLAPS {flap_step['setting']}", is_dynamic=True)
-                    
-                    elif aircraft_code == 'B77W':
-                        # Dynamic logic for B77W only - always show "SET FLAPS 0" at 265 KTS above 10k
-                        pdf.checklist_item("AS SPEED INCREASES, AT 265 KTS", "SET FLAPS 0", is_dynamic=True)
+                    else:
+                        # Dynamic logic for aircraft without flap_retraction_schedule
+                        flap_speeds = ac_data.get('flap_speeds', {})
+                        # Get flap 1 speed, fallback to 265 if not found
+                        flap_1_speed = flap_speeds.get('1', 265)
+                        pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 0", is_dynamic=True)
                 
                 elif section['special_section'] == 'step_climb':
                      step_climbs = [p for p in ac_data['cruise_profile'][direction.lower()] if p['load_range'][1] < load]
@@ -239,19 +249,23 @@ class ChecklistPDFService:
                              pdf.checklist_item(f"AT {step['load_range'][1]}% LOAD", f"CLIMB TO {step['altitude']}", is_dynamic=True, indent=10)
                 
                 elif section['special_section'] == 'flap_deploy_above_10k':
+                    # Get speed threshold for above/below 10k separation, default to 250
+                    speed_threshold = aircraft_info.get('speed_threshold_10k', 250)
                     flap_speeds = ac_data['flap_speeds']
                     # Sort flap settings by speed (descending order for deployment)
                     sorted_flaps = sorted(flap_speeds.items(), key=lambda x: x[1], reverse=True)
                     for flap_setting, speed in sorted_flaps:
-                        if speed > 250:
+                        if speed > speed_threshold:
                             pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", f"SET FLAPS {flap_setting}", is_dynamic=True)
                 
                 elif section['special_section'] == 'flap_deploy_below_10k':
+                    # Get speed threshold for above/below 10k separation, default to 250
+                    speed_threshold = aircraft_info.get('speed_threshold_10k', 250)
                     flap_speeds = ac_data['flap_speeds']
                     # Sort flap settings by speed (descending order for deployment)
                     sorted_flaps = sorted(flap_speeds.items(), key=lambda x: x[1], reverse=True)
                     for flap_setting, speed in sorted_flaps:
-                        if speed <= 250:
+                        if speed <= speed_threshold:
                             pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", f"SET FLAPS {flap_setting}", is_dynamic=True)
                 
                 # Skip descent_speed_profile here since it's handled after text_section
@@ -267,10 +281,12 @@ class ChecklistPDFService:
             # Handle second special section
             if 'special_section_2' in section:
                 if section['special_section_2'] == 'flap_deploy_above_10k':
+                    # Get speed threshold for above/below 10k separation, default to 250
+                    speed_threshold = aircraft_info.get('speed_threshold_10k', 250)
                     flap_speeds = ac_data['flap_speeds']
                     sorted_flaps = sorted(flap_speeds.items(), key=lambda x: x[1], reverse=True)
                     for flap_setting, speed in sorted_flaps:
-                        if speed > 250:
+                        if speed > speed_threshold:
                             pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", f"SET FLAPS {flap_setting}", is_dynamic=True)
                 
                 elif section['special_section_2'] == 'landing_data_table':
