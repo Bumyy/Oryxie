@@ -172,7 +172,7 @@ class PilotsModel:
         Returns:
             A dictionary of the pilot's data if found, otherwise None.
         """
-        query = "SELECT id, callsign, discordid FROM pilots WHERE id = %s AND status = 1"
+        query = "SELECT id, callsign, discordid, name, ifc FROM pilots WHERE id = %s AND status = 1"
         args = (pilot_id,)
         return await self.db.fetch_one(query, args)
         

@@ -512,3 +512,28 @@ class PirepsModel:
         
         results = await self.db.fetch_all(query)
         return results if results else []
+
+    async def get_top_pilots_last_31_days(self) -> list[dict]:
+        """
+        Fetches the top 10 pilots with the most flight hours in the last 31 days.
+
+        Returns:
+            A list of dictionaries, each containing pilotid, total_seconds, and pirep_count.
+        """
+        query = """
+            SELECT
+                p.pilotid,
+                SUM(p.flighttime) AS total_seconds,
+                COUNT(p.id) AS pirep_count
+            FROM
+                pireps AS p
+            WHERE
+                p.status = 1
+                AND p.date >= DATE_SUB(NOW(), INTERVAL 31 DAY)
+            GROUP BY
+                p.pilotid
+            ORDER BY
+                total_seconds DESC
+            LIMIT 10
+        """
+        return await self.db.fetch_all(query)
