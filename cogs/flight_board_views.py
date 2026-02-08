@@ -108,11 +108,24 @@ class ChecklistModal(discord.ui.Modal):
                 await interaction.followup.send("❌ Load percentage must be between 0 and 100.", ephemeral=True)
                 return
             
-            flight_service = FlightService()
-            direction = flight_service.get_flight_direction(
-                self.flight_data['departure'], 
-                self.flight_data['arrival']
-            )
+            if 'departure' not in self.flight_data or 'arrival' not in self.flight_data:
+                await interaction.followup.send("❌ Missing departure or arrival airport data.", ephemeral=True)
+                return
+            
+            try:
+                flight_service = FlightService()
+                direction = flight_service.get_flight_direction(
+                    self.flight_data['departure'], 
+                    self.flight_data['arrival']
+                )
+                print(f"DEBUG: Direction returned = '{direction}' for {self.flight_data['departure']} -> {self.flight_data['arrival']}")
+            except ValueError as ve:
+                await interaction.followup.send(f"❌ Invalid airport codes: {ve}", ephemeral=True)
+                return
+            
+            if direction not in ['east', 'west']:
+                await interaction.followup.send(f"❌ Unable to determine flight direction. Got: {direction}", ephemeral=True)
+                return
             
             pdf_file = interaction.client.checklist_pdf_service.generate_checklist_pdf(
                 self.aircraft_icao.upper(), load_pct, "checklist", direction
@@ -125,7 +138,8 @@ class ChecklistModal(discord.ui.Modal):
             )
         except Exception as e:
             logging.error(f"[CHECKLIST] Error generating checklist: {e}")
-            await interaction.followup.send("❌ Error generating checklist.", ephemeral=True)
+            logging.error(traceback.format_exc())
+            await interaction.followup.send(f"❌ Error generating checklist: {e}", ephemeral=True)
 
 class StatusSelectView(discord.ui.View):
     def __init__(self, flight_data, original_message):
@@ -169,18 +183,25 @@ class AircraftSelectView(discord.ui.View):
         
         select = discord.ui.Select(
             placeholder="Choose your aircraft...",
-            options=[discord.SelectOption(label=f"{icao} - {name}", value=icao) for icao, name in aircraft_options]
+            options=[discord.SelectOption(label=label[:100], value=value) for value, label in aircraft_options]
         )
         select.callback = self.aircraft_selected
         self.add_item(select)
     
     async def aircraft_selected(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        selected_icao = interaction.data['values'][0]
+        selected_value = interaction.data['values'][0]
+        
+        if '|' in selected_value:
+            selected_icao, selected_livery = selected_value.split('|', 1)
+        else:
+            selected_icao = selected_value
+            selected_livery = "Qatar Airways"
         
         aircraft_name = self.aircraft_db.get('infinite_flight', {}).get(selected_icao, selected_icao)
         self.flight_data['aircraft'] = selected_icao
         self.flight_data['aircraft_name'] = aircraft_name
+        self.flight_data['livery'] = selected_livery
         
         modal = FlightEditModal(self.flight_data)
         embed = await modal.create_flight_embed(self.flight_data, self.bot)

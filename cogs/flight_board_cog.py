@@ -120,6 +120,31 @@ class FlightBoardCog(commands.Cog):
             return airport_data.get('name', icao_code)
         return icao_code
 
+    def _parse_flight_time_to_seconds(self, flight_time_str: str) -> int:
+        """Convert flight time string (e.g., '2h 30m' or '08:30') to seconds"""
+        try:
+            flight_time_str = str(flight_time_str).strip()
+            
+            # Handle HH:MM format
+            if ':' in flight_time_str:
+                parts = flight_time_str.split(':')
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                return (hours * 3600) + (minutes * 60)
+
+            hours = 0
+            minutes = 0
+            if 'h' in flight_time_str:
+                parts = flight_time_str.split('h')
+                hours = int(parts[0].strip())
+                if len(parts) > 1 and 'm' in parts[1]:
+                    minutes = int(parts[1].replace('m', '').strip())
+            elif 'm' in flight_time_str:
+                minutes = int(flight_time_str.replace('m', '').strip())
+            return (hours * 3600) + (minutes * 60)
+        except:
+            return 0
+
     def _convert_aircraft_name_to_icao(self, aircraft_full_name: str, aircraft_db_content: dict) -> str:
         
         if not aircraft_full_name:
@@ -147,6 +172,21 @@ class FlightBoardCog(commands.Cog):
 
         return "XXXX"
 
+    async def _check_pilot_rank_for_owd(self, discord_id: int) -> bool:
+        """Check if pilot has OneWorld rank or above"""
+        # Use flightdata service to calculate rank based on hours
+        rank, _, error = await self.bot.flightdata.get_pilot_rank_and_aircraft(
+            str(discord_id), 
+            self.bot.pilots_model, 
+            self.bot.pireps_model
+        )
+        
+        if error:
+            return False
+            
+        owd_ranks = ['OneWorld', 'Oryx']
+        return rank in owd_ranks
+
     @app_commands.command(name="flight_board", description="Post your upcoming flight to the live flights board")
     @app_commands.describe(
         flight_num="Flight number (e.g., QR123)",
@@ -169,10 +209,35 @@ class FlightBoardCog(commands.Cog):
         
         try:
             route_data = await self.bot.routes_model.find_route_by_fltnum(flight_num)
+            is_owd_route = False
             
             if not route_data:
-                await interaction.followup.send(f"❌ Flight number {flight_num} not found in routes database.", ephemeral=True)
-                return
+                # Check if pilot has OneWorld rank or above
+                has_rank = await self._check_pilot_rank_for_owd(interaction.user.id)
+                
+                if has_rank:
+                    # Search in OWD routes
+                    owd_route = await self.bot.owd_route_model.find_route_by_flight_number(flight_num)
+                    if owd_route:
+                        # Convert OWD route format to standard route format
+                        route_data = {
+                            'dep': owd_route['departure'],
+                            'arr': owd_route['arrival'],
+                            'duration': self._parse_flight_time_to_seconds(owd_route['flight_time']),
+                            'fltnum': owd_route['flight_number'],
+                            'livery': owd_route['airline'],
+                            'aircraft': [{'icao': owd_route['aircraft'], 'name': owd_route['aircraft']}]
+                        }
+                        is_owd_route = True
+                        # Add OWD note
+                        if note:
+                            note = f"OneWorld Discover route | {note}"
+                        else:
+                            note = "OneWorld Discover route"
+                
+                if not route_data:
+                    await interaction.followup.send(f"❌ Flight number {flight_num} not found in routes database.", ephemeral=True)
+                    return
             
             eta = None
             if etd and route_data.get('duration'):
@@ -242,6 +307,7 @@ class FlightBoardCog(commands.Cog):
                 aircraft_options = []
                 for ac_data_from_db in route_data['aircraft']:
                     name = ac_data_from_db['name'] 
+                    livery = ac_data_from_db.get('livery', 'Standard')
                     
                     # Always convert aircraft name to ICAO code using aircraft_data.json
                     icao = self._convert_aircraft_name_to_icao(name, self.aircraft_db)
@@ -250,7 +316,9 @@ class FlightBoardCog(commands.Cog):
                         continue
 
                     display_name = self.aircraft_db.get('infinite_flight', {}).get(icao, name)
-                    aircraft_options.append((icao, display_name))
+                    value = f"{icao}|{livery}"
+                    label = f"{icao} - {display_name} ({livery})"
+                    aircraft_options.append((value, label))
                 
                 if not aircraft_options:
                     await interaction.followup.send("❌ No valid aircraft types found.", ephemeral=True)

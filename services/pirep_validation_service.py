@@ -235,17 +235,25 @@ class PirepValidationService:
                     continue
 
         try:
-            route_valid = await self.check_route_database(pirep['departure'], pirep['arrival'], pirep.get('flightnum'))
-            route_exists = await self.check_route_exists(pirep['departure'], pirep['arrival'])
+            route_valid = await self.check_route_database(pirep['departure'], pirep['arrival'], pirep.get('flightnum'), pirep.get('pilotid'))
+            route_exists = await self.check_route_exists(pirep['departure'], pirep['arrival'], pirep.get('pilotid'))
+            
+            # Check if it's an OWD route
+            is_owd_route = False
+            if route_valid and await self._check_pilot_rank_for_owd(pirep.get('pilotid')):
+                regular_route = await self.bot.routes_model.find_route_by_icao(pirep['departure'], pirep['arrival'])
+                if not regular_route:
+                    is_owd_route = True
         except Exception as e:
             logger.error(f"Error checking route database: {e}")
             route_valid = False
             route_exists = False
+            is_owd_route = False
 
         if not matching_flight:
             return self._create_no_match_embed(pirep, pilot_display, user_flights)
 
-        return await self._create_validation_embed(pirep, pilot_display, matching_flight, route_valid, route_exists)
+        return await self._create_validation_embed(pirep, pilot_display, matching_flight, route_valid, route_exists, is_owd_route)
 
     def _create_no_match_embed(self, pirep, pilot_display, user_flights):
         """Create embed for when no matching flight is found."""
@@ -275,7 +283,7 @@ class PirepValidationService:
         embed.add_field(name="❌ MATCH NOT FOUND - DETAILED ANALYSIS", value="\n".join(analysis_details), inline=False)
         return embed
 
-    async def _create_validation_embed(self, pirep, pilot_display, matching_flight, route_valid, route_exists):
+    async def _create_validation_embed(self, pirep, pilot_display, matching_flight, route_valid, route_exists, is_owd_route=False):
         """Create detailed validation embed with all checks."""
         landings = matching_flight.get('landingCount') if matching_flight.get('landingCount') is not None else 'N/A'
         route_match = f"{pirep['departure']} → {pirep['arrival']}" == f"{matching_flight['originAirport']} → {matching_flight['destinationAirport']}"
@@ -363,7 +371,10 @@ class PirepValidationService:
             status_text = "🛑 REVIEW REQUIRED"
         
         if route_exists and route_valid:
-            flight_num_status = "✅ Valid"
+            if is_owd_route:
+                flight_num_status = "✅ Valid (OneWorld Discover route)"
+            else:
+                flight_num_status = "✅ Valid"
         elif route_exists:
             flight_num_status = "⚠️ Route exists, flight # invalid"
         else:
@@ -589,8 +600,25 @@ class PirepValidationService:
         
         return embeds
     
-    async def check_route_database(self, departure, arrival, flight_num):
-        """Check if the flight number exists in the routes database."""
+    async def _check_pilot_rank_for_owd(self, pilot_id: int) -> bool:
+        """Check if pilot has OneWorld rank or above"""
+        import json
+        import os
+        
+        pilot_data = await self.bot.pilots_model.get_pilot_by_id(pilot_id)
+        if not pilot_data:
+            return False
+        
+        rank_config_path = os.path.join('assets', 'rank_config.json')
+        with open(rank_config_path, 'r') as f:
+            rank_config = json.load(f)
+        
+        pilot_rank = pilot_data.get('rank', 'Cadet')
+        owd_ranks = ['OneWorld', 'Oryx']
+        return pilot_rank in owd_ranks
+
+    async def check_route_database(self, departure, arrival, flight_num, pilot_id=None):
+        """Check if the flight number exists in the routes database or OWD routes."""
         if not flight_num:
             return False
         
@@ -598,16 +626,31 @@ class PirepValidationService:
             route_data = await self.bot.routes_model.find_route_by_icao(departure, arrival)
             if route_data:
                 return self.validate_flight_number(flight_num, route_data['fltnum'])
+            
+            # Check OWD routes if pilot has OneWorld rank or above
+            if pilot_id and await self._check_pilot_rank_for_owd(pilot_id):
+                owd_route = await self.bot.owd_routes_model.find_route_by_icao(departure, arrival)
+                if owd_route and owd_route['flight_number'] == flight_num:
+                    return True
+            
             return False
         except Exception as e:
             print(f"Error checking route database: {e}")
             return False
     
-    async def check_route_exists(self, departure, arrival):
-        """Check if the route exists in the database."""
+    async def check_route_exists(self, departure, arrival, pilot_id=None):
+        """Check if the route exists in the database or OWD routes."""
         try:
             route_data = await self.bot.routes_model.find_route_by_icao(departure, arrival)
-            return route_data is not None
+            if route_data:
+                return True
+            
+            # Check OWD routes if pilot has OneWorld rank or above
+            if pilot_id and await self._check_pilot_rank_for_owd(pilot_id):
+                owd_route = await self.bot.owd_routes_model.find_route_by_icao(departure, arrival)
+                return owd_route is not None
+            
+            return False
         except Exception as e:
             print(f"Error checking if route exists: {e}")
             return False
