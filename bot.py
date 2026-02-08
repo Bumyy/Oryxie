@@ -1,4 +1,3 @@
-print("BOT FILE EXECUTED")
 import discord
 from discord.ext import commands
 import os
@@ -10,6 +9,7 @@ import logging.handlers
 from database.manager import DatabaseManager
 from database.pireps_model import PirepsModel
 from database.routes_model import RoutesModel
+from database.Owd_route_model import OwdRouteModel
 from database.pilots_model import PilotsModel
 from database.event_transaction_model import EventTransactionModel
 from database.flight_data import FlightData
@@ -38,6 +38,7 @@ class MyBot(commands.Bot):
         self.db_manager: DatabaseManager = None
         self.pireps_model: PirepsModel = None
         self.routes_model: RoutesModel = None
+        self.owd_route_model: OwdRouteModel = None
         self.pilots_model: PilotsModel = None
         self.event_transaction_model: EventTransactionModel = None
         self.shop_model: ShopModel = None
@@ -63,6 +64,7 @@ class MyBot(commands.Bot):
         self.db_manager = DatabaseManager(self)
         self.pireps_model = PirepsModel(self.db_manager)
         self.routes_model = RoutesModel(self.db_manager)
+        self.owd_route_model = OwdRouteModel(self.db_manager)
         self.pilots_model = PilotsModel(self.db_manager)
         self.event_transaction_model = EventTransactionModel(self.db_manager)
         self.shop_model = ShopModel(self.db_manager)
@@ -176,8 +178,6 @@ async def start_bot():
     """
     Function to create and run the bot.
     """
-    print("START_BOT FUNCTION ENTERED")
-    handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
     bot = MyBot()
 
@@ -187,29 +187,30 @@ async def start_bot():
         logging.critical("DISCORD_BOT_TOKEN environment variable not set.")
 
     async with bot:
-        print("ABOUT TO CALL bot.start()")
         await bot.start(TOKEN)
-       # logger # 
-if __name__ == '__main__':
-    logger = logging.getLogger('discord')
-    logger.setLevel(logging.INFO)
 
-    oryxie_logger = logging.getLogger('oryxie')
-    oryxie_logger.setLevel(logging.INFO)
+if __name__ == '__main__':
+    # --- Configure Root Logger (Captures all logging.info calls) ---
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
     
-    handler = logging.handlers.RotatingFileHandler(
+    # Formatter
+    dt_fmt = '%Y-%m-%d %H:%M:%S'
+    formatter = logging.Formatter('[{asctime}] [{levelname:<8}] {name}: {message}', dt_fmt, style='{')
+    
+    # 1. File Handler
+    file_handler = logging.handlers.RotatingFileHandler(
         filename='discord.log',
         encoding='utf-8',
         maxBytes=5 * 1024 * 1024,  # 5 MB
         backupCount=5,
     )
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
 
-    dt_fmt = '%Y-%m-%d %H:%M:%S'
-    formatter = logging.Formatter('[{asctime}] [{levelname:<8}] {name}: {message}', dt_fmt, style='{')
-    
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    oryxie_logger.addHandler(handler)
+    # Silence noisy libraries
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
 
     try:
         asyncio.run(start_bot())

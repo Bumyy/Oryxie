@@ -75,8 +75,7 @@ class ChecklistPDFService:
         perf = {}
         takeoff_perf = next((p for p in aircraft_data['takeoff_data'] if p['load_range'][0] <= load <= p['load_range'][1]), None)
         if takeoff_perf:
-            flaps = takeoff_perf['flaps'].split('/')[0]
-            perf['takeoff_flaps'] = flaps
+            perf['takeoff_flaps'] = takeoff_perf['flaps']
             perf['n1_target'] = takeoff_perf['n1']
             perf['vr_speed'] = str(takeoff_perf['vr'])
             perf['va_speed'] = str(takeoff_perf['va'])
@@ -158,6 +157,7 @@ class ChecklistPDFService:
             # Handle text sections
             if 'text_section' in section:
                 pdf.set_font('Arial', '', 10)
+                
                 for line in section['text_section']:
                     # Split long lines to prevent text cutoff
                     words = line.split(' ')
@@ -190,6 +190,16 @@ class ChecklistPDFService:
                     for key, val in placeholders.items():
                         value = value.replace(f"{{{key}}}", str(val))
                     pdf.checklist_item(item['text'], value, item.get('is_dynamic', False))
+                    
+                    # Add flap NOTAM after TAKEOFF FLAPS item if aircraft has flap_notam AND current load has multiple flaps
+                    if item['text'] == 'TAKEOFF FLAPS' and 'flap_notam' in aircraft_info:
+                        takeoff_flaps_value = perf.get('takeoff_flaps', '')
+                        if '/' in takeoff_flaps_value:
+                            pdf.set_text_color(255, 0, 0)
+                            pdf.set_font('Arial', 'I', 9)
+                            pdf.cell(0, 5, f"   NOTE: {aircraft_info['flap_notam']}", 0, 1, 'L')
+                            pdf.set_text_color(0, 0, 0)
+                            pdf.ln(1)
             
             if 'special_section' in section:
                 if section['special_section'] == 'engine_start':
@@ -200,29 +210,57 @@ class ChecklistPDFService:
                         pdf.checklist_item(f"ENGINE {eng_num}", f"STABLE ({engine_stable_pct}%)", indent=10)
 
                 elif section['special_section'] == 'flap_retraction_below_10k':
-                    # Get speed threshold for above/below 10k separation, default to 250
                     speed_threshold = aircraft_info.get('speed_threshold_10k', 250)
+                    takeoff_flaps_value = perf.get('takeoff_flaps', '')
+                    has_multiple_flaps = '/' in takeoff_flaps_value
                     
-                    # Check if aircraft has flap_retraction_schedule, use it; otherwise use dynamic logic
                     if 'flap_retraction_schedule' in aircraft_info:
                         flap_schedule = aircraft_info.get('flap_retraction_schedule', [])
                         for flap_step in flap_schedule:
                             if flap_step['speed'] <= speed_threshold:
-                                pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_step['speed']} KTS", f"SET FLAPS {flap_step['setting']}", is_dynamic=True)
+                                # Skip if this flap setting matches the takeoff flap (for single flap aircraft)
+                                if not has_multiple_flaps and flap_step['setting'] == takeoff_flaps_value:
+                                    continue
+                                
+                                condition = flap_step.get('condition', '')
+                                flap_text = f"SET FLAPS {flap_step['setting']}"
+                                # Only add condition if aircraft has multiple flap choices
+                                if condition and has_multiple_flaps:
+                                    flap_text += f" ({condition})"
+                                pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_step['speed']} KTS", flap_text, is_dynamic=True)
                     else:
                         # Dynamic logic for aircraft without flap_retraction_schedule
                         takeoff_flap = perf.get('takeoff_flaps', '5')
                         flap_speeds = ac_data.get('flap_speeds', {})
                         
-                        # Get flap 1 speed, fallback to 245 if not found
-                        flap_1_speed = flap_speeds.get('1', 245)
-                        flap_5_speed = flap_speeds.get('5', 230)
-                        
-                        if takeoff_flap == '5':
-                            pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 1", is_dynamic=True)
-                        elif takeoff_flap == '15':
-                            pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_5_speed} KTS", "SET FLAPS 5", is_dynamic=True)
-                            pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 1", is_dynamic=True)
+                        if has_multiple_flaps:
+                            # Show both retraction paths with conditional notes
+                            flap_options = takeoff_flap.split('/')
+                            lower_flap = flap_options[0]
+                            higher_flap = flap_options[1] if len(flap_options) > 1 else lower_flap
+                            
+                            # Get speeds for each flap setting
+                            higher_flap_speed = flap_speeds.get(higher_flap, 230)
+                            lower_flap_speed = flap_speeds.get(lower_flap, 245)
+                            flap_1_speed = flap_speeds.get('1', 265)
+                            
+                            # Show retraction from higher flap (e.g., 15)
+                            if higher_flap_speed <= speed_threshold:
+                                pdf.checklist_item(f"AS SPEED INCREASES, AT {higher_flap_speed} KTS", f"SET FLAPS {lower_flap} (if flaps {higher_flap} selected during takeoff)", is_dynamic=True)
+                            
+                            # Show retraction from lower flap (e.g., 5)
+                            if lower_flap_speed <= speed_threshold:
+                                pdf.checklist_item(f"AS SPEED INCREASES, AT {lower_flap_speed} KTS", f"SET FLAPS 1 (if flaps {lower_flap} selected during takeoff)", is_dynamic=True)
+                        else:
+                            # Single flap choice - no conditional notes
+                            flap_1_speed = flap_speeds.get('1', 245)
+                            flap_5_speed = flap_speeds.get('5', 230)
+                            
+                            if takeoff_flap == '5':
+                                pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 1", is_dynamic=True)
+                            elif takeoff_flap == '15':
+                                pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_5_speed} KTS", "SET FLAPS 5", is_dynamic=True)
+                                pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 1", is_dynamic=True)
                 
                 elif section['special_section'] == 'flap_retraction_above_10k':
                     # Get speed threshold for above/below 10k separation, default to 250
@@ -237,7 +275,6 @@ class ChecklistPDFService:
                     else:
                         # Dynamic logic for aircraft without flap_retraction_schedule
                         flap_speeds = ac_data.get('flap_speeds', {})
-                        # Get flap 1 speed, fallback to 265 if not found
                         flap_1_speed = flap_speeds.get('1', 265)
                         pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_1_speed} KTS", "SET FLAPS 0", is_dynamic=True)
                 

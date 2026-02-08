@@ -139,11 +139,13 @@ class RoutesModel:
         seen_aircraft = set()
         for row in results:
             if row["aircraft_icao"] is not None and row["aircraft_name"] is not None:
-                aircraft_key = (row["aircraft_icao"], row["aircraft_name"])
+                livery = row.get("aircraft_livery") or "Standard"
+                aircraft_key = (row["aircraft_icao"], row["aircraft_name"], livery)
                 if aircraft_key not in seen_aircraft:
                     aircraft_info = {
                         "icao": row["aircraft_icao"],
-                        "name": row["aircraft_name"]
+                        "name": row["aircraft_name"],
+                        "livery": livery
                     }
                     route_data["aircraft"].append(aircraft_info)
                     seen_aircraft.add(aircraft_key)

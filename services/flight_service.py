@@ -31,10 +31,10 @@ class FlightService:
                 # We know the short way is West
                 diff = diff + 360
         
-        # Determine final direction with a North/South threshold
-        if diff > 15:  # Strong Eastbound tendency
+        # Determine final direction
+        if diff > 0:
             return "east"
-        elif diff < -15: # Strong Westbound tendency
+        elif diff < 0:
             return "west"
-        else: # Primarily a North/South flight
-            return "N/A"
+        else:
+            return "east"
