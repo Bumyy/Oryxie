@@ -11,9 +11,7 @@ class PDFService:
     
     def _get_model_code(self):
         model = getattr(self.ai_service, 'current_model', 'unknown')
-        if 'gemini-2.5-flash' in model:
-            return 'FLG25'
-        elif 'gemma-3-12b' in model:
+        if 'gemma-3-12b' in model:
             return 'G312'
         return 'UNK'
     
