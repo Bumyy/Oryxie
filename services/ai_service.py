@@ -10,7 +10,7 @@ class AIService:
     def __init__(self):
         self.model = None
         self.current_model = None
-        self.models = ['gemini-2.5-flash', 'gemma-3-12b-it']
+        self.models = ['gemma-3-12b-it']
         self.model_index = 0
         self._initialize_ai()
     
@@ -252,6 +252,9 @@ Format: [Client] ||| [Purpose] ||| [Manifest]
             if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg:
                 print(f"[DEBUG] Quota exhausted for {self.current_model}, switching models")
                 logger.error(f"QUOTA EXHAUSTED for {self.current_model}. Switching permanently for this session.")
+            if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg or "location" in error_msg:
+                print(f"[DEBUG] Error '{error_msg}' for {self.current_model}, switching models")
+                logger.error(f"Error for {self.current_model}: {error_msg}. Switching permanently for this session.")
                 self.model_index += 1
                 self._try_next_model()
                 if self.model:
