@@ -1,85 +1,21 @@
-import os
 import logging
-import re
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+import json
+import random
+from api.oa_manager import ai_manager
 
 logger = logging.getLogger('oryxie')
 
 class AIService:
     def __init__(self):
-        self.model = None
-        self.current_model = None
-        self.models = ['gemma-3-12b-it']
-        self.model_index = 0
-        self._initialize_ai()
-    
-    def _initialize_ai(self):
-        print("[DEBUG] Starting AI initialization...")
-        try:
-            google_ai_key = os.getenv("GOOGLE_AI_KEY")
-            print(f"[DEBUG] GOOGLE_AI_KEY found: {bool(google_ai_key)}")
-            if google_ai_key:
-                print(f"[DEBUG] API key length: {len(google_ai_key) if google_ai_key else 0}")
-                genai.configure(api_key=google_ai_key)
-                print("[DEBUG] genai.configure() completed")
-                self._try_next_model()
-            else:
-                print("[DEBUG] No GOOGLE_AI_KEY found in environment")
-                logger.warning("GOOGLE_AI_KEY not found, AI features disabled")
-                self.model = None
-        except Exception as e:
-            print(f"[DEBUG] Exception in _initialize_ai: {e}")
-            logger.error(f"Failed to initialize AI model: {e}")
-            self.model = None
-    
-    def _try_next_model(self):
-        print(f"[DEBUG] Trying model index {self.model_index} of {len(self.models)}")
-        if self.model_index >= len(self.models):
-            print("[DEBUG] All AI models exhausted")
-            logger.error("All AI models exhausted")
-            self.model = None
-            return
-        
-        try:
-            model_name = self.models[self.model_index]
-            print(f"[DEBUG] Attempting to initialize model: {model_name}")
-            self.model = genai.GenerativeModel(model_name)
-            self.current_model = model_name
-            print(f"[DEBUG] Successfully initialized model: {model_name}")
-            logger.info(f"AI model initialized with {model_name}")
-        except Exception as e:
-            print(f"[DEBUG] Failed to initialize {self.models[self.model_index]}: {e}")
-            logger.warning(f"Failed to initialize {self.models[self.model_index]}: {e}")
-            self.model_index += 1
-            self._try_next_model()
-    
-    def _sanitize_input(self, text: str) -> str:
-        if not isinstance(text, str): text = str(text)
-        text = re.sub(r'[\r\n\t]', ' ', text)
-        text = re.sub(r'[{}\[\]"\']', '', text)
-        return text[:200]
+        pass
 
     async def generate_ai_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo, flight_type, deadline):
-        print(f"[DEBUG] generate_ai_scenario called with flight_type: {flight_type}")
-        print(f"[DEBUG] Model available: {bool(self.model)}")
-        print(f"[DEBUG] Current model: {self.current_model}")
-        
-        if not self.model:
-            print("[DEBUG] No model available, using fallback")
-            return await self._get_fallback(flight_type, passengers, cargo)
-            
         if flight_type == "amiri":
-            print("[DEBUG] Generating Amiri scenario")
             return await self._generate_amiri_scenario(aircraft_name, dep_data, dest_data, passengers, cargo)
         else:
-            print("[DEBUG] Generating Executive scenario")
             return await self._generate_executive_scenario(aircraft_name, dep_data, dest_data, passengers, cargo)
 
     async def _generate_amiri_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo):
-        import json
-        import random
-        
         # Load dignitary names and scenarios
         try:
             with open("assets/dignitary_names.json", 'r') as f:
@@ -169,53 +105,16 @@ Format: [Client] ||| [Purpose] ||| [Manifest]
         return await self._call_ai_api(prompt, "executive", {}, passengers, cargo)
 
     async def _call_ai_api(self, prompt, context_type, extra_data, passengers, cargo):
-        print(f"[DEBUG] _call_ai_api called with context_type: {context_type}")
-        print(f"[DEBUG] Model status: {bool(self.model)}")
-        print(f"[DEBUG] Current model: {self.current_model}")
-        print(f"[DEBUG] Prompt length: {len(prompt)}")
-        
         try:
-            # SAFETY SETTINGS: Prevent the AI from blocking "diplomatic" or "official" terms
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-
-            print("[DEBUG] Calling model.generate_content()...")
-            response = self.model.generate_content(
-                prompt, 
-                generation_config={"temperature": 0.7, "max_output_tokens": 1000},
-                safety_settings=safety_settings
-            )
-            print(f"[DEBUG] API call completed. Response received: {bool(response)}")
-
-            # Check for blocked content (safety filters)
-            print(f"[DEBUG] Response candidates: {len(response.candidates) if response.candidates else 0}")
-            if not response.candidates or len(response.candidates) == 0:
-                print(f"[DEBUG] Content blocked by {self.current_model}, switching models")
-                logger.warning(f"Model {self.current_model} blocked the content. Retrying with next model...")
-                self.model_index += 1
-                self._try_next_model()
-                if self.model:
-                    return await self._call_ai_api(prompt, context_type, extra_data, passengers, cargo)
-                return await self._get_fallback(context_type, passengers, cargo, extra_data)
-
-            txt = response.text
-            print(f"[DEBUG] Raw AI response length: {len(txt)}")
-            print(f"[DEBUG] AI Response preview: {txt[:200]}...")
-            logger.info(f"AI Response: {txt[:200]}...")  # Debug log
-
+            # Call OpenRouter via APIManager
+            response_text = await ai_manager.get_response(prompt)
+            
             parts = []
-            if "|||" in txt:
-                parts = txt.split("|||")
-                print(f"[DEBUG] Found {len(parts)} parts after splitting by |||")
-                logger.info(f"AI Parts found: {len(parts)} parts")
+            if "|||" in response_text:
+                parts = response_text.split("|||")
                 
                 # Handle incomplete responses by padding with fallback content
                 if len(parts) == 2:
-                    logger.info("AI returned only 2 parts, adding fallback third section")
                     if context_type == "amiri":
                         parts.append(f"Delegation of {passengers} officials with {cargo}kg of diplomatic materials and equipment.")
                     else:
@@ -238,36 +137,15 @@ Format: [Client] ||| [Purpose] ||| [Manifest]
                             "manifest_details": parts[2].strip(),
                             "purpose": "Executive Charter"
                         }
-            else:
-                logger.warning("AI response does not contain ||| separators")
-
-            # Only show error if we couldn't handle it
-            if not parts or len(parts) < 2:
-                separators_found = len(parts) - 1 if parts else 0
-                logger.warning(f"AI Format Error: Found {separators_found} separators, expected 2.")
-        except Exception as e:
-            print(f"[DEBUG] Exception in _call_ai_api: {type(e).__name__}: {e}")
-            # Check specifically for Quota/Rate Limit errors
-            error_msg = str(e).lower()
-            if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg:
-                print(f"[DEBUG] Quota exhausted for {self.current_model}, switching models")
-                logger.error(f"QUOTA EXHAUSTED for {self.current_model}. Switching permanently for this session.")
-            if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg or "location" in error_msg:
-                print(f"[DEBUG] Error '{error_msg}' for {self.current_model}, switching models")
-                logger.error(f"Error for {self.current_model}: {error_msg}. Switching permanently for this session.")
-                self.model_index += 1
-                self._try_next_model()
-                if self.model:
-                    return await self._call_ai_api(prompt, context_type, extra_data, passengers, cargo)
             
-            print(f"[DEBUG] Unexpected AI Error: {e}")
-            logger.error(f"Unexpected AI Error: {e}")
+            logger.warning("AI response does not contain ||| separators")
+            
+        except Exception as e:
+            logger.error(f"AI Service Error: {e}")
         
         return await self._get_fallback(context_type, passengers, cargo, extra_data)
 
     async def _get_fallback(self, flight_type, passengers, cargo, extra_data=None):
-        print(f"[DEBUG] Using fallback for flight_type: {flight_type}")
-        logger.info(f"Returning {flight_type} fallback content")
         if flight_type == "amiri":
             dignitary = extra_data.get("dignitary", "Official") if extra_data else "Official"
             return {

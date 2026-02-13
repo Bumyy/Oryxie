@@ -66,6 +66,76 @@
             }
         }
     },
+    "A320": {
+        "properties": {
+            "full_name": "Airbus A320",
+            "manufacturer": "Airbus",
+            "engines": 2
+        },
+        "engine_start_sequence": [1, 2],
+        "flap_retraction_schedule": [
+            { "speed": 200, "setting": "1" },
+            { "speed": 230, "setting": "0" }
+        ],
+        "performance_data": {
+            "flap_speeds": { "1": 230, "2": 200, "3": 185, "F": 177 },
+            "cruise_profile": {
+                "west": [
+                    { "load_range": [81, 100], "altitude": "FL320" },
+                    { "load_range": [61, 80], "altitude": "FL340" },
+                    { "load_range": [41, 60], "altitude": "FL360" },
+                    { "load_range": [21, 40], "altitude": "FL380" },
+                    { "load_range": [0, 20], "altitude": "FL400" }
+                ],
+                "east": [
+                    { "load_range": [71, 100], "altitude": "FL310" },
+                    { "load_range": [61, 70], "altitude": "FL330" },
+                    { "load_range": [41, 60], "altitude": "FL350" },
+                    { "load_range": [0, 40], "altitude": "FL370" }
+                ]
+            },
+            "takeoff_data": [
+                { "load_range": [0, 27], "flaps": "1", "n1": "85% - 91%", "vr": 130, "va": 135 },
+                { "load_range": [28, 34], "flaps": "1", "n1": "85% - 91%", "vr": 132, "va": 137 },
+                { "load_range": [35, 44], "flaps": "1", "n1": "85% - 91%", "vr": 133, "va": 138 },
+                { "load_range": [45, 54], "flaps": "1", "n1": "85% - 91%", "vr": 135, "va": 140 },
+                { "load_range": [55, 64], "flaps": "1", "n1": "86% - 91%", "vr": 137, "va": 142 },
+                { "load_range": [65, 72], "flaps": "1", "n1": "87% - 93%", "vr": 139, "va": 144 },
+                { "load_range": [73, 84], "flaps": "1", "n1": "87% - 93%", "vr": 140, "va": 145 },
+                { "load_range": [85, 94], "flaps": "1", "n1": "89% - 95%", "vr": 143, "va": 148 },
+                { "load_range": [95, 100], "flaps": "2", "n1": "84% - 95%", "vr": 145, "va": 150 }
+            ],
+            "landing_data": [
+                { "load_range": [0, 27], "flaps": "F", "vapp": 142, "vflare": 139 },
+                { "load_range": [28, 34], "flaps": "F", "vapp": 142, "vflare": 139 },
+                { "load_range": [35, 44], "flaps": "F", "vapp": 143, "vflare": 140 },
+                { "load_range": [45, 54], "flaps": "F", "vapp": 145, "vflare": 142 },
+                { "load_range": [55, 64], "flaps": "F", "vapp": 147, "vflare": 144 },
+                { "load_range": [65, 72], "flaps": "F", "vapp": 149, "vflare": 146 },
+                { "load_range": [73, 84], "flaps": "F", "vapp": 150, "vflare": 147 },
+                { "load_range": [85, 94], "flaps": "F", "vapp": 153, "vflare": 150 },
+                { "load_range": [95, 100], "flaps": "F", "vapp": 155, "vflare": 152 }
+            ],
+            "speed_profile": {
+                "initial_speed": "250",
+                "below_10k": "250",
+                "above_10k": "280",
+                "mach_transition_alt": "FL280",
+                "mach": "0.78"
+            },
+            "climb_vs_profile": {
+                "0_5000": "2500",
+                "5000_15000": "2000",
+                "15000_24000": "1400",
+                "24000_cruise": "1000"
+            },
+            "descent_speed_profile": {
+                "cruise_to_fl280": "M 0.78",
+                "fl280_to_fl100": "280 knots",
+                "fl100_to_ground": "&lt;250 knots"
+            }
+        }
+    },
     "B77W": {
         "properties": {
             "full_name": "Boeing 777-300ER",
@@ -412,6 +482,147 @@
                 "fl280_to_fl150": "320 knots",
                 "fl150_to_fl100": "280 knots",
                 "fl100_to_ground": "<250 knots"
+            }
+        }
+    },
+    "A333": {
+        "properties": {
+            "full_name": "Airbus A330-300",
+            "manufacturer": "Airbus",
+            "engines": 2
+        },
+        "engine_start_sequence": [1, 2],
+        "flap_retraction_schedule": [
+            { "speed": 196, "setting": "1+F" },
+            { "speed": 215, "setting": "1" },
+            { "speed": 240, "setting": "0" }
+        ],
+        "performance_data": {
+            "flap_speeds": { "1": 240, "1+F": 215, "2": 196, "3": 186, "F": 180 },
+            "cruise_profile": {
+                "west": [
+                    { "load_range": [91, 100], "altitude": "FL300" },
+                    { "load_range": [81, 90], "altitude": "FL320" },
+                    { "load_range": [71, 80], "altitude": "FL340" },
+                    { "load_range": [51, 70], "altitude": "FL360" },
+                    { "load_range": [31, 50], "altitude": "FL380" },
+                    { "load_range": [21, 30], "altitude": "FL400" },
+                    { "load_range": [0, 20], "altitude": "FL420" }
+                ],
+                "east": [
+                    { "load_range": [81, 100], "altitude": "FL310" },
+                    { "load_range": [61, 80], "altitude": "FL330" },
+                    { "load_range": [41, 60], "altitude": "FL350" },
+                    { "load_range": [21, 40], "altitude": "FL370" },
+                    { "load_range": [11, 20], "altitude": "FL390" },
+                    { "load_range": [0, 10], "altitude": "FL410" }
+                ]
+            },
+            "takeoff_data": [
+                { "load_range": [0, 27], "flaps": "1+F", "n1": "85% - 89%", "vr": 125, "va": 130 },
+                { "load_range": [28, 34], "flaps": "1+F", "n1": "86% - 89%", "vr": 131, "va": 136 },
+                { "load_range": [35, 44], "flaps": "1+F", "n1": "87% - 90%", "vr": 138, "va": 143 },
+                { "load_range": [45, 54], "flaps": "2", "n1": "88% - 91%", "vr": 145, "va": 150 },
+                { "load_range": [55, 64], "flaps": "2", "n1": "90% - 92%", "vr": 148, "va": 153 },
+                { "load_range": [65, 72], "flaps": "2", "n1": "91% - 94%", "vr": 149, "va": 154 },
+                { "load_range": [73, 84], "flaps": "2", "n1": "92% - 94%", "vr": 150, "va": 155 },
+                { "load_range": [85, 94], "flaps": "2", "n1": "94% - 96%", "vr": 151, "va": 156 },
+                { "load_range": [95, 100], "flaps": "2", "n1": "96% - 97%", "vr": 151, "va": 156 }
+            ],
+            "landing_data": [
+                { "load_range": [0, 27], "flaps": "Full", "vapp": 140, "vflare": 135 },
+                { "load_range": [28, 34], "flaps": "Full", "vapp": 141, "vflare": 136 },
+                { "load_range": [35, 44], "flaps": "Full", "vapp": 143, "vflare": 137 },
+                { "load_range": [45, 49], "flaps": "Full", "vapp": 145, "vflare": 140 }
+            ],
+            "speed_profile": {
+                "initial_speed": "250",
+                "below_10k": "250",
+                "above_10k": "300",
+                "mach_transition_alt": "FL280",
+                "mach": "0.82"
+            },
+            "climb_vs_profile": {
+                "0_5000": "2000",
+                "5000_15000": "2000",
+                "15000_24000": "1300",
+                "24000_cruise": "1000"
+            },
+            "descent_speed_profile": {
+                "cruise_to_fl280": "M 0.82",
+                "fl280_to_fl100": "300 knots",
+                "fl100_to_ground": "<250 knots"
+            }
+        }
+    },
+    "A339": {
+        "properties": {
+            "full_name": "Airbus A330-900neo",
+            "manufacturer": "Airbus",
+            "engines": 2
+        },
+        "engine_start_sequence": [1, 2],
+        "flap_retraction_schedule": [
+            { "speed": 196, "setting": "1+F" },
+            { "speed": 215, "setting": "1" },
+            { "speed": 240, "setting": "0" }
+        ],
+        "performance_data": {
+            "flap_speeds": { "1": 240, "1+F": 215, "2": 196, "3": 186, "F": 180 },
+            "cruise_profile": {
+                "west": [
+                    { "load_range": [91, 100], "altitude": "FL280" },
+                    { "load_range": [81, 90], "altitude": "FL300" },
+                    { "load_range": [61, 80], "altitude": "FL320" },
+                    { "load_range": [51, 60], "altitude": "FL340" },
+                    { "load_range": [31, 50], "altitude": "FL360" },
+                    { "load_range": [21, 30], "altitude": "FL380" },
+                    { "load_range": [0, 20], "altitude": "FL400" }
+                ],
+                "east": [
+                    { "load_range": [81, 100], "altitude": "FL290" },
+                    { "load_range": [71, 80], "altitude": "FL310" },
+                    { "load_range": [61, 70], "altitude": "FL330" },
+                    { "load_range": [41, 60], "altitude": "FL350" },
+                    { "load_range": [31, 40], "altitude": "FL370" },
+                    { "load_range": [11, 30], "altitude": "FL390" },
+                    { "load_range": [0, 10], "altitude": "FL410" }
+                ]
+            },
+            "takeoff_data": [
+                { "load_range": [0, 27], "flaps": "1+F", "n1": "85% - 89%", "vr": 125, "va": 130 },
+                { "load_range": [28, 34], "flaps": "1+F", "n1": "86% - 89%", "vr": 131, "va": 136 },
+                { "load_range": [35, 44], "flaps": "1+F", "n1": "87% - 90%", "vr": 138, "va": 143 },
+                { "load_range": [45, 54], "flaps": "2", "n1": "88% - 91%", "vr": 145, "va": 150 },
+                { "load_range": [55, 64], "flaps": "2", "n1": "90% - 92%", "vr": 148, "va": 153 },
+                { "load_range": [65, 72], "flaps": "2", "n1": "91% - 94%", "vr": 149, "va": 154 },
+                { "load_range": [73, 84], "flaps": "2", "n1": "92% - 94%", "vr": 150, "va": 155 },
+                { "load_range": [85, 94], "flaps": "2", "n1": "94% - 96%", "vr": 151, "va": 156 },
+                { "load_range": [95, 100], "flaps": "2", "n1": "96% - 97%", "vr": 151, "va": 156 }
+            ],
+            "landing_data": [
+                { "load_range": [0, 27], "flaps": "Full", "vapp": 140, "vflare": 135 },
+                { "load_range": [28, 34], "flaps": "Full", "vapp": 141, "vflare": 136 },
+                { "load_range": [35, 44], "flaps": "Full", "vapp": 143, "vflare": 137 },
+                { "load_range": [45, 49], "flaps": "Full", "vapp": 145, "vflare": 140 }
+            ],
+            "speed_profile": {
+                "initial_speed": "250",
+                "below_10k": "250",
+                "above_10k": "300",
+                "mach_transition_alt": "FL280",
+                "mach": "0.82"
+            },
+            "climb_vs_profile": {
+                "0_5000": "2000",
+                "5000_15000": "1500",
+                "15000_24000": "1200",
+                "24000_cruise": "1000"
+            },
+            "descent_speed_profile": {
+                "cruise_to_fl280": "M 0.82",
+                "fl280_to_fl100": "300 knots",
+                "fl100_to_ground": "&lt;250 knots"
             }
         }
     }

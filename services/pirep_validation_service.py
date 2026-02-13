@@ -85,6 +85,7 @@ class PirepValidationService:
 
     async def find_pirep_by_callsign_flight_and_route(self, callsign: str, flight_number: str, departure: str, arrival: str) -> Optional[Dict]:
         """Find PIREP by callsign, flight number, and route with validation."""
+        logger.info(f"[DEBUG] Searching PIREP (Route): Call={callsign}, Flt={flight_number}, Dep={departure}, Arr={arrival}")
         if not all([callsign, flight_number, departure, arrival]):
             logger.warning("Invalid search parameters provided")
             return None
@@ -94,21 +95,25 @@ class PirepValidationService:
             
             pilot_info = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
             if not pilot_info:
-                logger.info(f"Pilot not found for callsign: {callsign}")
+                logger.warning(f"[DEBUG] Pilot not found for callsign: {callsign}")
                 return None
                 
             pilot_id = pilot_info['id']
             pending_pireps = await self.bot.pireps_model.get_pending_pireps()
+            logger.info(f"[DEBUG] Found {len(pending_pireps)} pending PIREPs in DB")
             
             for pirep in pending_pireps:
+                if pirep['pilotid'] == pilot_id:
+                     logger.info(f"[DEBUG] Checking candidate PIREP {pirep['pirep_id']}: Flt={pirep.get('flightnum')} Dep={pirep.get('departure')} Arr={pirep.get('arrival')}")
+
                 if (pirep['pilotid'] == pilot_id and 
                     str(pirep.get('flightnum', '')) == flight_number and
                     pirep.get('departure', '') == departure and
                     pirep.get('arrival', '') == arrival):
-                    logger.info(f"Found PIREP {pirep['pirep_id']} for {callsign}")
+                    logger.info(f"[DEBUG] Found PIREP {pirep['pirep_id']} for {callsign}")
                     return pirep
             
-            logger.info(f"No matching PIREP found for {callsign} {flight_number} {departure}-{arrival}")
+            logger.info(f"[DEBUG] No matching PIREP found for {callsign} {flight_number} {departure}-{arrival}")
             return None
             
         except Exception as e:
@@ -117,11 +122,13 @@ class PirepValidationService:
 
     async def find_pirep_by_callsign_and_flight(self, callsign: str, flight_number: str) -> Optional[Dict]:
         """Find PIREP by callsign and flight number."""
+        logger.info(f"[DEBUG] Searching PIREP (Simple): Call={callsign}, Flt={flight_number}")
         import asyncio
         await asyncio.sleep(2)  # DB sync delay
         
         pilot_info = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
         if not pilot_info:
+            logger.warning(f"[DEBUG] Pilot not found for callsign: {callsign}")
             return None
             
         pilot_id = pilot_info['id']
@@ -129,8 +136,10 @@ class PirepValidationService:
         
         for pirep in pending_pireps:
             if pirep['pilotid'] == pilot_id and str(pirep.get('flightnum', '')) == flight_number:
+                logger.info(f"[DEBUG] Found PIREP {pirep['pirep_id']} for {callsign}")
                 return pirep
         
+        logger.info(f"[DEBUG] No matching PIREP found for {callsign} {flight_number}")
         return None
 
     async def resolve_livery_name(self, aircraft_id: str, livery_id: str) -> str:
@@ -185,6 +194,7 @@ class PirepValidationService:
 
     async def validate_pirep(self, pirep: Dict) -> discord.Embed:
         """Main validation logic - returns Discord embed with results."""
+        logger.info(f"[DEBUG] Validating PIREP ID: {pirep.get('pirep_id')}")
         pilot_info = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
         pilot_display = pirep['pilot_name']
         if pilot_info:
@@ -196,6 +206,7 @@ class PirepValidationService:
         ifuserid = await self.resolve_ifuserid(pirep)
         
         if not ifuserid:
+            logger.warning(f"[DEBUG] Could not resolve IF User ID for PIREP {pirep.get('pirep_id')}")
             return discord.Embed(
                 title=f"# {pirep['departure']} - {pirep['arrival']} #",
                 description=f"**Flight Time:** {pirep['formatted_flighttime']}\\n**Pilot:** {pirep['pilot_name']}",
@@ -209,6 +220,7 @@ class PirepValidationService:
             user_flights_data = None
         
         if not user_flights_data or not user_flights_data.get('result'):
+            logger.warning(f"[DEBUG] No flight data returned from API for user {ifuserid}")
             return discord.Embed(
                 title=f"# {pirep['departure']} - {pirep['arrival']} #",
                 description=f"**Flight Time:** {pirep['formatted_flighttime']}\\n**Pilot:** {pirep['pilot_name']}",
@@ -233,6 +245,8 @@ class PirepValidationService:
                 except Exception as e:
                     logger.debug(f"Error parsing flight date: {e}")
                     continue
+        
+        logger.info(f"[DEBUG] Matching flight found: {matching_flight is not None}")
 
         try:
             route_valid = await self.check_route_database(pirep['departure'], pirep['arrival'], pirep.get('flightnum'), pirep.get('pilotid'))
@@ -473,6 +487,7 @@ class PirepValidationService:
     
     async def get_flight_history(self, pirep) -> List[discord.Embed]:
         """Get flight history for the pilot - returns list of embeds."""
+        logger.info(f"[DEBUG] Fetching flight history for PIREP {pirep.get('pirep_id')}")
         ifuserid = await self.resolve_ifuserid(pirep)
         
         if not ifuserid:
@@ -485,7 +500,7 @@ class PirepValidationService:
         try:
             user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
         except Exception as e:
-            print(f"Error getting flight history: {e}")
+            logger.error(f"[DEBUG] API Error getting flight history: {e}")
             return [discord.Embed(
                 title="⚠️ Flight History Unavailable",
                 description="Could not fetch flight data from API.",
@@ -493,6 +508,7 @@ class PirepValidationService:
             )]
         
         if not user_flights_data or not user_flights_data.get('result'):
+            logger.warning("[DEBUG] No result in user_flights_data")
             return [discord.Embed(
                 title="⚠️ Flight History Unavailable",
                 description="Could not fetch flight data from API.",
@@ -501,7 +517,19 @@ class PirepValidationService:
         
         result_data = user_flights_data['result']
         user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
-        expert_flights = [f for f in user_flights if isinstance(f, dict) and f.get('server', '').lower() == 'expert']
+        
+        logger.info(f"[DEBUG] Processing {len(user_flights)} flights from API")
+        
+        expert_flights = []
+        for f in user_flights:
+            if not isinstance(f, dict):
+                continue
+            try:
+                # Safe check for server
+                if str(f.get('server') or '').lower() == 'expert':
+                    expert_flights.append(f)
+            except Exception as e:
+                logger.error(f"[DEBUG] Error processing flight record: {f} - Error: {e}")
         
         pirep_date = pirep['date'] if hasattr(pirep['date'], 'date') else datetime.combine(pirep['date'], datetime.min.time())
         
@@ -519,7 +547,7 @@ class PirepValidationService:
                 else:
                     future_flights.append((flight, flight_date))
             except Exception as e:
-                print(f"Error parsing flight date in history: {e}")
+                logger.error(f"[DEBUG] Error parsing flight date in history: {e}")
                 continue
         
         past_flights.sort(key=lambda x: x[1], reverse=True)
@@ -543,7 +571,7 @@ class PirepValidationService:
                 aircraft_name = self.bot.aircraft_name_map.get(f.get('aircraftId'), "Unknown Aircraft")
                 livery_name = await self.resolve_livery_name(f.get('aircraftId'), f.get('liveryId'))
                 landings = f.get('landingCount', 0) if f.get('landingCount') is not None else 0
-                past_text.append(f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 **{f.get('callsign', 'N/A')}** • 🛬 {landings}\n   ✈️ {aircraft_name} • 🎨 {livery_name}")
+                past_text.append(f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int((f.get('totalTime') or 0) * 60))})\n   📡 **{f.get('callsign', 'N/A')}** • 🛬 {landings}\n   ✈️ {aircraft_name} • 🎨 {livery_name}")
             
             past_embed = discord.Embed(
                 title="⏪ Past Flights (Last 3 Days)",
@@ -574,7 +602,7 @@ class PirepValidationService:
                 aircraft_name = self.bot.aircraft_name_map.get(f.get('aircraftId'), "Unknown Aircraft")
                 livery_name = await self.resolve_livery_name(f.get('aircraftId'), f.get('liveryId'))
                 landings = f.get('landingCount', 0) if f.get('landingCount') is not None else 0
-                future_text.append(f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int(f.get('totalTime', 0) * 60))})\n   📡 **{f.get('callsign', 'N/A')}** • 🛬 {landings}\n   ✈️ {aircraft_name} • 🎨 {livery_name}")
+                future_text.append(f"`{fd.strftime('%d %b %H:%M')}` **{f.get('originAirport', 'N/A')}** → **{f.get('destinationAirport', 'N/A')}** ({format_flight_time(int((f.get('totalTime') or 0) * 60))})\n   📡 **{f.get('callsign', 'N/A')}** • 🛬 {landings}\n   ✈️ {aircraft_name} • 🎨 {livery_name}")
             
             future_embed = discord.Embed(
                 title="⏩ Future Flights (After Submission)",
