@@ -1,4 +1,4 @@
-import os
+''' import os
 import logging
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -63,4 +63,4 @@ class APIManager:
             return "Error: Unable to reach AI control tower."
 
 # Create a single instance to import in your Cogs
-ai_manager = APIManager()
+ai_manager = APIManager() ###'''
