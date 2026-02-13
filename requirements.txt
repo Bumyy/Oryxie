@@ -8,8 +8,9 @@ haversine
 google-generativeai
 fpdf2
 PyPDF2
-# Pillow
-# matplotlib
-# cartopy
-# airportsdata
-# scipy
+openai
+Pillow
+matplotlib
+cartopy
+airportsdata
+scipy

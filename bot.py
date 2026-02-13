@@ -16,7 +16,11 @@ from database.flight_data import FlightData
 from database.shop_model import ShopModel
 from database.mission_module import MissionDB
 from api.manager import InfiniteFlightAPIManager
-from services.ai_service import AIService
+try:
+    from services.ai_service import AIService
+except ImportError:
+    print("Warning: 'openai' module not found. AI features will be disabled.")
+    AIService = None
 from services.flight_generation_service import FlightService
 from services.pdf_service import PDFService
 from services.route_map_service import RouteMapService
@@ -74,7 +78,7 @@ class MyBot(commands.Bot):
         self.flightdata = FlightData()
         
         # --- Initialize Services ---
-        self.ai_service = AIService()
+        self.ai_service = AIService() if AIService else None
         self.flight_service = FlightService(self.flightdata)
         self.pdf_service = PDFService()
         self.route_map_service = RouteMapService()
