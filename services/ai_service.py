@@ -1,7 +1,6 @@
 import logging
 import json
 import random
-from api.oa_manager import ai_manager
 
 logger = logging.getLogger('oryxie')
 
@@ -105,44 +104,6 @@ Format: [Client] ||| [Purpose] ||| [Manifest]
         return await self._call_ai_api(prompt, "executive", {}, passengers, cargo)
 
     async def _call_ai_api(self, prompt, context_type, extra_data, passengers, cargo):
-        try:
-            # Call OpenRouter via APIManager
-            response_text = await ai_manager.get_response(prompt)
-            
-            parts = []
-            if "|||" in response_text:
-                parts = response_text.split("|||")
-                
-                # Handle incomplete responses by padding with fallback content
-                if len(parts) == 2:
-                    if context_type == "amiri":
-                        parts.append(f"Delegation of {passengers} officials with {cargo}kg of diplomatic materials and equipment.")
-                    else:
-                        parts.append(f"Business delegation of {passengers} passengers with {cargo}kg of equipment and documents.")
-                
-                if len(parts) >= 3:
-                    if context_type == "amiri":
-                        return {
-                            "dignitary": extra_data.get("dignitary"),
-                            "dignitary_intro": parts[0].strip(),
-                            "mission_briefing": parts[1].strip(),
-                            "manifest_details": parts[2].strip(),
-                            "mission_type": "Royal Mission" if extra_data.get("is_royal") else "Official Mission"
-                        }
-                    else:
-                        return {
-                            "client": "Private Client",
-                            "client_intro": parts[0].strip(),
-                            "mission_briefing": parts[1].strip(),
-                            "manifest_details": parts[2].strip(),
-                            "purpose": "Executive Charter"
-                        }
-            
-            logger.warning("AI response does not contain ||| separators")
-            
-        except Exception as e:
-            logger.error(f"AI Service Error: {e}")
-        
         return await self._get_fallback(context_type, passengers, cargo, extra_data)
 
     async def _get_fallback(self, flight_type, passengers, cargo, extra_data=None):
