@@ -22,52 +22,59 @@ class PirepRetryView(discord.ui.View):
         self.departure = departure
         self.arrival = arrival
     
-    async def _restore_state(self, interaction: discord.Interaction):
-        """Attempt to restore state from message content if lost (e.g. restart)."""
-        if self.callsign and self.flight_num:
-            return
-
-        logger.warning(f"[DEBUG] State missing in PirepRetryView (Callsign: '{self.callsign}'). Attempting restoration from message.")
+    def _get_state(self, interaction: discord.Interaction):
+        """Extract state from interaction message, falling back to instance attributes."""
+        # Start with instance values (valid for fresh views, empty for persistent/dummy views)
+        callsign, flight_num, dep, arr = self.callsign, self.flight_num, self.departure, self.arrival
+        
+        logger.info(f"[DEBUG-STATE] Initial instance state: Call='{callsign}', Flt='{flight_num}', Dep='{dep}', Arr='{arr}'")
         
         try:
             # 1. Try Content (from on_message failure text)
             content = interaction.message.content
             if content:
+                logger.info(f"[DEBUG-STATE] Attempting to parse message content: '{content}'")
                 # Pattern: Callsign: `QRV123` | Flight: `123` | Route: `OTHH - EGLL`
                 c_match = re.search(r"Callsign: `(.*?)`", content)
                 f_match = re.search(r"Flight: `(.*?)`", content)
                 r_match = re.search(r"Route: `(.*?) - (.*?)`", content)
                 
-                if c_match: self.callsign = c_match.group(1)
-                if f_match: self.flight_num = f_match.group(1)
+                if c_match: 
+                    callsign = c_match.group(1)
+                    logger.info(f"[DEBUG-STATE] Found Callsign in content: {callsign}")
+                if f_match: 
+                    flight_num = f_match.group(1)
+                    logger.info(f"[DEBUG-STATE] Found FlightNum in content: {flight_num}")
                 if r_match:
-                    self.departure = r_match.group(1)
-                    self.arrival = r_match.group(2)
+                    dep = r_match.group(1)
+                    arr = r_match.group(2)
+                    logger.info(f"[DEBUG-STATE] Found Route in content: {dep} -> {arr}")
+            else:
+                logger.info("[DEBUG-STATE] Message content is empty.")
             
             # 2. Try Embed (from previous validation attempt)
-            if (not self.callsign or not self.flight_num) and interaction.message.embeds:
+            if (not callsign or not flight_num) and interaction.message.embeds:
+                logger.info("[DEBUG-STATE] Missing callsign/flight, attempting to parse embed.")
                 embed = interaction.message.embeds[0]
                 # Try route from title "# OTHH - EGLL #"
                 if embed.title:
+                    logger.info(f"[DEBUG-STATE] Embed Title: '{embed.title}'")
                     r_match = re.search(r"# (.*?) - (.*?) #", embed.title)
                     if r_match:
-                        self.departure = r_match.group(1).strip()
-                        self.arrival = r_match.group(2).strip()
-                
-                # Try flight/callsign from description if available, or rely on what we have
-                # (Parsing complex embeds is harder, but usually content covers the retry case)
-            
-            logger.info(f"[DEBUG] Restored Retry View State: Call='{self.callsign}', Flt='{self.flight_num}', Dep='{self.departure}', Arr='{self.arrival}'")
-            if not self.callsign or not self.flight_num:
-                logger.error(f"[DEBUG] Failed to restore state from message: {content[:100]}...")
-            
+                        dep = r_match.group(1).strip()
+                        arr = r_match.group(2).strip()
+                        logger.info(f"[DEBUG-STATE] Found Route in embed title: {dep} -> {arr}")
+
         except Exception as e:
-            logger.error(f"[DEBUG] Error restoring state in PirepRetryView: {e}")
+            logger.error(f"[DEBUG-STATE] Error restoring state in PirepRetryView: {e}", exc_info=True)
+            
+        logger.info(f"[DEBUG-STATE] Final Resolved State: Call='{callsign}', Flt='{flight_num}', Dep='{dep}', Arr='{arr}'")
+        return callsign, flight_num, dep, arr
 
     @discord.ui.button(label="🔄 Retry Validation", style=discord.ButtonStyle.primary, custom_id="pirep_retry")
     async def retry_validation(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._restore_state(interaction)
-        logger.info(f"[DEBUG] Retry Validation Clicked. User: {interaction.user.id}. State: Call={self.callsign}, Flt={self.flight_num}")
+        callsign, flight_num, dep, arr = self._get_state(interaction)
+        logger.info(f"[DEBUG-ACTION] Retry Validation Clicked. User: {interaction.user.id}. State: Call={callsign}, Flt={flight_num}")
 
         if not any("staff" in role.name.lower() for role in interaction.user.roles):
             return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
@@ -76,15 +83,19 @@ class PirepRetryView(discord.ui.View):
         
         validation_service = PirepValidationService(interaction.client)
         
-        if self.departure and self.arrival:
-            target_pirep = await validation_service.find_pirep_by_callsign_flight_and_route(self.callsign, self.flight_num, self.departure, self.arrival)
+        target_pirep = None
+        if dep and arr:
+            logger.info(f"[DEBUG-DB] Searching PIREP by Call='{callsign}', Flt='{flight_num}', Route='{dep}-{arr}'")
+            target_pirep = await validation_service.find_pirep_by_callsign_flight_and_route(callsign, flight_num, dep, arr)
         else:
-            target_pirep = await validation_service.find_pirep_by_callsign_and_flight(self.callsign, self.flight_num)
+            logger.info(f"[DEBUG-DB] Searching PIREP by Call='{callsign}', Flt='{flight_num}' (No Route)")
+            target_pirep = await validation_service.find_pirep_by_callsign_and_flight(callsign, flight_num)
         
         if not target_pirep:
-            logger.warning(f"[DEBUG] Retry failed: PIREP not found for {self.callsign} {self.flight_num}")
+            logger.warning(f"[DEBUG-DB] Retry failed: PIREP not found for {callsign} {flight_num}")
             return await interaction.followup.send("⚠️ PIREP still not found in database. Please wait longer or check manually.", ephemeral=True)
         
+        logger.info(f"[DEBUG-DB] PIREP Found! ID: {target_pirep.get('pirep_id')}")
         try:
             report_embed = await validation_service.validate_pirep(target_pirep)
             
@@ -95,8 +106,8 @@ class PirepRetryView(discord.ui.View):
                 async for message in interaction.channel.parent.history(limit=50):
                     if (message.embeds and 
                         "New PIREP Filed" in message.embeds[0].title and
-                        self.callsign in message.embeds[0].description and
-                        self.flight_num in message.embeds[0].description):
+                        callsign in message.embeds[0].description and
+                        flight_num in message.embeds[0].description):
                         webhook_message_id = message.id
                         break
             except Exception as e:
@@ -105,11 +116,11 @@ class PirepRetryView(discord.ui.View):
             # Check if validation failed to find a match (for retry button)
             if "MATCH NOT FOUND" in str(report_embed.fields[0].name if report_embed.fields else ""):
                 # Still no match, show retry again
-                retry_view = PirepRetryView(self.callsign, self.flight_num, self.departure, self.arrival)
+                retry_view = PirepRetryView(callsign, flight_num, dep, arr)
                 await interaction.followup.send(embed=report_embed, view=retry_view)
             else:
                 # Success! Show thread view with correct webhook message ID
-                view = PirepThreadView(target_pirep['pirep_id'], webhook_message_id or 0, self.callsign, self.flight_num, self.departure, self.arrival)
+                view = PirepThreadView(target_pirep['pirep_id'], webhook_message_id or 0, callsign, flight_num, dep, arr)
                 await interaction.followup.send(embed=report_embed, view=view)
         except Exception as e:
             await interaction.followup.send(f"❌ **Error during validation:** {str(e)}", ephemeral=True)
@@ -124,32 +135,40 @@ class PirepThreadView(discord.ui.View):
         self.departure = departure
         self.arrival = arrival
     
-    async def _restore_state(self, interaction: discord.Interaction):
-        """Restore PIREP ID from embed footer if missing."""
-        if self.pirep_id != 0:
-            return
-
-        logger.warning("[DEBUG] State missing in PirepThreadView (ID=0). Attempting restoration.")
-        try:
-            if interaction.message.embeds:
-                embed = interaction.message.embeds[0]
-                if embed.footer and embed.footer.text:
-                    id_match = re.search(r"PIREP ID: (\d+)", embed.footer.text)
-                    if id_match:
-                        self.pirep_id = int(id_match.group(1))
-                        logger.info(f"[DEBUG] Restored PIREP ID: {self.pirep_id}")
-        except Exception as e:
-            logger.error(f"[DEBUG] Error restoring state in PirepThreadView: {e}")
+    def _get_pirep_id(self, interaction: discord.Interaction) -> int:
+        """Extract PIREP ID from embed footer, falling back to instance attribute."""
+        pirep_id = self.pirep_id
+        logger.info(f"[DEBUG-THREAD] Initial instance PIREP ID: {pirep_id}")
+        
+        if pirep_id == 0:
+            logger.info("[DEBUG-THREAD] PIREP ID is 0 (State Lost). Attempting to restore from embed footer.")
+            try:
+                if interaction.message.embeds:
+                    embed = interaction.message.embeds[0]
+                    if embed.footer and embed.footer.text:
+                        logger.info(f"[DEBUG-THREAD] Found footer text: '{embed.footer.text}'")
+                        id_match = re.search(r"PIREP ID: (\d+)", embed.footer.text)
+                        if id_match:
+                            pirep_id = int(id_match.group(1))
+                            logger.info(f"[DEBUG-THREAD] Restored PIREP ID: {pirep_id}")
+                        else:
+                            logger.warning("[DEBUG-THREAD] Regex failed to find PIREP ID in footer.")
+                    else:
+                        logger.warning("[DEBUG-THREAD] Embed has no footer text.")
+            except Exception as e:
+                logger.error(f"[DEBUG-THREAD] Error restoring state in PirepThreadView: {e}", exc_info=True)
+        
+        return pirep_id
 
     def _check_staff_role(self, user) -> bool:
         """Check if user has staff role."""
         return any("staff" in role.name.lower() for role in user.roles)
     
-    async def _get_pirep(self, interaction):
+    async def _get_pirep(self, interaction, pirep_id: int):
         """Get PIREP using multiple methods."""
         # Try by ID first
-        logger.info(f"[DEBUG] Getting PIREP for ThreadView. ID: {self.pirep_id}")
-        pirep = await interaction.client.pireps_model.get_pirep_by_id(self.pirep_id)
+        logger.info(f"[DEBUG] Getting PIREP for ThreadView. ID: {pirep_id}")
+        pirep = await interaction.client.pireps_model.get_pirep_by_id(pirep_id)
         if pirep:
             return pirep
         
@@ -161,17 +180,18 @@ class PirepThreadView(discord.ui.View):
             else:
                 return await validation_service.find_pirep_by_callsign_and_flight(self.callsign, self.flight_num)
         
+        logger.warning(f"[DEBUG] _get_pirep failed to find PIREP. ID: {pirep_id}, Call: {self.callsign}, Flt: {self.flight_num}")
         return None
     
     @discord.ui.button(label="🐛 Debug", style=discord.ButtonStyle.secondary, custom_id="pirep_debug")
     async def debug_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._restore_state(interaction)
+        pirep_id = self._get_pirep_id(interaction)
         if not self._check_staff_role(interaction.user):
             return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
         
         await interaction.response.defer(ephemeral=True)
         
-        pirep = await self._get_pirep(interaction)
+        pirep = await self._get_pirep(interaction, pirep_id)
         if pirep:
             validator_service = PirepValidationService(interaction.client)
             debug_messages = await validator_service.get_debug_info(pirep)
@@ -182,14 +202,14 @@ class PirepThreadView(discord.ui.View):
     
     @discord.ui.button(label="📅 Flight History", style=discord.ButtonStyle.secondary, custom_id="pirep_history")
     async def history_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._restore_state(interaction)
+        pirep_id = self._get_pirep_id(interaction)
         if not self._check_staff_role(interaction.user):
             return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
         
         await interaction.response.defer(ephemeral=True)
         
         try:
-            pirep = await self._get_pirep(interaction)
+            pirep = await self._get_pirep(interaction, pirep_id)
             if pirep:
                 validator_service = PirepValidationService(interaction.client)
                 history_embeds = await validator_service.get_flight_history(pirep)
@@ -203,7 +223,7 @@ class PirepThreadView(discord.ui.View):
     
     @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success, custom_id="pirep_approve")
     async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._restore_state(interaction)
+        # No need for ID here as we just edit the message and react
         if not self._check_staff_role(interaction.user):
             return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
         

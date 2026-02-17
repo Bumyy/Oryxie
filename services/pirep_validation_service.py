@@ -490,6 +490,17 @@ class PirepValidationService:
         logger.info(f"[DEBUG] Fetching flight history for PIREP {pirep.get('pirep_id')}")
         ifuserid = await self.resolve_ifuserid(pirep)
         
+        # Fallback: If not in PIREP object, fetch from Pilot DB
+        if not ifuserid and 'pilotid' in pirep:
+            try:
+                pilot_data = await self.bot.pilots_model.get_pilot_by_id(pirep['pilotid'])
+                if pilot_data:
+                    logger.info(f"[DEBUG] Fetched pilot data for history: {pilot_data.get('ifuserid')}")
+                    pirep.update(pilot_data)
+                    ifuserid = await self.resolve_ifuserid(pirep)
+            except Exception as e:
+                logger.error(f"[DEBUG] Error fetching pilot data for history: {e}")
+
         if not ifuserid:
             return [discord.Embed(
                 title="❌ Flight History Unavailable",
@@ -526,7 +537,8 @@ class PirepValidationService:
                 continue
             try:
                 # Safe check for server
-                if str(f.get('server') or '').lower() == 'expert':
+                server_name = str(f.get('server') or '').lower()
+                if 'expert' in server_name:
                     expert_flights.append(f)
             except Exception as e:
                 logger.error(f"[DEBUG] Error processing flight record: {f} - Error: {e}")

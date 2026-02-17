@@ -133,7 +133,7 @@ class MyBot(commands.Bot):
           # await self.load_extension('cogs.gift_box')
           #   await self.load_extension('cogs.activity_check')
             await self.load_extension('cogs.rank_management')
-         #   await self.load_extension('cogs.dossier')
+           # await self.load_extension('cogs.dossier')
             await self.load_extension('cogs.checklist_cog')
             await self.load_extension('cogs.flight_board_cog')
             
