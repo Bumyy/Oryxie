@@ -281,3 +281,35 @@ class PilotsModel:
             return 'HTML template file not found'
         except Exception as e:
             return f'Error reading HTML template: {e}'
+
+'''
+=== DATABASE STRUCTURE: pilots ===
+
+COLUMNS:
+  Name                 | Type          | Null | Key | Default
+  -----------------------------------------------------------
+  id                   | int           | NO | PRI | None
+  callsign             | varchar(120)  | NO |  | None
+  name                 | text          | NO |  | None
+  ifc                  | text          | NO |  | None
+  ifuserid             | varchar(36)   | YES |  | None
+  discordid            | varchar(30)   | YES |  | None
+  email                | [REDACTED]     | ...
+  password             | [REDACTED]     | ...
+  transhours           | int           | NO |  | 0
+  transflights         | int           | NO |  | 0
+  violand              | double        | YES |  | None
+  grade                | int           | YES |  | None
+  notes                | varchar(1200) | NO |  | 
+  status               | int           | NO |  | 0
+  joined               | datetime      | NO |  | CURRENT_TIMESTAMP
+  vanet_id             | text          | YES |  | None
+  vanet_accesstoken    | text          | YES |  | None
+  vanet_refreshtoken   | text          | YES |  | None
+  vanet_expiry         | datetime      | YES |  | None
+  vanet_memberid       | text          | YES |  | None
+  cargo_coins          | int           | NO |  | 0
+  flying_groupid       | int           | NO |  | 0
+  flying_group_airport | varchar(4)    | YES |  | OTHH
+
+'''

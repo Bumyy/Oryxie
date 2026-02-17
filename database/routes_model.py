@@ -227,3 +227,34 @@ class RoutesModel:
         
         results = await self.db.fetch_all(query)
         return [row['liveryname'] for row in results if row['liveryname'].strip()]
+
+'''
+=== DATABASE STRUCTURE: routes ===
+
+COLUMNS:
+  Name       | Type       | Null | Key | Default
+  ----------------------------------------------
+  id         | int        | NO | PRI | None
+  fltnum     | text       | YES |  | None
+  dep        | varchar(4) | NO |  | None
+  arr        | varchar(4) | NO |  | None
+  duration   | int        | NO |  | None
+  notes      | text       | YES |  | None
+  multiplier | float      | YES |  | 1
+  flown      | tinyint(1) | NO |  | 0
+  featured   | tinyint(1) | NO |  | 0
+  codeshare  | int        | NO |  | 0
+
+EXAMPLES (First 5 rows):
+  Row 1:
+    id: 1
+    fltnum: QR1,QR3,QR5,QR7,QR11,QR15,QR105,QR107
+    dep: OTHH
+    arr: EGLL
+    duration: 25200
+    notes: 
+    multiplier: 1.2
+    flown: 1
+    featured: 0
+    codeshare: 0
+   '''
