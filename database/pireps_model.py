@@ -126,9 +126,9 @@ class PirepsModel:
                 p.fuelused,
                 p.date,
                 p.multi,
-                p.rejected_by,
-                p.rejection_reason,
-                p.rejection_date,
+                -- p.rejected_by, -- NOTE: These columns are missing in the database schema.
+                -- p.rejection_reason,
+                -- p.rejection_date,
                 pi.name AS pilot_name,
                 pi.ifuserid,
                 pi.ifc,
@@ -141,9 +141,9 @@ class PirepsModel:
                 aircraft AS a ON p.aircraftid = a.id
             WHERE
                 p.status = %s
-                AND p.rejection_date >= DATE_SUB(NOW(), INTERVAL 10 DAY)
+                -- AND p.rejection_date >= DATE_SUB(NOW(), INTERVAL 10 DAY) -- Column missing
             ORDER BY
-                p.rejection_date DESC
+                p.date DESC -- Fallback to ordering by submission date
         """
         args = (2,)
         
@@ -176,9 +176,9 @@ class PirepsModel:
                 p.date,
                 p.multi,
                 p.status,
-                p.rejected_by,
-                p.rejection_reason,
-                p.rejection_date,
+                -- p.rejected_by, -- NOTE: These columns are missing in the database schema.
+                -- p.rejection_reason,
+                -- p.rejection_date,
                 pi.name AS pilot_name,
                 pi.ifuserid,
                 pi.ifc,
@@ -513,6 +513,36 @@ class PirepsModel:
         results = await self.db.fetch_all(query)
         return results if results else []
 
+    async def update_pirep_status(self, pirep_id: int, status: int, rejected_by: str = None, rejection_reason: str = None) -> int:
+        """
+        Updates the status of a PIREP.
+        
+        Args:
+            pirep_id: The ID of the PIREP to update.
+            status: The new status (0=pending, 1=accepted, 2=rejected).
+            rejected_by: The Discord ID of the user who rejected it.
+            rejection_reason: The reason for rejection.
+            
+        Returns:
+            The number of rows affected.
+        """
+        # Base query
+        query = "UPDATE pireps SET status = %s"
+        args = [status]
+        
+        # NOTE: The following columns are missing from your database schema.
+        # This logic is commented out to prevent errors. The `/reject_pirep` command will work,
+        # but rejection reasons will not be saved.
+        # To enable full rejection tracking, please run the `/audit action:Fix PIREP Schema` command.
+        # if status == 2 and rejected_by and rejection_reason:
+        #     query += ", rejected_by = %s, rejection_reason = %s, rejection_date = NOW()"
+        #     args.extend([rejected_by, rejection_reason])
+            
+        query += " WHERE id = %s"
+        args.append(pirep_id)
+        
+        return await self.db.execute(query, tuple(args))
+
     async def get_top_pilots_last_31_days(self) -> list[dict]:
         """
         Fetches the top 10 pilots with the most flight hours in the last 31 days.
@@ -537,3 +567,41 @@ class PirepsModel:
             LIMIT 10
         """
         return await self.db.fetch_all(query)
+
+'''
+=== DATABASE STRUCTURE: pireps ===
+
+COLUMNS:
+  Name              | Type       | Null | Key | Default
+  -----------------------------------------------------
+  id                | int        | NO | PRI | None
+  flightnum         | text       | YES |  | None
+  departure         | varchar(4) | NO |  | None
+  arrival           | varchar(4) | NO |  | None
+  flighttime        | int        | NO |  | None
+  pilotid           | int        | NO |  | None
+  date              | date       | NO |  | None
+  aircraftid        | int        | NO |  | None
+  fuelused          | int        | NO |  | None
+  multi             | text       | NO |  | None
+  status            | int        | YES |  | 0
+  acceptedid        | int        | NO |  | 0
+  challengeid       | int        | NO |  | 0
+  trackedaircraftid | int        | NO |  | 0
+
+EXAMPLE:
+  Row 1:
+    id: 3
+    flightnum: QR204
+    departure: LGAV
+    arrival: OTHH
+    flighttime: 12600
+    pilotid: 1
+    date: 2023-04-27
+    aircraftid: 6
+    fuelused: 7000
+    multi: None
+    status: 1
+    acceptedid: 0
+    challengeid: 0
+    trackedaircraftid: 0 '''
