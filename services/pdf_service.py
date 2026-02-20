@@ -9,10 +9,18 @@ class PDFService:
     def __init__(self):
         self.ai_service = AIService()
     
-    def _get_model_code(self):
-        model = getattr(self.ai_service, 'current_model', 'unknown')
-        if 'gemma-3-12b' in model:
-            return 'G312'
+    def _get_model_code(self, data: dict = None):
+        if data and 'ai_model' in data:
+            model = data['ai_model']
+            if 'gemini' in model.lower():
+                return 'GMN'
+            elif 'gpt' in model.lower():
+                return 'GPT'
+            elif 'claude' in model.lower():
+                return 'CLD'
+            elif 'llama' in model.lower():
+                return 'LLM'
+            return 'AI'
         return 'UNK'
     
     def generate_flight_pdf(self, flight_data: Union[FlightDetails, dict], flight_type: str, pilot_user, pilot_info: dict = None) -> Optional[bytes]:
@@ -194,12 +202,14 @@ class PDFService:
             pdf.ln(5)
             
             # Document metadata
-            model_code = self._get_model_code()
+            model_code = self._get_model_code(data)
             doc_id = f"QRV-{flight_type.upper()[:3]}-{model_code}-{datetime.now().strftime('%Y-%m')}-{data['flight_number'].replace('QRV', '')}"
             pdf.set_font('Arial', '', 8)
             pdf.set_text_color(80, 80, 80)
-            pdf.cell(0, 4, f'Document ID: {doc_id} | Version: 1.2 beta', 0, 1, 'C')
+            pdf.cell(0, 4, f'Document ID: {doc_id} | Version: 1.5 BETA', 0, 1, 'C')
             pdf.cell(0, 4, f'Generated: {datetime.now().strftime("%d %B %Y at %H:%M UTC")} | Oryxie Bot', 0, 1, 'C')
+            if data.get('ai_model'):
+                pdf.cell(0, 4, f"AI Model: {data['ai_model']}", 0, 1, 'C')
             
             pdf.ln(3)
             pdf.set_fill_color(240, 240, 240)

@@ -2,18 +2,21 @@
   "amiri": {
     "A319": {
       "name": "Airbus A319-100",
+      "livery": "Qatar Airways",
       "pax_range": [16, 32, 60],
       "cargo_kg_range": [2000, 3000, 4500],
       "range_nm": [1500, 2000, 3700]
     },
     "A346": {
       "name": "Airbus A340-600",
+      "livery": "Qatar Airways",
       "pax_range": [100, 140, 370],
       "cargo_kg_range": [10000, 20000, 35000],
       "range_nm": [2500, 6000, 7800]
     },
     "B748": {
-      "name": "Boeing 747-8 (BBJ)",
+      "name": "Boeing 747-8",
+      "livery": "BBJ",
       "pax_range": [100, 200, 400],
       "cargo_kg_range": [15000, 30000, 45000],
       "range_nm": [3000, 6500, 7370]
@@ -21,19 +24,22 @@
   },
   "executive": {
     "A318": {
-      "name": "Airbus A318 ACJ",
+      "name": "Airbus A318-100",
+      "livery": "ACJ Livery 2",
       "pax_range": [8, 20, 38],
       "cargo_kg_range": [2000, 3000, 3500],
       "range_nm": [800, 2800, 3100]
     },
     "B737": {
-      "name": "Boeing 737 BBJ",
+      "name": "Boeing 737-700",
+      "livery": "BBJ - Grey and black",
       "pax_range": [16, 40, 150],
       "cargo_kg_range": [1000, 5000, 15000],
       "range_nm": [1200, 2200, 3000]
     },
-    "C350": {
+    "CL35": {
       "name": "Challenger 350",
+      "livery": "Netjets Europe",
       "pax_range": [6, 8, 10],
       "cargo_kg_range": [200, 500, 1000],
       "range_nm": [1800, 2100, 3100]

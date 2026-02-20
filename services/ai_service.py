@@ -1,12 +1,13 @@
 import logging
 import json
 import random
+from api.oa_manager import ai_manager
 
 logger = logging.getLogger('oryxie')
 
 class AIService:
     def __init__(self):
-        pass
+        self.ai_manager = ai_manager
 
     async def generate_ai_scenario(self, aircraft_name, dep_data, dest_data, passengers, cargo, flight_type, deadline):
         if flight_type == "amiri":
@@ -104,7 +105,36 @@ Format: [Client] ||| [Purpose] ||| [Manifest]
         return await self._call_ai_api(prompt, "executive", {}, passengers, cargo)
 
     async def _call_ai_api(self, prompt, context_type, extra_data, passengers, cargo):
-        return await self._get_fallback(context_type, passengers, cargo, extra_data)
+        try:
+            response_text, model_used = await self.ai_manager.get_response(prompt)
+            logger.info(f"AI generated scenario using model: {model_used}")
+            
+            parts = response_text.split("|||")
+            if len(parts) < 3:
+                logger.warning(f"AI response incomplete, using fallback")
+                return await self._get_fallback(context_type, passengers, cargo, extra_data)
+            
+            if context_type == "amiri":
+                return {
+                    "dignitary": extra_data.get("dignitary", "Official"),
+                    "dignitary_intro": parts[0].strip(),
+                    "mission_briefing": parts[1].strip(),
+                    "manifest_details": parts[2].strip(),
+                    "mission_type": extra_data.get("scenario", "Official Mission"),
+                    "ai_model": model_used
+                }
+            else:
+                return {
+                    "client": "Executive Client",
+                    "client_intro": parts[0].strip(),
+                    "mission_briefing": parts[1].strip(),
+                    "manifest_details": parts[2].strip(),
+                    "purpose": "Executive Charter",
+                    "ai_model": model_used
+                }
+        except Exception as e:
+            logger.error(f"AI API call failed: {e}")
+            return await self._get_fallback(context_type, passengers, cargo, extra_data)
 
     async def _get_fallback(self, flight_type, passengers, cargo, extra_data=None):
         if flight_type == "amiri":
@@ -114,12 +144,14 @@ Format: [Client] ||| [Purpose] ||| [Manifest]
                 "dignitary_intro": f"His Excellency {dignitary}", 
                 "mission_briefing": "Meeting with senior government officials for diplomatic consultations to advance bilateral relations and strategic partnerships in key sectors. This high priority mission involves time-sensitive diplomatic objectives requiring immediate attention and coordination.",
                 "manifest_details": f"Delegation of {passengers} officials with {cargo}kg of diplomatic materials and equipment.",
-                "mission_type": "Official Mission"
+                "mission_type": "Official Mission",
+                "ai_model": "fallback"
             }
         return {
             "client": "VIP Charter", 
             "client_intro": "Executive Client, CEO requiring executive transportation services.", 
             "mission_briefing": "Priority business charter flight to meet with international partners for corporate travel requirements and strategic business discussions.",
             "manifest_details": f"Traveling with {passengers} passengers and {cargo}kg of business materials and equipment.",
-            "purpose": "Executive Charter"
+            "purpose": "Executive Charter",
+            "ai_model": "fallback"
         }
