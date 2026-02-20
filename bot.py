@@ -26,6 +26,7 @@ from services.pdf_service import PDFService
 from services.route_map_service import RouteMapService
 from services.checklist_pdf_service import ChecklistPDFService
 from services.simbrief_service import SimBriefService
+from services.flight_board_service import FlightBoardService
 
 load_dotenv()
 
@@ -58,6 +59,7 @@ class MyBot(commands.Bot):
         self.route_map_service: RouteMapService = None
         self.checklist_pdf_service: ChecklistPDFService = None
         self.simbrief_service: SimBriefService = None
+        self.flight_board_service: FlightBoardService = None
 
     async def setup_hook(self):
         """
@@ -84,6 +86,7 @@ class MyBot(commands.Bot):
         self.route_map_service = RouteMapService()
         self.checklist_pdf_service = ChecklistPDFService()
         self.simbrief_service = SimBriefService()
+        self.flight_board_service = FlightBoardService(self)
         print("DatabaseManager, FlightData, and Services instances created.")
         
         # --- Initialize API Manager (SAFE STARTUP) ---

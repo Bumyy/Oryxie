@@ -222,7 +222,7 @@ class FlightData:
             'A319': ('A319',),
             'B737': ('B737',),
             'A318': ('A318',),
-            'C350': ('C350', 'Challenger'),
+            'CL35': ('CL35', 'Challenger'),
         }
         for code, terms in search_map.items():
             if any(term in aircraft_name for term in terms):

@@ -17,6 +17,6 @@
   },
   "Oryx": {
     "amiri_aircraft": ["A319", "A346", "B748"],
-    "executive_aircraft": ["A318", "B737", "C350"]
+    "executive_aircraft": ["A318", "B737", "CL35"]
   }
 }

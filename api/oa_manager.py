@@ -1,4 +1,4 @@
-''' import os
+import os
 import logging
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -32,9 +32,10 @@ class APIManager:
         # No specific model names are hardcoded here.
         self.default_model = "openrouter/auto"
 
-    async def get_response(self, prompt: str, system_instruction: str = None) -> str:
+    async def get_response(self, prompt: str, system_instruction: str = None) -> tuple:
         """
         Asynchronously calls OpenRouter using the 'auto' model.
+        Returns: (reply_text, model_used)
         """
         messages = []
 
@@ -54,13 +55,14 @@ class APIManager:
                 messages=messages
             )
 
-            # Extract text
+            # Extract text and model used
             reply_text = response.choices[0].message.content
-            return reply_text
+            model_used = response.model
+            return reply_text, model_used
 
         except Exception as e:
             logger.error(f"⚠️ API Error: {e}")
-            return "Error: Unable to reach AI control tower."
+            return "Error: Unable to reach AI control tower.", "error"
 
 # Create a single instance to import in your Cogs
-ai_manager = APIManager() ###'''
+ai_manager = APIManager() 

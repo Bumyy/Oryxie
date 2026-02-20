@@ -15,65 +15,50 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 class PirepRetryView(discord.ui.View):
-    def __init__(self, callsign: str, flight_num: str, departure: str = None, arrival: str = None):
+    def __init__(self, callsign: str = None, flight_num: str = None, departure: str = None, arrival: str = None):
         super().__init__(timeout=None)
+        
+        # If this is the dummy persistent registration, do not add a button
+        if callsign is None and flight_num is None:
+            return
+
         self.callsign = callsign
         self.flight_num = flight_num
         self.departure = departure
         self.arrival = arrival
+        
+        # Encode state directly into the button custom_id
+        c = callsign or ""
+        f = flight_num or ""
+        d = departure or ""
+        a = arrival or ""
+        
+        button = discord.ui.Button(
+            label="🔄 Retry Validation",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"pirep_retry:{c}:{f}:{d}:{a}"
+        )
+        button.callback = self.retry_validation
+        self.add_item(button)
     
-    def _get_state(self, interaction: discord.Interaction):
-        """Extract state from interaction message, falling back to instance attributes."""
-        # Start with instance values (valid for fresh views, empty for persistent/dummy views)
-        callsign, flight_num, dep, arr = self.callsign, self.flight_num, self.departure, self.arrival
+    async def retry_validation(self, interaction: discord.Interaction):
+        # Extract state from custom_id
+        parts = interaction.data.get("custom_id", "").split(":")
         
-        logger.info(f"[DEBUG-STATE] Initial instance state: Call='{callsign}', Flt='{flight_num}', Dep='{dep}', Arr='{arr}'")
-        
-        try:
-            # 1. Try Content (from on_message failure text)
-            content = interaction.message.content
-            if content:
-                logger.info(f"[DEBUG-STATE] Attempting to parse message content: '{content}'")
-                # Pattern: Callsign: `QRV123` | Flight: `123` | Route: `OTHH - EGLL`
-                c_match = re.search(r"Callsign: `(.*?)`", content)
-                f_match = re.search(r"Flight: `(.*?)`", content)
-                r_match = re.search(r"Route: `(.*?) - (.*?)`", content)
-                
-                if c_match: 
-                    callsign = c_match.group(1)
-                    logger.info(f"[DEBUG-STATE] Found Callsign in content: {callsign}")
-                if f_match: 
-                    flight_num = f_match.group(1)
-                    logger.info(f"[DEBUG-STATE] Found FlightNum in content: {flight_num}")
-                if r_match:
-                    dep = r_match.group(1)
-                    arr = r_match.group(2)
-                    logger.info(f"[DEBUG-STATE] Found Route in content: {dep} -> {arr}")
-            else:
-                logger.info("[DEBUG-STATE] Message content is empty.")
-            
-            # 2. Try Embed (from previous validation attempt)
-            if (not callsign or not flight_num) and interaction.message.embeds:
-                logger.info("[DEBUG-STATE] Missing callsign/flight, attempting to parse embed.")
-                embed = interaction.message.embeds[0]
-                # Try route from title "# OTHH - EGLL #"
-                if embed.title:
-                    logger.info(f"[DEBUG-STATE] Embed Title: '{embed.title}'")
-                    r_match = re.search(r"# (.*?) - (.*?) #", embed.title)
-                    if r_match:
-                        dep = r_match.group(1).strip()
-                        arr = r_match.group(2).strip()
-                        logger.info(f"[DEBUG-STATE] Found Route in embed title: {dep} -> {arr}")
+        if len(parts) < 5:
+            await interaction.response.send_message("❌ Error parsing button state.", ephemeral=True)
+            return
 
-        except Exception as e:
-            logger.error(f"[DEBUG-STATE] Error restoring state in PirepRetryView: {e}", exc_info=True)
-            
-        logger.info(f"[DEBUG-STATE] Final Resolved State: Call='{callsign}', Flt='{flight_num}', Dep='{dep}', Arr='{arr}'")
-        return callsign, flight_num, dep, arr
+        _, callsign, flight_num, dep, arr = parts[:5]
 
-    @discord.ui.button(label="🔄 Retry Validation", style=discord.ButtonStyle.primary, custom_id="pirep_retry")
-    async def retry_validation(self, interaction: discord.Interaction, button: discord.ui.Button):
-        callsign, flight_num, dep, arr = self._get_state(interaction)
+        if not callsign or not flight_num:
+            await interaction.followup.send("⚠️ Missing retry state.", ephemeral=True)
+            return
+
+        # Convert empty strings back to None
+        if not dep: dep = None
+        if not arr: arr = None
+
         logger.info(f"[DEBUG-ACTION] Retry Validation Clicked. User: {interaction.user.id}. State: Call={callsign}, Flt={flight_num}")
 
         if not any("staff" in role.name.lower() for role in interaction.user.roles):
@@ -99,37 +84,22 @@ class PirepRetryView(discord.ui.View):
         try:
             report_embed = await validation_service.validate_pirep(target_pirep)
             
-            # Get the original webhook message ID from the thread's parent channel
-            webhook_message_id = None
-            try:
-                # Look for the original webhook message in the parent channel
-                async for message in interaction.channel.parent.history(limit=50):
-                    if (message.embeds and 
-                        "New PIREP Filed" in message.embeds[0].title and
-                        callsign in message.embeds[0].description and
-                        flight_num in message.embeds[0].description):
-                        webhook_message_id = message.id
-                        break
-            except Exception as e:
-                logger.error(f"Could not find webhook message: {e}")
-            
             # Check if validation failed to find a match (for retry button)
             if "MATCH NOT FOUND" in str(report_embed.fields[0].name if report_embed.fields else ""):
                 # Still no match, show retry again
                 retry_view = PirepRetryView(callsign, flight_num, dep, arr)
                 await interaction.followup.send(embed=report_embed, view=retry_view)
             else:
-                # Success! Show thread view with correct webhook message ID
-                view = PirepThreadView(target_pirep['pirep_id'], webhook_message_id or 0, callsign, flight_num, dep, arr)
+                # Success! Show thread view
+                view = PirepThreadView(target_pirep['pirep_id'], callsign, flight_num, dep, arr)
                 await interaction.followup.send(embed=report_embed, view=view)
         except Exception as e:
             await interaction.followup.send(f"❌ **Error during validation:** {str(e)}", ephemeral=True)
 
 class PirepThreadView(discord.ui.View):
-    def __init__(self, pirep_id: int, webhook_message_id: int, callsign: str = None, flight_num: str = None, departure: str = None, arrival: str = None):
+    def __init__(self, pirep_id: int, callsign: str = None, flight_num: str = None, departure: str = None, arrival: str = None):
         super().__init__(timeout=None)  # Must be None for persistent views
         self.pirep_id = pirep_id
-        self.webhook_message_id = webhook_message_id
         self.callsign = callsign
         self.flight_num = flight_num
         self.departure = departure
@@ -200,30 +170,8 @@ class PirepThreadView(discord.ui.View):
         else:
             await interaction.followup.send("PIREP not found.", ephemeral=True)
     
-    @discord.ui.button(label="📅 Flight History", style=discord.ButtonStyle.secondary, custom_id="pirep_history")
-    async def history_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pirep_id = self._get_pirep_id(interaction)
-        if not self._check_staff_role(interaction.user):
-            return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
-        
-        await interaction.response.defer(ephemeral=True)
-        
-        try:
-            pirep = await self._get_pirep(interaction, pirep_id)
-            if pirep:
-                validator_service = PirepValidationService(interaction.client)
-                history_embeds = await validator_service.get_flight_history(pirep)
-                for embed in history_embeds:
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.followup.send("PIREP not found.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"[DEBUG] Error in history_button: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
-    
     @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success, custom_id="pirep_approve")
     async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # No need for ID here as we just edit the message and react
         if not self._check_staff_role(interaction.user):
             return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
         
@@ -231,8 +179,10 @@ class PirepThreadView(discord.ui.View):
         
         # Add checkmark reaction to parent webhook message
         try:
-            webhook_message = await interaction.channel.parent.fetch_message(self.webhook_message_id)
-            await webhook_message.add_reaction("✅")
+            if isinstance(interaction.channel, discord.Thread):
+                # Thread ID is always the same as the starter message ID for threads created from messages
+                webhook_message = await interaction.channel.parent.fetch_message(interaction.channel.id)
+                await webhook_message.add_reaction("✅")
         except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"Could not add reaction to webhook message: {e}")
         
@@ -242,7 +192,7 @@ class PirepThreadView(discord.ui.View):
         # Disable the approve button
         button.disabled = True
         button.label = "✅ Approved"
-        await interaction.message.edit(view=self)
+        await interaction.message.edit(view=self) 
 
 class PirepPaginationView(discord.ui.View):
     def __init__(self, bot, pending_pireps, current_index=0, count_message=None, validation_service=None):
@@ -318,20 +268,6 @@ class PirepPaginationView(discord.ui.View):
         self.update_buttons()
         await interaction.message.edit(embed=embed, view=self)
     
-    @discord.ui.button(label="📅 Flight History", style=discord.ButtonStyle.success, row=1)
-    async def flight_history_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._check_staff_role(interaction.user):
-            return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
-        
-        await interaction.response.defer(ephemeral=True)
-        
-        try:
-            history_embeds = await self.validation_service.get_flight_history(self.pending_pireps[self.current_index])
-            for embed in history_embeds:
-                await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"Error getting flight history: {str(e)}", ephemeral=True)
-    
     @discord.ui.button(label="🐛 Debug", style=discord.ButtonStyle.danger, row=1)
     async def debug_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._check_staff_role(interaction.user):
@@ -343,6 +279,43 @@ class PirepPaginationView(discord.ui.View):
         
         for msg in debug_messages:
             await interaction.followup.send(msg, ephemeral=True)
+    
+    # @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success, row=1)
+    # async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    #     if not self._check_staff_role(interaction.user):
+    #         return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
+        
+    #     await interaction.response.defer()
+        
+    #     current_pirep = self.pending_pireps[self.current_index]
+    #     pirep_id = current_pirep['pirep_id']
+        
+    #     try:
+    #         await self.bot.pireps_model.update_pirep_status(pirep_id, 1)
+    #         await interaction.followup.send(f"✅ **PIREP {pirep_id} approved by {interaction.user.mention}**")
+            
+    #         self.pending_pireps.pop(self.current_index)
+            
+    #         if not self.pending_pireps:
+    #             await interaction.followup.send("✅ No more pending PIREPs!", ephemeral=True)
+    #             return
+            
+    #         if self.current_index >= len(self.pending_pireps):
+    #             self.current_index = len(self.pending_pireps) - 1
+            
+    #         if self.count_message:
+    #             try:
+    #                 await self.count_message.edit(content=f"📋 **{len(self.pending_pireps)} PIREPs pending validation**")
+    #             except:
+    #                 pass
+            
+    #         embed = await self.validation_service.validate_pirep(self.pending_pireps[self.current_index])
+    #         self.update_buttons()
+    #         await interaction.message.edit(embed=embed, view=self)
+            
+    #     except Exception as e:
+    #         logger.error(f"Error approving PIREP {pirep_id}: {e}")
+    #         await interaction.followup.send(f"❌ **Error:** {str(e)}", ephemeral=True)
 
 class PirepValidator(commands.Cog):
     def __init__(self, bot: 'MyBot'):
@@ -355,8 +328,8 @@ class PirepValidator(commands.Cog):
         
         # Add persistent views for button handling after bot restart
         try:
-            dummy_thread_view = PirepThreadView(0, 0, "", "", "", "")
-            dummy_retry_view = PirepRetryView("", "", "", "")
+            dummy_thread_view = PirepThreadView(0, "", "", "", "")
+            dummy_retry_view = PirepRetryView(None, None, None, None)
             self.bot.add_view(dummy_thread_view)
             self.bot.add_view(dummy_retry_view)
         except Exception as e:
@@ -402,7 +375,7 @@ class PirepValidator(commands.Cog):
             description = message.embeds[0].description
             pilot_match = re.search(r"Pilot: .* \((.+)\)", description)
             flight_match = re.search(r"Flight Number: (.+)", description)
-            route_match = re.search(r"Route: (.+?)[-–](.+)", description)  # Handle both - and – with optional spaces
+            route_match = re.search(r"Route: ([A-Z]{4})\s*[-–]\s*([A-Z]{4})", description)  # Handle with/without spaces
 
             if not pilot_match or not flight_match or not route_match:
                 logger.warning(f"Invalid webhook format in message {message.id}")
@@ -453,7 +426,7 @@ class PirepValidator(commands.Cog):
                 await thread.send(embed=report_embed, view=retry_view)
             else:
                 # Normal validation with thread buttons
-                view = PirepThreadView(target_pirep['pirep_id'], message.id, callsign_str, flight_num_str, departure_str, arrival_str)
+                view = PirepThreadView(target_pirep['pirep_id'], callsign_str, flight_num_str, departure_str, arrival_str)
                 await thread.send(embed=report_embed, view=view)
         except Exception as e:
             await thread.send(f"❌ **Error during validation:** {str(e)}")

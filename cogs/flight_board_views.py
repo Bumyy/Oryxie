@@ -167,8 +167,7 @@ class StatusSelectView(discord.ui.View):
         new_status = interaction.data['values'][0]
         self.flight_data['status'] = new_status
         
-        modal = FlightEditModal(self.flight_data)
-        embed = await modal.create_flight_embed(self.flight_data, interaction.client)
+        embed, _ = await interaction.client.flight_board_service.create_flight_embed(self.flight_data)
         view = FlightBoardView(self.flight_data)
         
         await self.original_message.edit(embed=embed, view=view)
@@ -203,11 +202,13 @@ class AircraftSelectView(discord.ui.View):
         self.flight_data['aircraft_name'] = aircraft_name
         self.flight_data['livery'] = selected_livery
         
-        modal = FlightEditModal(self.flight_data)
-        embed = await modal.create_flight_embed(self.flight_data, self.bot)
+        embed, thumbnail_file = await self.bot.flight_board_service.create_flight_embed(self.flight_data)
         view = FlightBoardView(self.flight_data)
         
         files = []
+        if thumbnail_file:
+            files.append(thumbnail_file)
+        
         if hasattr(self.bot, 'route_map_service'):
             try:
                 map_result = await self.bot.route_map_service.create_route_map(
@@ -311,7 +312,6 @@ class FlightEditModal(discord.ui.Modal):
         super().__init__(title="Edit Flight Information")
         self.flight_data = flight_data
         self.message = message
-        self.rank_config = load_rank_config()
         
         self.etd = discord.ui.TextInput(
             label="ETD (HHMM Zulu - Optional)", 
@@ -330,10 +330,8 @@ class FlightEditModal(discord.ui.Modal):
         self.add_item(self.note)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 1. Defer explicitly so we can send a private confirmation later
         await interaction.response.defer(ephemeral=True)
         
-        # --- Update Data Logic ---
         self.flight_data.update({
             'etd': self.etd.value,
             'note': self.note.value
@@ -347,17 +345,12 @@ class FlightEditModal(discord.ui.Modal):
             except (ValueError, TypeError):
                 pass
         
-        # --- Prepare the New Message Elements ---
-        
-        # A. Create the Embed
-        embed = await self.create_flight_embed(self.flight_data, interaction.client)
-        
-        # B. Re-Create the Buttons (CRITICAL: This brings the buttons back)
+        embed, thumbnail_file = await interaction.client.flight_board_service.create_flight_embed(self.flight_data)
         view = FlightBoardView(self.flight_data)
         
-        # C. Handle the Map (Prevents the "Attachment Crash")
         files_to_upload = []
-        has_map = False
+        if thumbnail_file:
+            files_to_upload.append(thumbnail_file)
         
         if hasattr(interaction.client, 'route_map_service'):
             try:
@@ -365,97 +358,20 @@ class FlightEditModal(discord.ui.Modal):
                     self.flight_data['departure'], self.flight_data['arrival']
                 )
                 if not isinstance(map_result, str):
-                    # Handle bytes or file-like object (Preserving robustness)
                     if isinstance(map_result, bytes):
                         map_result = io.BytesIO(map_result)
-                    
                     if hasattr(map_result, 'seek'):
                         map_result.seek(0)
-                        
                     files_to_upload.append(discord.File(fp=map_result, filename="route_map.png"))
-                    has_map = True
+                    embed.set_image(url="attachment://route_map.png")
             except Exception:
                 pass
-
-        if has_map:
-            embed.set_image(url="attachment://route_map.png")
-        else:
-            embed.set_image(url=None) # Clean up if map failed
-
-        # --- The Edit Step ---
         
         target_message = self.message or interaction.message
-        
         if target_message:
             try:
-                # WE EDIT THE PUBLIC MESSAGE HERE
-                await target_message.edit(
-                    content=None,   # <--- Removes "Flight Updated!" text from the public board
-                    embed=embed,    # <--- Updates the info
-                    view=view,      # <--- RESTORES THE BUTTONS
-                    attachments=files_to_upload
-                )
+                await target_message.edit(content=None, embed=embed, view=view, attachments=files_to_upload)
             except discord.HTTPException as e:
                 logging.error(f"Failed to edit message: {e}")
-
-        # --- The Confirmation Step ---
         
-        # WE SEND THE SUCCESS MESSAGE ONLY TO THE USER (Ephemeral)
         await interaction.followup.send("✅ **Flight Updated!**", ephemeral=True)
-
-    async def create_flight_embed(self, data, bot=None):
-        status_colors = {
-            "Scheduled": 0x0099ff, "Boarding": 0xFFD700, "Departed": 0x2ECC71,
-            "En Route": 0x1ABC9C, "Arrived": 0x95A5A6, "Delayed": 0xE67E22, "Cancelled": 0xFF0000
-        }
-        embed = discord.Embed(title="Flight Schedule BETA ", color=status_colors.get(data.get('status'), 0x0099ff))
-        
-        dep_name, arr_name = data['departure'], data['arrival']
-        # Resolve Airport Names
-        if bot and hasattr(bot.get_cog('FlightBoardCog'), 'airports'):
-            airports = bot.get_cog('FlightBoardCog').airports
-            dep_name = airports.get(data['departure'], {}).get('name', data['departure'])
-            arr_name = airports.get(data['arrival'], {}).get('name', data['arrival'])
-        
-        embed.description = f"# {data['departure']} {get_country_flag(data['departure'])} - {data['arrival']} {get_country_flag(data['arrival'])}"
-        embed.add_field(name="Flight Number", value=data['flight_num'], inline=True)
-        embed.add_field(name="Departure Airport", value=dep_name, inline=True)
-        embed.add_field(name="Arrival Airport", value=arr_name, inline=True)
-        embed.add_field(name="Aircraft", value=f"{data.get('livery','')} {data['aircraft']}", inline=True)
-        
-        try:
-            seconds = int(data['duration'])
-            flight_time = f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}"
-        except: flight_time = "N/A"
-        embed.add_field(name="Flight Time", value=flight_time, inline=True)
-        
-        if data.get('etd'):
-            embed.add_field(name="ETD", value=f"{data['etd']}Z", inline=True)
-            if data.get('eta'): embed.add_field(name="ETA", value=f"{data['eta']}Z", inline=True)
-        
-        embed.add_field(name="Status", value=data.get('status', 'Scheduled'), inline=True)
-        if data.get('note'): embed.add_field(name="Note", value=data['note'], inline=False)
-        
-        # Footer
-        pilot_name = data['pilot_name']
-        footer_text = f"Pilot in Command - @{pilot_name}"
-        if bot and hasattr(bot, 'pilots_model'):
-            try:
-                pilot_data = await bot.pilots_model.get_pilot_by_discord_id(str(data.get('pilot_id', '')))
-                if pilot_data:
-                    pilot_hours = await bot.pilots_model.get_pilot_total_hours(pilot_data['id'], pilot_data['callsign']) if hasattr(bot.pilots_model, 'get_pilot_total_hours') else pilot_data.get('hours', 0)
-                    try: pilot_hours = float(pilot_hours)
-                    except: pilot_hours = 0.0
-                    
-                    ranks = self.rank_config.get('ranks', {})
-                    sorted_ranks = sorted(ranks.items(), key=lambda x: x[1].get('min_hours', 0))
-                    rank_name = next((r for r, d in reversed(sorted_ranks) if pilot_hours >= d.get('min_hours', 0)), None)
-                    
-                    if rank_name in ['Ruby', 'Sapphire', 'Emerald', 'OneWorld', 'Oryx']:
-                        footer_text += f" | Senior Captain | {rank_name} Award Holder"
-                    elif rank_name:
-                        footer_text += f" | {rank_name}"
-            except Exception: pass
-        
-        embed.set_footer(text=footer_text)
-        return embed

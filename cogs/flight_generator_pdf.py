@@ -239,6 +239,10 @@ Here is your flight details
                 
                 await thread.send(thread_message, file=discord.File(pdf_buffer, f"flight_{flight_number}.pdf"))
                 
+                # Add Flight Board button
+                fb_view = PostToFlightBoardView(self.flight_data, self.flight_type)
+                await thread.send("📋 **Want to share this flight on the Live Flight Board?**", view=fb_view)
+                
                 await interaction.followup.send(f"✅ Flight claimed! Your private briefing thread has been created: {thread.mention}", ephemeral=True)
             else:
                 print(f"[DEBUG] PDF generation failed")
@@ -441,6 +445,61 @@ class AmiriApprovalView(discord.ui.View):
         await self.propose_new_route()
 
 
+# UI view for posting flight to board from private thread
+class PostToFlightBoardView(discord.ui.View):
+    def __init__(self, flight_data, flight_type: str):
+        super().__init__(timeout=None)
+        self.flight_data = flight_data
+        self.flight_type = flight_type
+    
+    @discord.ui.button(label="Post to Flight Board", style=discord.ButtonStyle.primary, emoji="📋", custom_id="post_to_fb")
+    async def post_to_board(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
+               # Get aircraft code from name
+        aircraft_name = self.flight_data.aircraft_name if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('aircraft_name', '')
+        aircraft_code = interaction.client.flightdata.get_aircraft_code_from_name(aircraft_name)
+        if not aircraft_code:
+            return await interaction.followup.send(f"❌ Could not determine aircraft type for: {aircraft_name}", ephemeral=True)
+ 
+        # Get livery from aircraft data
+        livery = interaction.client.flightdata.AIRCRAFT_DATA.get(self.flight_type, {}).get(aircraft_code, {}).get('livery', 'Qatar Airways')
+        
+        # Parse route manually
+        import re
+        route_str = self.flight_data.route if isinstance(self.flight_data, FlightDetails) else self.flight_data.get('route', '')
+        clean = re.sub(r'[^\w\s]', '', route_str)
+        icaos = re.findall(r'\b[A-Z]{4}\b', clean)
+        if len(icaos) >= 2:
+            dep, arr = icaos[0], icaos[1]
+        else:
+            return await interaction.followup.send("❌ Could not parse route.", ephemeral=True)
+        
+        # Build flight board data
+        fb_data = {
+            'flight_num': self.flight_data.flight_number,
+            'departure': dep,
+            'arrival': arr,
+            'aircraft': aircraft_code,
+            'pilot_id': interaction.user.id,
+            'pilot_name': interaction.user.display_name,
+            'status': 'Scheduled',
+            'note': f"🇶🇦 Amiri Flight" if self.flight_type == "amiri" else "✈️ Executive Charter",
+            'flight_type': self.flight_type,
+            'livery': livery
+        }
+        
+        # Post to flight board
+        msg = await interaction.client.flight_board_service.post_flight_board(fb_data)
+        
+        if msg:
+            button.disabled = True
+            button.label = "Posted to Flight Board"
+            await interaction.message.edit(view=self)
+            await interaction.followup.send(f"✅ Flight posted to board: {msg.jump_url}", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Failed to post to flight board.", ephemeral=True)
+
 class FlightGeneratorPDF(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -452,6 +511,7 @@ class FlightGeneratorPDF(commands.Cog):
         self.bot.add_view(FlightClaimConfirmView(None, None, None, None))
         self.bot.add_view(AmiriApprovalView(None, None, None))
         self.bot.add_view(StaffPDFRegenerateView(None, None, None))
+        self.bot.add_view(PostToFlightBoardView(None, None))
 
     # FLIGHT REQUEST COMMANDS & LOGIC
     
@@ -552,9 +612,9 @@ class FlightGeneratorPDF(commands.Cog):
     @app_commands.command(name="amiri", description="Generate Amiri flight (Staff only)")
     @app_commands.describe(aircraft="Aircraft type")
     @app_commands.choices(aircraft=[
-        app_commands.Choice(name="A319-100", value="A319"),
-        app_commands.Choice(name="A346", value="A346"),
-        app_commands.Choice(name="B748", value="B748")
+        app_commands.Choice(name="Airbus A319-100", value="A319"),
+        app_commands.Choice(name="Airbus A340-600", value="A346"),
+        app_commands.Choice(name="Boeing 747-8", value="B748")
     ])
     async def amiri_flight(self, interaction: discord.Interaction, aircraft: str):
         if not self.bot.flightdata.has_staff_permissions(interaction.user.roles):
@@ -568,9 +628,9 @@ class FlightGeneratorPDF(commands.Cog):
     @app_commands.command(name="executive", description="Generate Executive flight (Staff only)")
     @app_commands.describe(aircraft="Aircraft type", departure="Departure ICAO code", arrival="Arrival ICAO code")
     @app_commands.choices(aircraft=[
-        app_commands.Choice(name="A318", value="A318"),
-        app_commands.Choice(name="B737", value="B737"),
-        app_commands.Choice(name="C350", value="C350")
+        app_commands.Choice(name="Airbus A318-100", value="A318"),
+        app_commands.Choice(name="Boeing 737-700", value="B737"),
+        app_commands.Choice(name="Challenger 350", value="CL35")
     ])
     async def executive_flight(self, interaction: discord.Interaction, aircraft: str, departure: str, arrival: str):
         if not self.bot.flightdata.has_staff_permissions(interaction.user.roles):

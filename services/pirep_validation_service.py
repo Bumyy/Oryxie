@@ -203,13 +203,16 @@ class PirepValidationService:
             elif pilot_info.get('callsign'):
                 pilot_display = f"{pilot_info['callsign']} | {pirep['pilot_name']}"
         
+        ifc_username = self.extract_ifc_username(pirep.get('ifc'))
+        iflytics_link = f"\n🔗 **IFlytics:** [View History](https://www.iflytics.app/user/{ifc_username}/flights)" if ifc_username != "N/A" else ""
+        
         ifuserid = await self.resolve_ifuserid(pirep)
         
         if not ifuserid:
             logger.warning(f"[DEBUG] Could not resolve IF User ID for PIREP {pirep.get('pirep_id')}")
             return discord.Embed(
                 title=f"# {pirep['departure']} - {pirep['arrival']} #",
-                description=f"**Flight Time:** {pirep['formatted_flighttime']}\\n**Pilot:** {pirep['pilot_name']}",
+                description=f"**Flight Time:** {pirep['formatted_flighttime']}\\n**Pilot:** {pirep['pilot_name']}{iflytics_link}",
                 color=discord.Color.orange()
             ).add_field(name="⚠️ VALIDATION SKIPPED", value="Could not resolve Infinite Flight User ID. Manual review required.", inline=False)
 
@@ -223,7 +226,7 @@ class PirepValidationService:
             logger.warning(f"[DEBUG] No flight data returned from API for user {ifuserid}")
             return discord.Embed(
                 title=f"# {pirep['departure']} - {pirep['arrival']} #",
-                description=f"**Flight Time:** {pirep['formatted_flighttime']}\\n**Pilot:** {pirep['pilot_name']}",
+                description=f"**Flight Time:** {pirep['formatted_flighttime']}\\n**Pilot:** {pirep['pilot_name']}{iflytics_link}",
                 color=discord.Color.orange()
             ).add_field(name="⚠️ API LIMITATION", value="Flight validation API endpoint not available. Manual review required.", inline=False)
         
@@ -293,6 +296,10 @@ class PirepValidationService:
             f"**Date:** {pirep['date']}",
             f"**Flight Time:** {flight_time_display}"
         ]
+        
+        # Add IFlytics link if IFC username is available
+        if ifc_username != "N/A":
+            analysis_details.append(f"**IFlytics:** https://www.iflytics.app/user/{ifc_username}/flights")
         
         embed.add_field(name="❌ MATCH NOT FOUND - DETAILED ANALYSIS", value="\n".join(analysis_details), inline=False)
         return embed
@@ -399,6 +406,8 @@ class PirepValidationService:
         
         ifc_username = self.extract_ifc_username(pirep.get('ifc'))
         
+        iflytics_link = f"\n🔗 **IFlytics:** [View History](https://www.iflytics.app/user/{ifc_username}/flights)" if ifc_username != "N/A" else ""
+        
         embed = discord.Embed(
             title=f"# {pirep['departure']} - {pirep['arrival']} #",
             description=f"**Flight:** {pirep.get('flightnum', 'N/A')} ({flight_num_status})",
@@ -407,7 +416,7 @@ class PirepValidationService:
         
         embed.add_field(
             name="📄 Pilot Claim",
-            value=f"👤 **Pilot:** {pilot_display_clean}\n💬 **IFC:** {ifc_username}\n✈️ **Aircraft:** {aircraft_pirep}\n⏱️ **Filed Time:** {pirep['formatted_flighttime']}",
+            value=f"👤 **Pilot:** {pilot_display_clean}\n💬 **IFC:** {ifc_username}{iflytics_link}\n✈️ **Aircraft:** {aircraft_pirep}\n⏱️ **Filed Time:** {pirep['formatted_flighttime']}",
             inline=True
         )
         

@@ -53,8 +53,6 @@ class InfiniteFlightAPIManager:
         params['apikey'] = self.api_key
         url = f"{self.base_url}{endpoint}"
         
-
-        
         # Ensure Content-Type: application/json for POST requests
         headers = kwargs.pop('headers', {})
         if method.upper() == 'POST' and 'json' in kwargs:
@@ -62,15 +60,12 @@ class InfiniteFlightAPIManager:
         
         try:
             async with session.request(method, url, params=params, headers=headers, **kwargs) as response:
-
                 response.raise_for_status()
                 
                 if 'application/json' in response.headers.get('Content-Type', ''):
                     json_data = await response.json()
-
                     return json_data
                 text_data = await response.text()
-
                 return text_data
                 
         except aiohttp.ClientResponseError as e:
