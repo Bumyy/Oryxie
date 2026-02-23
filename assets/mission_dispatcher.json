@@ -1,0 +1,178 @@
+{
+  "_instructions": "Active missions are organized into sets. Keys starting with '_' are ignored by the dispatcher logic.",
+  
+  "_reference_examples": {
+    "mission_01": {
+      "source": "cc",
+      "flight_number": "QR670",
+      "label": "Doha (OTHH) - Manchester (EGCC)"
+    },
+    "mission_02": {
+      "source": "custom",
+      "flight_number": "QR999",
+      "departure": "OTHH",
+      "arrival": "ZBAD",
+      "aircraft": ["B77W", "A35K"],
+      "duration": "07:30",
+      "label": "Special Event: Beijing Run",
+      "livery": "OneWorld"
+    }
+  },
+
+  "WorldTourSet1": {
+    "WT1": {
+      "source": "cc",
+      "flight_number": "QR670"
+    },
+    "WT2": {
+      "source": "cc",
+      "flight_number": "UL102"
+    },
+    "WT3": {
+      "source": "cc",
+      "flight_number": "6E1186"
+    },
+    "WT4": {
+      "source": "cc",
+      "flight_number": "AI816"
+    },
+    "WT5": {
+      "source": "cc",
+      "flight_number": "VN977"
+    },
+    "WT6": {
+      "source": "cc",
+      "flight_number": "CX766"
+    },
+    "WT7": {
+      "source": "cc",
+      "flight_number": "JX234"
+    },
+    "WT8": {
+      "source": "cc",
+      "flight_number": "JX846"
+    },
+    "WT9": {
+      "source": "cc",
+      "flight_number": "JL632"
+    },
+    "WT10": {
+      "source": "cc",
+      "flight_number": "PR424"
+    },
+    "WT11": {
+      "source": "cc",
+      "flight_number": "PR507"
+    },
+    "WT12": {
+      "source": "cc",
+      "flight_number": "MH602"
+    }
+  },
+
+  "WorldTourSet2": {
+    "WT13": {
+      "source": "cc",
+      "flight_number": "MH721"
+    },
+    "WT14": {
+      "source": "cc",
+      "flight_number": "GA716"
+    },
+    "WT15": {
+      "source": "cc",
+      "flight_number": "VA841"
+    },
+    "WT16": {
+      "source": "cc",
+      "flight_number": "QF3"
+    },
+    "WT17": {
+      "source": "cc",
+      "flight_number": "AA34"
+    },
+    "WT18": {
+      "source": "cc",
+      "flight_number": "AA5"
+    },
+    "WT19": {
+      "source": "cc",
+      "flight_number": "WS1867"
+    },
+    "WT20": {
+      "source": "cc",
+      "flight_number": "AS2096"
+    },
+    "WT21": {
+      "source": "cc",
+      "flight_number": "AS26"
+    },
+    "WT22": {
+      "source": "cc",
+      "flight_number": "BW6"
+    },
+    "WT23": {
+      "source": "cc",
+      "flight_number": "AA1400"
+    },
+    "WT24": {
+      "source": "cc",
+      "flight_number": "AA1344"
+    },
+    "WT25": {
+      "source": "cc",
+      "flight_number": "CM420"
+    }
+  },
+
+  "WorldTourSet3": {
+    "WT26": {
+      "source": "cc",
+      "flight_number": "LA8020"
+    },
+    "WT27": {
+      "source": "cc",
+      "flight_number": "SA227"
+    },
+    "WT28": {
+      "source": "cc",
+      "flight_number": "4Z390"
+    },
+    "WT29": {
+      "source": "cc",
+      "flight_number": "KQ793B"
+    },
+    "WT30": {
+      "source": "cc",
+      "flight_number": "KQ534"
+    },
+    "WT31": {
+      "source": "cc",
+      "flight_number": "AT554"
+    },
+    "WT32": {
+      "source": "cc",
+      "flight_number": "AT984"
+    },
+    "WT33": {
+      "source": "cc",
+      "flight_number": "IB3867"
+    },
+    "WT34": {
+      "source": "cc",
+      "flight_number": "IB3708"
+    },
+    "WT35": {
+      "source": "cc",
+      "flight_number": "BA425"
+    },
+    "WT36": {
+      "source": "cc",
+      "flight_number": "A3601"
+    },
+    "WT37": {
+      "source": "cc",
+      "flight_number": "QR204"
+    }
+  }
+}

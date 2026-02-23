@@ -112,7 +112,12 @@ class FlightBoardService:
         # Thumbnail for special flight types
         thumbnail_file = None
         flight_type = data.get('flight_type')
-        if flight_type and flight_type in self.logos:
+        thumb_path = data.get('thumbnail_path')
+        if thumb_path and os.path.exists(thumb_path):
+            filename = os.path.basename(thumb_path)
+            thumbnail_file = discord.File(thumb_path, filename=filename)
+            embed.set_thumbnail(url=f"attachment://{filename}")
+        elif flight_type and flight_type in self.logos:
             logo_path = self.logos[flight_type]
             if os.path.exists(logo_path):
                 thumbnail_file = discord.File(logo_path, filename=f"{flight_type}_logo.png")
