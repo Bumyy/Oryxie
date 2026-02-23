@@ -113,6 +113,11 @@ class FlightBoardService:
         thumbnail_file = None
         flight_type = data.get('flight_type')
         thumb_path = data.get('thumbnail_path')
+        
+        print(f"[DEBUG] FlightBoardService: thumb_path='{thumb_path}'")
+        if thumb_path:
+            print(f"[DEBUG] FlightBoardService: exists={os.path.exists(thumb_path)} | abs_path={os.path.abspath(thumb_path)}")
+            
         if thumb_path and os.path.exists(thumb_path):
             filename = os.path.basename(thumb_path)
             thumbnail_file = discord.File(thumb_path, filename=filename)
