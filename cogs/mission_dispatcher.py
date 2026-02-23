@@ -12,15 +12,15 @@ logger = logging.getLogger(__name__)
 
 # Configuration for the embed and buttons
 MISSION_CONFIG = {
-    "EMBED_TITLE": "🌍 World Tour Mission Dispatch",
+    "EMBED_TITLE": "🌍 World Tour Mission Dispatcher",
     "EMBED_DESCRIPTION": (
         "**Welcome to the Mission Dispatch Center**\n\n"
-        "Select a service below to manage your assigned mission.\n"
-        "• **SimBrief**: Generate an operational flight plan.\n"
-        "• **Flight Board**: Announce your flight to the live board."
+        "Tap a Button below to manage your World Tour planning.\n"
+        "• **SimBrief**: Generate a Simbrief link for your selected Route and aircraft .\n"
+        "• **Flight Board**: Announce your flight to the #live-Flight channel."
     ),
     "EMBED_COLOR": 0x1D5367,
-    "FOOTER_TEXT": "QRV Mission Systems | World Tour 2025",
+    "FOOTER_TEXT": "QRV Mission Dispatcher | World Tour 2026",
     "BUTTON_SIMBRIEF_LABEL": "SimBrief Dispatch",
     "BUTTON_SIMBRIEF_EMOJI": "📋",
     "BUTTON_BOARD_LABEL": "Flight Board",
