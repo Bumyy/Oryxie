@@ -26,7 +26,7 @@ MISSION_CONFIG = {
     "BUTTON_BOARD_LABEL": "Flight Board",
     "BUTTON_BOARD_EMOJI": "✈️",
     "ACTIVE_SETS": ["WorldTourSet1"],
-    "LOGO_PATH": "assets/WT2026.PNG"
+    "LOGO_PATH": "assets/WT2026.png"
 }
 
 class MissionDispatcherCog(commands.Cog):
@@ -168,7 +168,7 @@ class MissionDispatcherCog(commands.Cog):
         
         view = MissionDispatcherView(self)
         
-        logo_path = MISSION_CONFIG.get("LOGO_PATH", "assets/WT2026.PNG")
+        logo_path = MISSION_CONFIG.get("LOGO_PATH", "assets/WT2026.png")
         print(f"[DEBUG] Checking logo path for mission panel: {logo_path}")
         print(f"[DEBUG] Absolute path: {os.path.abspath(logo_path)}")
         
