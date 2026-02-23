@@ -143,6 +143,7 @@ class MissionDispatcherCog(commands.Cog):
                 'livery': details.get('livery', 'Qatar Airways'),
                 'thumbnail_path': MISSION_CONFIG.get("LOGO_PATH")
             }
+            logger.debug(f"Flight Board Data prepared with thumbnail: {fb_data.get('thumbnail_path')}")
             
             if self.flight_board_service:
                 msg = await self.flight_board_service.post_flight_board(fb_data)
@@ -167,12 +168,16 @@ class MissionDispatcherCog(commands.Cog):
         
         view = MissionDispatcherView(self)
         
-        logo_path = MISSION_CONFIG.get("LOGO_PATH", "assets/logo.PNG")
+        logo_path = MISSION_CONFIG.get("LOGO_PATH", "assets/WT2026.PNG")
+        logger.debug(f"Checking logo path for mission panel: {logo_path}")
+        
         if os.path.exists(logo_path):
+            logger.debug("Logo file found. Attaching to embed.")
             file = discord.File(logo_path, filename="logo.png")
             embed.set_thumbnail(url="attachment://logo.png")
             await interaction.channel.send(embed=embed, view=view, file=file)
         else:
+            logger.warning(f"Logo file not found at {logo_path}. Sending embed without thumbnail.")
             await interaction.channel.send(embed=embed, view=view)
             
         await interaction.followup.send("✅ Mission panel posted.", ephemeral=True)
