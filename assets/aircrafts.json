@@ -136,6 +136,80 @@
             }
         }
     },
+    "B38M": {
+        "properties": {
+            "full_name": "Boeing 737-8 MAX",
+            "manufacturer": "Boeing",
+            "engines": 2
+        },
+        "engine_start_sequence": [2, 1],
+        "flap_retraction_schedule": [
+            { "speed": 210, "setting": "1" },
+            { "speed": 230, "setting": "0" }
+        ],
+        "performance_data": {
+            "flap_speeds": { "1": 250, "2": 250, "5": 250, "10": 210, "15": 200, "25": 190, "30": 175, "40": 166 },
+            "cruise_profile": {
+                "west": [
+                    { "load_range": [81, 100], "altitude": "FL300" },
+                    { "load_range": [61, 80], "altitude": "FL320" },
+                    { "load_range": [41, 60], "altitude": "FL340" },
+                    { "load_range": [21, 40], "altitude": "FL360" },
+                    { "load_range": [0, 20], "altitude": "FL380" }
+                ],
+                "east": [
+                    { "load_range": [71, 100], "altitude": "FL310" },
+                    { "load_range": [61, 70], "altitude": "FL330" },
+                    { "load_range": [41, 60], "altitude": "FL350" },
+                    { "load_range": [21, 40], "altitude": "FL370" },
+                    { "load_range": [0, 20], "altitude": "FL390" }
+                ]
+            },
+            "takeoff_data": [
+                { "load_range": [0, 13], "flaps": "5", "n1": "91%", "vr": 117, "va": 127 },
+                { "load_range": [14, 26], "flaps": "5", "n1": "91%", "vr": 124, "va": 133 },
+                { "load_range": [27, 40], "flaps": "5", "n1": "91%", "vr": 131, "va": 138 },
+                { "load_range": [41, 49], "flaps": "5", "n1": "91%", "vr": 135, "va": 142 },
+                { "load_range": [50, 53], "flaps": "5", "n1": "91%", "vr": 137, "va": 142 },
+                { "load_range": [54, 61], "flaps": "5", "n1": "92%", "vr": 139, "va": 144 },
+                { "load_range": [62, 67], "flaps": "5", "n1": "92%", "vr": 140, "va": 145 },
+                { "load_range": [68, 73], "flaps": "5", "n1": "92%", "vr": 143, "va": 148 },
+                { "load_range": [74, 80], "flaps": "5", "n1": "92%", "vr": 146, "va": 154 },
+                { "load_range": [81, 85], "flaps": "5", "n1": "92%", "vr": 147, "va": 156 },
+                { "load_range": [86, 93], "flaps": "5", "n1": "92%", "vr": 151, "va": 158 },
+                { "load_range": [94, 100], "flaps": "5", "n1": "92%", "vr": 160, "va": 165 }
+            ],
+            "landing_data": [
+                { "load_range": [0, 13], "flaps": "30", "vapp": 124, "vflare": 119 },
+                { "load_range": [14, 26], "flaps": "30", "vapp": 131, "vflare": 126 },
+                { "load_range": [27, 40], "flaps": "30", "vapp": 144, "vflare": 139 },
+                { "load_range": [41, 49], "flaps": "30", "vapp": 147, "vflare": 142 },
+                { "load_range": [50, 53], "flaps": "30", "vapp": 150, "vflare": 145 },
+                { "load_range": [54, 61], "flaps": "30", "vapp": 153, "vflare": 148 },
+                { "load_range": [62, 67], "flaps": "30", "vapp": 154, "vflare": 149 },
+                { "load_range": [68, 73], "flaps": "30", "vapp": 156, "vflare": 151 },
+                { "load_range": [74, 80], "flaps": "30", "vapp": 159, "vflare": 154 },
+                { "load_range": [81, 85], "flaps": "30", "vapp": 161, "vflare": 156 },
+                { "load_range": [86, 93], "flaps": "30", "vapp": 165, "vflare": 160 },
+                { "load_range": [94, 100], "flaps": "30", "vapp": 165, "vflare": 160 }
+            ],
+            "speed_profile": {
+                "initial_speed": "250",
+                "below_10k": "250",
+                "above_10k": "290",
+                "mach_transition_alt": "FL280",
+                "mach": "0.79"
+            },
+            "climb_vs_profile": {
+                "0_5000": "2500", "5000_15000": "2300", "15000_24000": "1400", "24000_cruise": "1000"
+            },
+            "descent_speed_profile": {
+                "cruise_to_fl280": "M 0.79",
+                "fl280_to_fl100": "290 knots",
+                "fl100_to_ground": "<250 knots"
+            }
+        }
+    },
     "B77W": {
         "properties": {
             "full_name": "Boeing 777-300ER",
