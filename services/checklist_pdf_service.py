@@ -187,6 +187,20 @@ class ChecklistPDFService:
             if 'items' in section:
                 for item in section.get('items', []):
                     value = item['value']
+                    
+                    # Dynamic VS adjustment logic (e.g., for A380 where VS increases at 5k)
+                    if "REDUCE VS TO" in value:
+                        try:
+                            curr, targ = 0, 0
+                            if "{vs_5k}" in value:
+                                curr, targ = int(placeholders.get('initial_climb_vs', 0)), int(placeholders.get('vs_5k', 0))
+                            elif "{vs_15k}" in value:
+                                curr, targ = int(placeholders.get('vs_5k', 0)), int(placeholders.get('vs_15k', 0))
+                            elif "{vs_24k}" in value:
+                                curr, targ = int(placeholders.get('vs_15k', 0)), int(placeholders.get('vs_24k', 0))
+                            if targ > curr: value = value.replace("REDUCE", "INCREASE")
+                        except: pass
+
                     for key, val in placeholders.items():
                         value = value.replace(f"{{{key}}}", str(val))
                     pdf.checklist_item(item['text'], value, item.get('is_dynamic', False))
@@ -311,6 +325,20 @@ class ChecklistPDFService:
             if 'items_after_special' in section:
                 for item in section['items_after_special']:
                     value = item['value']
+                    
+                    # Dynamic VS adjustment logic
+                    if "REDUCE VS TO" in value:
+                        try:
+                            curr, targ = 0, 0
+                            if "{vs_5k}" in value:
+                                curr, targ = int(placeholders.get('initial_climb_vs', 0)), int(placeholders.get('vs_5k', 0))
+                            elif "{vs_15k}" in value:
+                                curr, targ = int(placeholders.get('vs_5k', 0)), int(placeholders.get('vs_15k', 0))
+                            elif "{vs_24k}" in value:
+                                curr, targ = int(placeholders.get('vs_15k', 0)), int(placeholders.get('vs_24k', 0))
+                            if targ > curr: value = value.replace("REDUCE", "INCREASE")
+                        except: pass
+
                     for key, val in placeholders.items():
                         value = value.replace(f"{{{key}}}", str(val))
                     pdf.checklist_item(item['text'], value, item.get('is_dynamic', False))
@@ -356,6 +384,20 @@ class ChecklistPDFService:
             if 'items_after_table' in section:
                 for item in section['items_after_table']:
                     value = item['value']
+                    
+                    # Dynamic VS adjustment logic
+                    if "REDUCE VS TO" in value:
+                        try:
+                            curr, targ = 0, 0
+                            if "{vs_5k}" in value:
+                                curr, targ = int(placeholders.get('initial_climb_vs', 0)), int(placeholders.get('vs_5k', 0))
+                            elif "{vs_15k}" in value:
+                                curr, targ = int(placeholders.get('vs_5k', 0)), int(placeholders.get('vs_15k', 0))
+                            elif "{vs_24k}" in value:
+                                curr, targ = int(placeholders.get('vs_15k', 0)), int(placeholders.get('vs_24k', 0))
+                            if targ > curr: value = value.replace("REDUCE", "INCREASE")
+                        except: pass
+
                     for key, val in placeholders.items():
                         value = value.replace(f"{{{key}}}", str(val))
                     pdf.checklist_item(item['text'], value, item.get('is_dynamic', False))
