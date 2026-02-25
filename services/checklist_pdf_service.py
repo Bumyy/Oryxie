@@ -374,10 +374,46 @@ class ChecklistPDFService:
                         pdf.set_font('Arial', '', 8)
                         # Table data - smaller font and row height
                         for ld in filtered_data:
-                            pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
-                            pdf.cell(20, 5, ld['flaps'], 1, 0, 'C')
-                            pdf.cell(20, 5, str(ld['vapp']), 1, 0, 'C')
-                            pdf.cell(20, 5, str(ld['vflare']), 1, 1, 'C')
+                            if aircraft_type == "B38M":
+                                # Load Range
+                                pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
+                                
+                                # Flaps 30/40 (Multi-color)
+                                x = pdf.get_x()
+                                pdf.cell(20, 5, "", 1, 0)
+                                pdf.set_x(x)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.cell(10, 5, "30", 0, 0, 'R')
+                                pdf.set_text_color(200, 0, 0) # Red for Flaps 40
+                                pdf.cell(10, 5, "/40", 0, 0, 'L')
+                                
+                                # Vapp (Multi-color)
+                                v30 = ld['vapp']
+                                v40 = v30 - 5
+                                x = pdf.get_x()
+                                pdf.cell(20, 5, "", 1, 0)
+                                pdf.set_x(x)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.cell(10, 5, str(v30), 0, 0, 'R')
+                                pdf.set_text_color(200, 0, 0)
+                                pdf.cell(10, 5, f"({v40})", 0, 0, 'L')
+                                
+                                # Vflare (Multi-color)
+                                vf30 = ld['vflare']
+                                vf40 = vf30 - 5
+                                x = pdf.get_x()
+                                pdf.cell(20, 5, "", 1, 1)
+                                pdf.set_xy(x, pdf.get_y() - 5)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.cell(10, 5, str(vf30), 0, 0, 'R')
+                                pdf.set_text_color(200, 0, 0)
+                                pdf.cell(10, 5, f"({vf40})", 0, 0, 'L')
+                                pdf.set_text_color(0, 0, 0) # Reset color
+                            else:
+                                pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
+                                pdf.cell(20, 5, ld['flaps'], 1, 0, 'C')
+                                pdf.cell(20, 5, str(ld['vapp']), 1, 0, 'C')
+                                pdf.cell(20, 5, str(ld['vflare']), 1, 1, 'C')
                         pdf.ln(2)
             
             # Handle items_after_table (for items after landing data table)
