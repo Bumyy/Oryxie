@@ -247,18 +247,18 @@
                 { "load_range": [94, 100], "flaps": "5", "n1": "92%", "vr": 160, "va": 165 }
             ],
             "landing_data": [
-                { "load_range": [0, 13], "flaps": "30", "vapp": 124, "vflare": 119 },
-                { "load_range": [14, 26], "flaps": "30", "vapp": 131, "vflare": 126 },
-                { "load_range": [27, 40], "flaps": "30", "vapp": 144, "vflare": 139 },
-                { "load_range": [41, 49], "flaps": "30", "vapp": 147, "vflare": 142 },
-                { "load_range": [50, 53], "flaps": "30", "vapp": 150, "vflare": 145 },
-                { "load_range": [54, 61], "flaps": "30", "vapp": 153, "vflare": 148 },
-                { "load_range": [62, 67], "flaps": "30", "vapp": 154, "vflare": 149 },
-                { "load_range": [68, 73], "flaps": "30", "vapp": 156, "vflare": 151 },
-                { "load_range": [74, 80], "flaps": "30", "vapp": 159, "vflare": 154 },
-                { "load_range": [81, 85], "flaps": "30", "vapp": 161, "vflare": 156 },
-                { "load_range": [86, 93], "flaps": "30", "vapp": 165, "vflare": 160 },
-                { "load_range": [94, 100], "flaps": "30", "vapp": 165, "vflare": 160 }
+                { "load_range": [0, 13], "flaps": "30/40", "vapp": 124, "vflare": 119 },
+                { "load_range": [14, 26], "flaps": "30/40", "vapp": 131, "vflare": 126 },
+                { "load_range": [27, 40], "flaps": "30/40", "vapp": 144, "vflare": 139 },
+                { "load_range": [41, 49], "flaps": "30/40", "vapp": 147, "vflare": 142 },
+                { "load_range": [50, 53], "flaps": "30/40", "vapp": 150, "vflare": 145 },
+                { "load_range": [54, 61], "flaps": "30/40", "vapp": 153, "vflare": 148 },
+                { "load_range": [62, 67], "flaps": "30/40", "vapp": 154, "vflare": 149 },
+                { "load_range": [68, 73], "flaps": "30/40", "vapp": 156, "vflare": 151 },
+                { "load_range": [74, 80], "flaps": "30/40", "vapp": 159, "vflare": 154 },
+                { "load_range": [81, 85], "flaps": "30/40", "vapp": 161, "vflare": 156 },
+                { "load_range": [86, 93], "flaps": "30/40", "vapp": 165, "vflare": 160 },
+                { "load_range": [94, 100], "flaps": "30/40", "vapp": 165, "vflare": 160 }
             ],
             "speed_profile": {
                 "initial_speed": "250",
