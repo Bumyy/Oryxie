@@ -441,7 +441,7 @@ class FlightBoardCog(commands.Cog):
                 
                 msg = await self.fb_service.post_flight_board(flight_data)
                 if msg:
-                    await interaction.followup.send(f"✅ Flight posted to board: {msg.jump_url}")
+                    await interaction.followup.send(f"✅ Live board is posted: {msg.jump_url}", ephemeral=True)
                 else:
                     await interaction.followup.send("❌ Failed to post flight to board.", ephemeral=True)
             

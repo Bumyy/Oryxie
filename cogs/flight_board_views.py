@@ -168,6 +168,12 @@ class StatusSelectView(discord.ui.View):
         self.flight_data['status'] = new_status
         
         embed, _ = await interaction.client.flight_board_service.create_flight_embed(self.flight_data)
+        
+        # Preserve image attachment if it exists in the original message
+        if self.original_message.embeds and self.original_message.embeds[0].image:
+            if self.original_message.embeds[0].image.url:
+                embed.set_image(url=self.original_message.embeds[0].image.url)
+
         view = FlightBoardView(self.flight_data)
         
         await self.original_message.edit(embed=embed, view=view)
@@ -188,7 +194,7 @@ class AircraftSelectView(discord.ui.View):
         self.add_item(select)
     
     async def aircraft_selected(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         selected_value = interaction.data['values'][0]
         
         if '|' in selected_value:
@@ -202,28 +208,16 @@ class AircraftSelectView(discord.ui.View):
         self.flight_data['aircraft_name'] = aircraft_name
         self.flight_data['livery'] = selected_livery
         
-        embed, thumbnail_file = await self.bot.flight_board_service.create_flight_embed(self.flight_data)
-        view = FlightBoardView(self.flight_data)
+        msg = await self.bot.flight_board_service.post_flight_board(self.flight_data)
         
-        files = []
-        if thumbnail_file:
-            files.append(thumbnail_file)
-        
-        if hasattr(self.bot, 'route_map_service'):
+        if msg:
+            await interaction.followup.send(f"✅ Live board is posted: {msg.jump_url}", ephemeral=True)
             try:
-                map_result = await self.bot.route_map_service.create_route_map(
-                    self.flight_data['departure'], self.flight_data['arrival']
-                )
-                if not isinstance(map_result, str):
-                    files.append(discord.File(map_result, filename="route_map.png"))
-                    embed.set_image(url="attachment://route_map.png")
-            except Exception as e:
-                logging.error(f"Map generation failed: {e}")
-        
-        if files:
-            await interaction.edit_original_response(content=None, embed=embed, view=view, attachments=files)
+                await interaction.delete_original_response()
+            except:
+                pass
         else:
-            await interaction.edit_original_response(content=None, embed=embed, view=view)
+            await interaction.followup.send("❌ Failed to post flight to board.", ephemeral=True)
 
 class FlightBoardView(discord.ui.View):
     def __init__(self, flight_data):

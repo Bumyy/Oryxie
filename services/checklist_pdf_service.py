@@ -187,6 +187,20 @@ class ChecklistPDFService:
             if 'items' in section:
                 for item in section.get('items', []):
                     value = item['value']
+                    
+                    # Dynamic VS adjustment logic (e.g., for A380 where VS increases at 5k)
+                    if "REDUCE VS TO" in value:
+                        try:
+                            curr, targ = 0, 0
+                            if "{vs_5k}" in value:
+                                curr, targ = int(placeholders.get('initial_climb_vs', 0)), int(placeholders.get('vs_5k', 0))
+                            elif "{vs_15k}" in value:
+                                curr, targ = int(placeholders.get('vs_5k', 0)), int(placeholders.get('vs_15k', 0))
+                            elif "{vs_24k}" in value:
+                                curr, targ = int(placeholders.get('vs_15k', 0)), int(placeholders.get('vs_24k', 0))
+                            if targ > curr: value = value.replace("REDUCE", "INCREASE")
+                        except: pass
+
                     for key, val in placeholders.items():
                         value = value.replace(f"{{{key}}}", str(val))
                     pdf.checklist_item(item['text'], value, item.get('is_dynamic', False))
@@ -311,6 +325,20 @@ class ChecklistPDFService:
             if 'items_after_special' in section:
                 for item in section['items_after_special']:
                     value = item['value']
+                    
+                    # Dynamic VS adjustment logic
+                    if "REDUCE VS TO" in value:
+                        try:
+                            curr, targ = 0, 0
+                            if "{vs_5k}" in value:
+                                curr, targ = int(placeholders.get('initial_climb_vs', 0)), int(placeholders.get('vs_5k', 0))
+                            elif "{vs_15k}" in value:
+                                curr, targ = int(placeholders.get('vs_5k', 0)), int(placeholders.get('vs_15k', 0))
+                            elif "{vs_24k}" in value:
+                                curr, targ = int(placeholders.get('vs_15k', 0)), int(placeholders.get('vs_24k', 0))
+                            if targ > curr: value = value.replace("REDUCE", "INCREASE")
+                        except: pass
+
                     for key, val in placeholders.items():
                         value = value.replace(f"{{{key}}}", str(val))
                     pdf.checklist_item(item['text'], value, item.get('is_dynamic', False))
@@ -346,16 +374,66 @@ class ChecklistPDFService:
                         pdf.set_font('Arial', '', 8)
                         # Table data - smaller font and row height
                         for ld in filtered_data:
-                            pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
-                            pdf.cell(20, 5, ld['flaps'], 1, 0, 'C')
-                            pdf.cell(20, 5, str(ld['vapp']), 1, 0, 'C')
-                            pdf.cell(20, 5, str(ld['vflare']), 1, 1, 'C')
+                            if aircraft_type == "B38M":
+                                # Load Range
+                                pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
+                                
+                                # Flaps 30/40 (Multi-color)
+                                x = pdf.get_x()
+                                pdf.cell(20, 5, "", 1, 0)
+                                pdf.set_x(x)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.cell(10, 5, "30", 0, 0, 'R')
+                                pdf.set_text_color(200, 0, 0) # Red for Flaps 40
+                                pdf.cell(10, 5, "/40", 0, 0, 'L')
+                                
+                                # Vapp (Multi-color)
+                                v30 = ld['vapp']
+                                v40 = v30 - 5
+                                x = pdf.get_x()
+                                pdf.cell(20, 5, "", 1, 0)
+                                pdf.set_x(x)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.cell(10, 5, str(v30), 0, 0, 'R')
+                                pdf.set_text_color(200, 0, 0)
+                                pdf.cell(10, 5, f"({v40})", 0, 0, 'L')
+                                
+                                # Vflare (Multi-color)
+                                vf30 = ld['vflare']
+                                vf40 = vf30 - 5
+                                x = pdf.get_x()
+                                pdf.cell(20, 5, "", 1, 1)
+                                pdf.set_xy(x, pdf.get_y() - 5)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.cell(10, 5, str(vf30), 0, 0, 'R')
+                                pdf.set_text_color(200, 0, 0)
+                                pdf.cell(10, 5, f"({vf40})", 0, 0, 'L')
+                                pdf.set_text_color(0, 0, 0) # Reset color
+                            else:
+                                pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
+                                pdf.cell(20, 5, ld['flaps'], 1, 0, 'C')
+                                pdf.cell(20, 5, str(ld['vapp']), 1, 0, 'C')
+                                pdf.cell(20, 5, str(ld['vflare']), 1, 1, 'C')
                         pdf.ln(2)
             
             # Handle items_after_table (for items after landing data table)
             if 'items_after_table' in section:
                 for item in section['items_after_table']:
                     value = item['value']
+                    
+                    # Dynamic VS adjustment logic
+                    if "REDUCE VS TO" in value:
+                        try:
+                            curr, targ = 0, 0
+                            if "{vs_5k}" in value:
+                                curr, targ = int(placeholders.get('initial_climb_vs', 0)), int(placeholders.get('vs_5k', 0))
+                            elif "{vs_15k}" in value:
+                                curr, targ = int(placeholders.get('vs_5k', 0)), int(placeholders.get('vs_15k', 0))
+                            elif "{vs_24k}" in value:
+                                curr, targ = int(placeholders.get('vs_15k', 0)), int(placeholders.get('vs_24k', 0))
+                            if targ > curr: value = value.replace("REDUCE", "INCREASE")
+                        except: pass
+
                     for key, val in placeholders.items():
                         value = value.replace(f"{{{key}}}", str(val))
                     pdf.checklist_item(item['text'], value, item.get('is_dynamic', False))
