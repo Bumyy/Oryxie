@@ -82,14 +82,16 @@ class MissionDispatcherCog(commands.Cog):
                                 for ac in db_aircraft:
                                     icao = ac.get('icao')
                                     name = ac.get('name')
+                                    livery = ac.get('livery', 'Standard')
                                     if (not icao or icao == 'XXXX') and self.flight_board_service:
                                         icao = self.flight_board_service.convert_aircraft_name_to_icao(name)
                                     val = icao if icao and icao != 'XXXX' else name
-                                    if val and val not in ac_options:
-                                        ac_options.append(val)
+                                    if val and not any(opt['code'] == val and opt['livery'] == livery for opt in ac_options):
+                                        ac_options.append({'code': val, 'livery': livery})
                                 
                                 if len(ac_options) == 1:
-                                    details['aircraft'] = ac_options[0]
+                                    details['aircraft'] = ac_options[0]['code']
+                                    details['livery'] = ac_options[0]['livery']
                                 elif len(ac_options) > 1:
                                     details['aircraft'] = ac_options
                 except Exception as e:
@@ -282,7 +284,11 @@ class MissionRouteSelectView(discord.ui.View):
         else:
             # Handle single aircraft or default
             if isinstance(aircraft_opt, list) and len(aircraft_opt) == 1:
-                details['aircraft'] = aircraft_opt[0]
+                if isinstance(aircraft_opt[0], dict):
+                    details['aircraft'] = aircraft_opt[0]['code']
+                    details['livery'] = aircraft_opt[0]['livery']
+                else:
+                    details['aircraft'] = aircraft_opt[0]
             if not details['aircraft']:
                 details['aircraft'] = "B77W" # Default fallback
             
@@ -295,13 +301,26 @@ class AircraftSelectView(discord.ui.View):
         self.mode = mode
         self.details = details
         
-        options = [discord.SelectOption(label=ac, value=ac) for ac in aircraft_list]
+        options = []
+        for ac in aircraft_list:
+            if isinstance(ac, dict):
+                label = f"{ac['code']} ({ac['livery']})"[:100]
+                value = f"{ac['code']}|{ac['livery']}"
+            else:
+                label = str(ac)[:100]
+                value = str(ac)
+            options.append(discord.SelectOption(label=label, value=value))
+
         self.select = discord.ui.Select(placeholder="Select Aircraft...", options=options[:25])
         self.select.callback = self.callback
         self.add_item(self.select)
 
     async def callback(self, interaction: discord.Interaction):
-        self.details['aircraft'] = self.select.values[0]
+        val = self.select.values[0]
+        if '|' in val:
+            self.details['aircraft'], self.details['livery'] = val.split('|', 1)
+        else:
+            self.details['aircraft'] = val
         await interaction.response.defer(ephemeral=True)
         await self.cog.execute_action(interaction, self.mode, self.details)
 
