@@ -394,7 +394,7 @@ class PirepValidator(commands.Cog):
         try:
             thread = await message.create_thread(
                 name=f"Validating {flight_num_str} ({callsign_str})",
-                auto_archive_duration=60
+                auto_archive_duration=10080
             )
         except Exception as e:
             logger.error(f"Could not create thread for {flight_num_str}: {e}")

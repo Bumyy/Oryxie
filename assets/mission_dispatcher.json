@@ -67,14 +67,14 @@
     "WT12": {
       "source": "cc",
       "flight_number": "MH602"
+    },
+    "WT13": {
+      "source": "cc",
+      "flight_number": "MH721"
     }
   },
 
   "WorldTourSet2": {
-    "WT13": {
-      "source": "cc",
-      "flight_number": "MH721"
-    },
     "WT14": {
       "source": "cc",
       "flight_number": "GA716"
