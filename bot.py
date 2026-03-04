@@ -16,6 +16,7 @@ from database.flight_data import FlightData
 from database.shop_model import ShopModel
 from database.mission_module import MissionDB
 from api.manager import InfiniteFlightAPIManager
+from api.crewcenter_manager import CrewCenterAPIManager
 try:
     from services.ai_service import AIService
 except ImportError:
@@ -50,6 +51,7 @@ class MyBot(commands.Bot):
         self.mission_db: MissionDB = None
         self.flightdata: FlightData = None
         self.if_api_manager: InfiniteFlightAPIManager = None
+        self.cc_api_manager: CrewCenterAPIManager = None
         self.aircraft_name_map = {}
         self.livery_cache = {}
         # Services
@@ -91,6 +93,7 @@ class MyBot(commands.Bot):
         
         # --- Initialize API Manager (SAFE STARTUP) ---
         self.if_api_manager = None
+        self.cc_api_manager = None
         aircraft_data = None
 
         try:
@@ -98,10 +101,15 @@ class MyBot(commands.Bot):
             await self.if_api_manager.connect()
             print("Infinite Flight API Manager initialized.")
 
+            self.cc_api_manager = CrewCenterAPIManager(self)
+            await self.cc_api_manager.connect()
+            print("Crew Center API Manager initialized.")
+
             aircraft_data = await self.if_api_manager.get_aircraft()
         except Exception as e:
             print(f"[IF API ERROR] {e}")
             self.if_api_manager = None
+            self.cc_api_manager = None
             aircraft_data = None
 
         if aircraft_data and aircraft_data.get('result'):
@@ -183,6 +191,9 @@ class MyBot(commands.Bot):
         
         if self.if_api_manager:
             await self.if_api_manager.close()
+
+        if self.cc_api_manager:
+            await self.cc_api_manager.close()
 
 async def start_bot():
     """
