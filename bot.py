@@ -14,8 +14,11 @@ from database.pilots_model import PilotsModel
 from database.event_transaction_model import EventTransactionModel
 from database.flight_data import FlightData
 from database.shop_model import ShopModel
+from database.flight_board_model import FlightBoardModel
 from database.mission_module import MissionDB
+from database.va_data_model import RankModel, AircraftModel, MultiplierModel
 from api.manager import InfiniteFlightAPIManager
+from api.crewcenter_manager import CrewCenterAPIManager
 try:
     from services.ai_service import AIService
 except ImportError:
@@ -27,6 +30,7 @@ from services.route_map_service import RouteMapService
 from services.checklist_pdf_service import ChecklistPDFService
 from services.simbrief_service import SimBriefService
 from services.flight_board_service import FlightBoardService
+from services.pirep_filing_service import PirepFilingService
 
 load_dotenv()
 
@@ -48,9 +52,16 @@ class MyBot(commands.Bot):
         self.event_transaction_model: EventTransactionModel = None
         self.shop_model: ShopModel = None
         self.mission_db: MissionDB = None
+        self.flight_board_model: FlightBoardModel = None
         self.flightdata: FlightData = None
+        # VA Data Models
+        self.rank_model: RankModel = None
+        self.aircraft_model: AircraftModel = None
+        self.multiplier_model: MultiplierModel = None
         self.if_api_manager: InfiniteFlightAPIManager = None
+        self.cc_api_manager: CrewCenterAPIManager = None
         self.aircraft_name_map = {}
+        self.livery_name_map = {}
         self.livery_cache = {}
         # Services
         self.ai_service: AIService = None
@@ -60,6 +71,7 @@ class MyBot(commands.Bot):
         self.checklist_pdf_service: ChecklistPDFService = None
         self.simbrief_service: SimBriefService = None
         self.flight_board_service: FlightBoardService = None
+        self.pirep_filing_service: PirepFilingService = None
 
     async def setup_hook(self):
         """
@@ -75,6 +87,12 @@ class MyBot(commands.Bot):
         self.event_transaction_model = EventTransactionModel(self.db_manager)
         self.shop_model = ShopModel(self.db_manager)
         self.mission_db = MissionDB(self.db_manager)
+        self.flight_board_model = FlightBoardModel(self.db_manager)
+        
+        # Initialize VA Data Models
+        self.rank_model = RankModel(self.db_manager)
+        self.aircraft_model = AircraftModel(self.db_manager)
+        self.multiplier_model = MultiplierModel(self.db_manager)
         
         # --- Initialize Flight Data ---
         self.flightdata = FlightData()
@@ -87,10 +105,13 @@ class MyBot(commands.Bot):
         self.checklist_pdf_service = ChecklistPDFService()
         self.simbrief_service = SimBriefService()
         self.flight_board_service = FlightBoardService(self)
+        self.pirep_filing_service = PirepFilingService(self)
+        self.auto_pirep_service = None  # Lazy loaded in cog
         print("DatabaseManager, FlightData, and Services instances created.")
         
         # --- Initialize API Manager (SAFE STARTUP) ---
         self.if_api_manager = None
+        self.cc_api_manager = None
         aircraft_data = None
 
         try:
@@ -98,10 +119,15 @@ class MyBot(commands.Bot):
             await self.if_api_manager.connect()
             print("Infinite Flight API Manager initialized.")
 
+            self.cc_api_manager = CrewCenterAPIManager(self)
+            await self.cc_api_manager.connect()
+            print("Crew Center API Manager initialized.")
+
             aircraft_data = await self.if_api_manager.get_aircraft()
         except Exception as e:
             print(f"[IF API ERROR] {e}")
             self.if_api_manager = None
+            self.cc_api_manager = None
             aircraft_data = None
 
         if aircraft_data and aircraft_data.get('result'):
@@ -109,6 +135,11 @@ class MyBot(commands.Bot):
                 aircraft['id']: aircraft['name']
                 for aircraft in aircraft_data['result']
             }
+            
+            for aircraft in aircraft_data['result']:
+                if 'liveries' in aircraft:
+                    for livery in aircraft['liveries']:
+                        self.livery_name_map[livery['id']] = livery['name']
             print(f"Successfully loaded {len(self.aircraft_name_map)} aircraft names.")
         else:
             print("WARNING: Could not load aircraft names from the API. Aircraft will show as 'Unknown'.")
@@ -132,7 +163,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.ticket_system')
             await self.load_extension('cogs.pirep_validator')
             await self.load_extension('cogs.message_cleaner')
-          #  await self.load_extension('cogs.special_events')
+           #  await self.load_extension('cogs.special_events')
           # await self.load_extension('cogs.gift_box')
           #   await self.load_extension('cogs.activity_check')
             await self.load_extension('cogs.rank_management')
@@ -140,9 +171,12 @@ class MyBot(commands.Bot):
            # await self.load_extension('cogs.dossier')
             await self.load_extension('cogs.checklist_cog')
             await self.load_extension('cogs.flight_board_cog')
-            
+            await self.load_extension('cogs.auto_pirep_cog')
+            await self.load_extension('cogs.monthly_stats')
+    
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
+            await self.load_extension('cogs.ayush')
             
             
             print("All cogs loaded.")
@@ -183,6 +217,9 @@ class MyBot(commands.Bot):
         
         if self.if_api_manager:
             await self.if_api_manager.close()
+
+        if self.cc_api_manager:
+            await self.cc_api_manager.close()
 
 async def start_bot():
     """

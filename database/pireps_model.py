@@ -568,6 +568,35 @@ class PirepsModel:
         """
         return await self.db.fetch_all(query)
 
+    async def get_mission_leaderboard(self, valid_flight_nums: list[str]) -> list[dict]:
+        """
+        Fetches leaderboard for specific flight numbers (e.g. WT1, WT2).
+        Returns list of dicts with pilot info and unique completed count.
+        """
+        if not valid_flight_nums:
+            return []
+            
+        # Create placeholders for the IN clause
+        placeholders = ','.join(['%s'] * len(valid_flight_nums))
+        
+        query = f"""
+            SELECT 
+                p.pilotid,
+                pi.name as pilot_name,
+                pi.callsign,
+                pi.discordid,
+                COUNT(DISTINCT p.flightnum) as completed_count,
+                MAX(p.id) as last_pirep_id
+            FROM pireps p
+            JOIN pilots pi ON p.pilotid = pi.id
+            WHERE p.status = 1 
+            AND p.flightnum IN ({placeholders})
+            GROUP BY p.pilotid, pi.name, pi.callsign, pi.discordid
+            ORDER BY completed_count DESC, last_pirep_id ASC
+        """
+        
+        return await self.db.fetch_all(query, tuple(valid_flight_nums))
+
 '''
 === DATABASE STRUCTURE: pireps ===
 
