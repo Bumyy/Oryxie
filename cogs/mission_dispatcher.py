@@ -3,10 +3,13 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import os
+import re
 import logging
+from datetime import datetime
 
 from services.simbrief_service import SimBriefService
 from services.flight_board_service import FlightBoardService
+from services.pirep_filing_service import PirepFilingService
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +19,10 @@ MISSION_CONFIG = {
     "EMBED_DESCRIPTION": (
         "**Welcome to the Mission Dispatch Center**\n\n"
         "Tap a Button below to manage your World Tour planning.\n"
-        "• **SimBrief**: Generate a Simbrief link for your selected Route and aircraft .\n"
-        "• **Flight Board**: Announce your flight to the #live-Flight channel."
+        "• **SimBrief**: Generate a Simbrief link for your selected Route and aircraft.\n"
+        "• **Flight Board**: Announce your flight to the #live-Flight channel.\n"
+        "• **File PIREP**: Submit PIREP of your completed flight .\n"
+        "• **Leaderboard**: View your progress and rankings."
     ),
     "EMBED_COLOR": 0x1D5367,
     "FOOTER_TEXT": "QRV Mission Dispatcher | World Tour 2026",
@@ -25,9 +30,143 @@ MISSION_CONFIG = {
     "BUTTON_SIMBRIEF_EMOJI": "📋",
     "BUTTON_BOARD_LABEL": "Flight Board",
     "BUTTON_BOARD_EMOJI": "✈️",
-    "ACTIVE_SETS": ["WorldTourSet1"],
+    "BUTTON_PIREP_LABEL": "File PIREP",
+    "BUTTON_PIREP_EMOJI": "📄",
+    "BUTTON_LEADERBOARD_LABEL": "Leaderboard",
+    "BUTTON_LEADERBOARD_EMOJI": "🏆",
+    "ACTIVE_SETS": ["WorldTourSet2", "WorldTourSet1"],
     "LOGO_PATH": "assets/WT2026.png"
 }
+
+# --- UI Components for PIREP Filing ---
+
+class PirepDurationModalHHMM(discord.ui.Modal, title="Enter Flight Duration"):
+    hours = discord.ui.TextInput(
+        label="Hours (HH)",
+        placeholder="e.g., 07",
+        required=True,
+        max_length=2
+    )
+    minutes = discord.ui.TextInput(
+        label="Minutes (MM)",
+        placeholder="e.g., 30",
+        required=True,
+        max_length=2
+    )
+
+    def __init__(self, cog, pirep_data: dict):
+        super().__init__()
+        self.cog = cog
+        self.pirep_data = pirep_data
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            h = int(self.hours.value)
+            m = int(self.minutes.value)
+            if not (0 <= h <= 99 and 0 <= m <= 59):
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid time format. Please use numbers for HH and MM.", ephemeral=True)
+            return
+        
+        self.pirep_data['duration'] = f"{h:02d}:{m:02d}"
+        await interaction.response.defer(ephemeral=True)
+        await self.cog._start_multiplier_selection(interaction, self.pirep_data)
+
+class PirepDurationConfirmView(discord.ui.View):
+    def __init__(self, cog, pirep_data: dict):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.pirep_data = pirep_data
+
+    @discord.ui.button(label="✅ Proceed with this time", style=discord.ButtonStyle.success)
+    async def proceed(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await self.cog._start_multiplier_selection(interaction, self.pirep_data)
+
+    @discord.ui.button(label="✏️ Edit Time", style=discord.ButtonStyle.secondary)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = PirepDurationModalHHMM(self.cog, self.pirep_data)
+        await interaction.response.send_modal(modal)
+
+class PirepMultiplierSelectView(discord.ui.View):
+    def __init__(self, cog, pirep_data: dict, multipliers: list):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.pirep_data = pirep_data
+        
+        options = [discord.SelectOption(label=f"{m['name']} ({m['multiplier']}x)", value=str(m['id'])) for m in multipliers]
+        options.insert(0, discord.SelectOption(label="No Multiplier", value="0"))
+
+        self.select = discord.ui.Select(placeholder="Choose a Multiplier...", options=options)
+        self.select.callback = self.callback
+        self.add_item(self.select)
+
+    async def callback(self, interaction: discord.Interaction):
+        multiplier_id = int(self.select.values[0])
+        if multiplier_id != 0:
+            self.pirep_data['multiplier_id'] = multiplier_id
+        
+        confirm_view = PirepConfirmView(self.cog, self.pirep_data)
+        await confirm_view.prepare_embed()
+        await interaction.response.edit_message(content="Please confirm the final details:", embed=confirm_view.embed, view=confirm_view)
+
+class PirepConfirmView(discord.ui.View):
+    def __init__(self, cog, pirep_data: dict):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.pirep_data = pirep_data
+        self.embed = None
+
+    async def prepare_embed(self):
+        """Prepares the embed, fetching multiplier name if needed."""
+        multiplier_name = "None"
+        if self.pirep_data.get('multiplier_id'):
+            try:
+                mult_data = await self.cog.bot.multiplier_model.get_multiplier_by_id(self.pirep_data['multiplier_id'])
+                if mult_data:
+                    multiplier_name = f"{mult_data['name']} ({mult_data['multiplier']}x)"
+            except Exception as e:
+                logger.error(f"Error fetching multiplier name for confirm view: {e}")
+                multiplier_name = "Error fetching name"
+
+        embed = discord.Embed(title="📄 Confirm PIREP Details", description="Please review the details below before filing.", color=0x3498db)
+        embed.add_field(name="Flight", value=self.pirep_data['flight_num'], inline=True)
+        embed.add_field(name="Route", value=f"{self.pirep_data['departure']} → {self.pirep_data['arrival']}", inline=True)
+        embed.add_field(name="Duration", value=self.pirep_data['duration'], inline=True)
+        embed.add_field(name="Aircraft", value=f"ID: {self.pirep_data['aircraft_id']} (Fixed for WT)", inline=True)
+        embed.add_field(name="Multiplier", value=multiplier_name, inline=True)
+        user = None
+        discord_id_str = self.pirep_data.get('discord_id')
+        if discord_id_str:
+            try:
+                user = await self.cog.bot.fetch_user(int(discord_id_str))
+            except (discord.NotFound, ValueError):
+                logger.warning(f"Could not fetch user with discord_id: {discord_id_str}")
+        embed.set_footer(text=f"Filing for: {user.display_name if user else 'Unknown User'}")
+        self.embed = embed
+
+    @discord.ui.button(label="✅ Confirm & File PIREP", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        for child in self.children: child.disabled = True
+        await interaction.edit_original_response(view=self)
+        
+        response = await self.cog.pirep_filing_service.submit_pirep(
+            pilot_id=self.pirep_data['pilot_id'], flight_num=self.pirep_data['flight_num'],
+            dep=self.pirep_data['departure'], arr=self.pirep_data['arrival'],
+            aircraft_id=self.pirep_data['aircraft_id'], duration_str=self.pirep_data['duration'],
+            multiplier_id=self.pirep_data.get('multiplier_id')
+        )
+        
+        msg = "✅ PIREP filed successfully!" if response and response.get('status') == 0 else f"❌ PIREP filing failed: {response.get('result', 'Unknown error') if response else 'No response'}"
+        await interaction.followup.send(msg, ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="PIREP filing cancelled.", view=None, embed=None)
+        self.stop()
 
 class MissionDispatcherCog(commands.Cog):
     def __init__(self, bot):
@@ -42,6 +181,30 @@ class MissionDispatcherCog(commands.Cog):
         self.flight_board_service = getattr(bot, 'flight_board_service', None)
         if not self.flight_board_service:
             self.flight_board_service = FlightBoardService(bot)
+            
+        self.pirep_filing_service = getattr(bot, 'pirep_filing_service', None)
+        if not self.pirep_filing_service:
+            self.pirep_filing_service = PirepFilingService(bot)
+
+    async def _start_multiplier_selection(self, interaction: discord.Interaction, pirep_data: dict):
+        """Fetches multipliers and shows the selection view."""
+        multipliers = await self.pirep_filing_service.get_pilot_multipliers(pirep_data.get('pilot_id'))
+        
+        if not multipliers:
+            confirm_view = PirepConfirmView(self, pirep_data)
+            await confirm_view.prepare_embed()
+            # The interaction was deferred, so we must use followup.
+            await interaction.followup.send(
+                content="No multipliers available for your rank. Please confirm details:", 
+                embed=confirm_view.embed, view=confirm_view, ephemeral=True
+            )
+            return
+
+        view = PirepMultiplierSelectView(self, pirep_data, multipliers)
+        # The interaction was deferred, so we must use followup.
+        await interaction.followup.send(
+            content="Please select a flight multiplier:", view=view, embed=None, ephemeral=True
+        )
 
     def _load_mission_data(self):
         try:
@@ -107,15 +270,14 @@ class MissionDispatcherCog(commands.Cog):
 
     async def execute_action(self, interaction, mode, details):
         """Finalizes the action: Generates SimBrief link or Posts to Flight Board."""
-        pilot_res = await self.bot.pilots_model.identify_pilot(interaction.user)
-        if not pilot_res['success']:
-            await interaction.edit_original_response(content=f"❌ {pilot_res['error_message']}", view=None)
-            return
-        
-        pilot_data = pilot_res['pilot_data']
-        callsign = pilot_data['callsign']
 
         if mode == "simbrief":
+            pilot_res = await self.bot.pilots_model.identify_pilot(interaction.user)
+            if not pilot_res['success']:
+                await interaction.edit_original_response(content=f"❌ {pilot_res['error_message']}", view=None)
+                return
+            pilot_data = pilot_res['pilot_data']
+            callsign = pilot_data['callsign']
             if self.simbrief_service:
                 link = self.simbrief_service.generate_dispatch_link(
                     origin=details['departure'],
@@ -132,6 +294,12 @@ class MissionDispatcherCog(commands.Cog):
                 await interaction.edit_original_response(content="❌ SimBrief service unavailable.", view=None)
         
         elif mode == "board":
+            pilot_res = await self.bot.pilots_model.identify_pilot(interaction.user)
+            if not pilot_res['success']:
+                await interaction.edit_original_response(content=f"❌ {pilot_res['error_message']}", view=None)
+                return
+            pilot_data = pilot_res['pilot_data']
+            callsign = pilot_data['callsign']
             fb_data = {
                 'flight_num': details['flight_number'],
                 'departure': details['departure'],
@@ -155,6 +323,36 @@ class MissionDispatcherCog(commands.Cog):
                     await interaction.edit_original_response(content="❌ Failed to post to Flight Board.", view=None)
             else:
                 await interaction.edit_original_response(content="❌ Flight Board service unavailable.", view=None)
+        
+        elif mode == "pirep":
+            prepared_data = await self.pirep_filing_service.prepare_pirep_data(
+                discord_id=interaction.user.id,
+                flight_data=details
+            )
+
+            if not prepared_data.get('success'):
+                await interaction.response.edit_message(content=f"❌ Error preparing PIREP: {prepared_data.get('error')}", view=None)
+                return
+
+            pirep_to_file = {
+                'pilot_id': prepared_data['pilot_data']['id'],
+                'discord_id': prepared_data['pilot_data'].get('discordid'),
+                'aircraft_id': prepared_data['aircraft_data']['id'],
+                'flight_num': prepared_data['pirep_data']['flight_num'],
+                'departure': prepared_data['pirep_data']['departure'],
+                'arrival': prepared_data['pirep_data']['arrival'],
+                'duration': prepared_data['pirep_data']['duration']
+            }
+
+            if pirep_to_file['duration']:
+                view = PirepDurationConfirmView(self, pirep_to_file)
+                await interaction.response.edit_message(
+                    content=f"⏱️ **Flight Detected!**\nWe found a matching flight with duration: **{pirep_to_file['duration']}**.",
+                    view=view
+                )
+            else:
+                modal = PirepDurationModalHHMM(self, pirep_to_file)
+                await interaction.response.send_modal(modal)
 
     @app_commands.command(name="mission_dispatcher", description="Post the Mission Dispatcher panel.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -220,6 +418,60 @@ class MissionDispatcherView(discord.ui.View):
     async def board_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.start_flow(interaction, "board")
 
+    @discord.ui.button(label=MISSION_CONFIG["BUTTON_PIREP_LABEL"], style=discord.ButtonStyle.secondary, emoji=MISSION_CONFIG["BUTTON_PIREP_EMOJI"], custom_id="mission_pirep_btn")
+    async def pirep_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.start_flow(interaction, "pirep")
+
+    @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.secondary, emoji="🏆", custom_id="mission_leaderboard_btn")
+    async def leaderboard_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Collect mission keys (WT1, WT2, etc.)
+        mission_keys = []
+        for set_name, missions in self.cog.mission_data.items():
+            if set_name.startswith('_'): continue
+            for key in missions.keys():
+                mission_keys.append(key)
+        
+        if not mission_keys:
+            await interaction.followup.send("No World Tour missions configured.", ephemeral=True)
+            return
+
+        # Get leaderboard data
+        leaderboard = await self.cog.bot.pireps_model.get_mission_leaderboard(mission_keys)
+        
+        if not leaderboard:
+            await interaction.followup.send("No completed World Tour flights found yet.", ephemeral=True)
+            return
+
+        # Build Embed
+        embed = discord.Embed(title="🌍 World Tour Leaderboard", color=0x1D5367)
+        
+        # Top 10
+        medals = ["🥇", "🥈", "🥉"]
+        description_lines = []
+        for i, entry in enumerate(leaderboard[:10]):
+            medal = medals[i] if i < 3 else f"**#{i+1}**"
+            display_name = f"<@{entry['discordid']}>" if entry['discordid'] else entry['pilot_name']
+            count = entry['completed_count']
+            description_lines.append(f"{medal} **{display_name}** — {count} Legs")
+            
+        embed.description = "\n".join(description_lines) if description_lines else "No data."
+        
+        # User Progress
+        user_entry = next((x for x in leaderboard if str(x['discordid']) == str(interaction.user.id)), None)
+        total_legs = len(mission_keys)
+        
+        if user_entry:
+            rank = leaderboard.index(user_entry) + 1
+            completed = user_entry['completed_count']
+            percentage = (completed / total_legs) * 100 if total_legs > 0 else 0
+            embed.add_field(name="Your Progress", value=f"Rank: **#{rank}**\nCompleted: **{completed}/{total_legs}** ({percentage:.1f}%)", inline=False)
+        else:
+            embed.add_field(name="Your Progress", value=f"You haven't completed any World Tour legs yet.\nTotal Legs: **{total_legs}**", inline=False)
+            
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 class MissionSetSelectView(discord.ui.View):
     def __init__(self, cog, mode, sets):
         super().__init__(timeout=180)
@@ -267,10 +519,15 @@ class MissionRouteSelectView(discord.ui.View):
         mission_key = self.select.values[0]
         mission_data = self.missions.get(mission_key)
         
+        if self.mode == 'pirep':
+            details = await self.cog.get_route_details(mission_data)
+            details['flight_number'] = mission_key
+            details['cc_aircraft_id'] = 11
+            await self.cog.execute_action(interaction, self.mode, details)
+            return
+
         await interaction.response.defer(ephemeral=True)
-        
         details = await self.cog.get_route_details(mission_data)
-        
         if not details['departure'] or not details['arrival']:
             await interaction.edit_original_response(content=f"❌ Could not resolve route details for **{details['flight_number']}**. Please check database or config.", view=None)
             return
