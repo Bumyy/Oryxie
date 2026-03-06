@@ -106,3 +106,14 @@ class SimBriefService:
 
         query_string = urllib.parse.urlencode(params)
         return f"{self.base_dispatch_url}?{query_string}"
+
+    def generate_flightaware_link(self, origin: str, destination: str) -> str:
+        """
+        Generates a FlightAware search link for the route.
+        """
+        params = {
+            "origin": origin.upper(),
+            "destination": destination.upper()
+        }
+        query_string = urllib.parse.urlencode(params)
+        return f"https://www.flightaware.com/live/findflight?{query_string}"

@@ -40,14 +40,18 @@ class CrewCenterAPIManager:
         params['apikey'] = self.api_key
         
         url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        data_payload = kwargs.get('data')
         
         try:
             async with session.request(method, url, params=params, **kwargs) as response:
+                response_text = await response.text()
                 response.raise_for_status()
                 
                 if 'application/json' in response.headers.get('Content-Type', ''):
-                    return await response.json()
-                return await response.text()
+                    # We already read the text, so we parse it now
+                    import json
+                    return json.loads(response_text)
+                return response_text
                 
         except aiohttp.ClientResponseError as e:
             print(f"[CC API] Request Error to {url}: {e.status}, message='{e.message}'")
@@ -78,7 +82,6 @@ class CrewCenterAPIManager:
             departure (str): The 4-letter ICAO code of the departure airport (e.g., "EGLL").
             arrival (str): The 4-letter ICAO code of the arrival airport (e.g., "KJFK").
             flight_time (str): The duration of the flight, formatted as "HH:MM" (e.g., "05:30").
-                               This gets parsed by PHP's Time::strToSecs.
             date (str): The date the flight was completed, formatted as "YYYY-MM-DD" (e.g., "2023-10-25").
             aircraft_id (int): The internal database ID of the aircraft flown (e.g., 1).
                                The pilot must have the required rank/awards to fly this ID.
@@ -104,5 +107,26 @@ class CrewCenterAPIManager:
 
         if multiplier:
             payload['multi'] = multiplier
-            
+        
         return await self._request('POST', '/pireps', data=payload)
+
+    async def fetch_all_aircraft(self) -> Dict[str, int]:
+        """
+        Fetches all active aircraft from the API and returns a mapping of Name -> ID.
+        Example return: {"A320": 14, "B77W": 2, "Boeing 737": 5}
+        """
+        response = await self._request('GET', '/aircraft')
+        if response and response.get('status') == 0:
+            # Map both the full name and the ICAO/Shortname to the ID for easier searching
+            # Adjust 'name' or 'icao' based on what your specific PHP API returns in the JSON
+            mapping = {}
+            for ac in response.get('result', []):
+                # We try to map multiple keys to the same ID to help the user find it
+                if 'name' in ac:
+                    mapping[ac['name']] = ac['id']
+                if 'icao' in ac:
+                    mapping[ac['icao']] = ac['id']
+                if 'registration' in ac:
+                    mapping[ac['registration']] = ac['id']
+            return mapping
+        return {}

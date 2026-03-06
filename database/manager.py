@@ -54,14 +54,14 @@ class DatabaseManager:
         """
         The central workhorse method for all database operations.
         Includes reconnection and retry logic.
-        fetch_type can be 'one', 'all', or 'none'.
+        fetch_type can be 'one', 'all', 'insert', or 'none'.
         """
         for attempt in range(2):
             try:
                 pool = await self._get_pool()
                 if not pool:
                     print("Error: Database pool is not available.")
-                    return None if fetch_type == 'one' else [] if fetch_type == 'all' else 0
+                    return None if fetch_type in ['one', 'insert'] else [] if fetch_type == 'all' else 0
 
                 async with pool.acquire() as conn:
                     async with conn.cursor() as cursor:
@@ -71,6 +71,8 @@ class DatabaseManager:
                             return await cursor.fetchone()
                         elif fetch_type == 'all':
                             return await cursor.fetchall()
+                        elif fetch_type == 'insert':
+                            return cursor.lastrowid
                         else:
                             return cursor.rowcount
 
@@ -87,7 +89,7 @@ class DatabaseManager:
                 print(f"An unexpected database error occurred: {e} - Query: {query} Args: {args}")
                 break
         
-        return None if fetch_type == 'one' else [] if fetch_type == 'all' else 0
+        return None if fetch_type in ['one', 'insert'] else [] if fetch_type == 'all' else 0
 
     async def fetch_one(self, query: str, args: tuple = None):
         """Executes a SELECT query and returns the first row."""
@@ -100,3 +102,7 @@ class DatabaseManager:
     async def execute(self, query: str, args: tuple = None):
         """Executes an INSERT, UPDATE, or DELETE query and returns row count."""
         return await self._execute_query(query, args, fetch_type='none')
+
+    async def insert(self, query: str, args: tuple = None):
+        """Executes an INSERT query and returns the last inserted ID."""
+        return await self._execute_query(query, args, fetch_type='insert')

@@ -651,20 +651,7 @@ class PirepValidationService:
     
     async def _check_pilot_rank_for_owd(self, pilot_id: int) -> bool:
         """Check if pilot has OneWorld rank or above"""
-        import json
-        import os
-        
-        pilot_data = await self.bot.pilots_model.get_pilot_by_id(pilot_id)
-        if not pilot_data:
-            return False
-        
-        rank_config_path = os.path.join('assets', 'rank_config.json')
-        with open(rank_config_path, 'r') as f:
-            rank_config = json.load(f)
-        
-        pilot_rank = pilot_data.get('rank', 'Cadet')
-        owd_ranks = ['OneWorld', 'Oryx']
-        return pilot_rank in owd_ranks
+        return await self.bot.rank_model.is_owd_eligible(pilot_id)
 
     async def check_route_database(self, departure, arrival, flight_num, pilot_id=None):
         """Check if the flight number exists in the routes database or OWD routes."""
