@@ -597,6 +597,31 @@ class PirepsModel:
         
         return await self.db.fetch_all(query, tuple(valid_flight_nums))
 
+    async def get_top_days_pireps_over_10_min(self, limit: int = 3) -> list[dict]:
+        """
+        Gets the top days with the highest number of accepted PIREPs where flight time > 10 minutes.
+        
+        Args:
+            limit: Number of top days to return (default: 3)
+            
+        Returns:
+            List of dictionaries with date and pirep_count
+        """
+        query = """
+            SELECT 
+                DATE(date) as flight_date,
+                COUNT(*) as pirep_count
+            FROM pireps
+            WHERE status = 1 
+                AND flighttime > 600
+            GROUP BY DATE(date)
+            ORDER BY pirep_count DESC
+            LIMIT %s
+        """
+        
+        results = await self.db.fetch_all(query, (limit,))
+        return results if results else []
+
 '''
 === DATABASE STRUCTURE: pireps ===
 

@@ -414,6 +414,14 @@ class ChecklistPDFService:
                                 pdf.cell(20, 5, ld['flaps'], 1, 0, 'C')
                                 pdf.cell(20, 5, str(ld['vapp']), 1, 0, 'C')
                                 pdf.cell(20, 5, str(ld['vflare']), 1, 1, 'C')
+                        
+                        # Add landing NOTAM if present
+                        if 'landing_notam' in ac_data:
+                            pdf.ln(1)
+                            pdf.set_font('Arial', 'I', 8)
+                            pdf.set_text_color(200, 0, 0)
+                            pdf.cell(0, 5, ac_data['landing_notam'], 0, 1, 'L')
+                            pdf.set_text_color(0, 0, 0)
                         pdf.ln(2)
             
             # Handle items_after_table (for items after landing data table)
