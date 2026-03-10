@@ -187,7 +187,7 @@ class PirepThreadView(discord.ui.View):
             logger.error(f"Could not add reaction to webhook message: {e}")
         
         # Send approval message
-        await interaction.followup.send(f"✅ **PIREP approved by {interaction.user.mention}**")
+        await interaction.followup.send(f"✅ **PIREP approved by {interaction.user.display_name}**")
         
         # Disable the approve button
         button.disabled = True

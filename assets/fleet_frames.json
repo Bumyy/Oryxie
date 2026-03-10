@@ -1,0 +1,30 @@
+{
+  "IF-FCAC": {
+    "icao": "B77W",
+    "livery": "Qatar Retro"
+  },
+  "A7-BCA": {
+    "icao": "B788",
+    "livery": "Qatar"
+  },
+  "A7-APC": {
+    "icao": "A388",
+    "livery": "Qatar"
+  },
+  "A7-DAC": {
+    "icao": "A359",
+    "livery": "Qatar"
+  },
+  "A7-BAE": {
+    "icao": "B77W",
+    "livery": "Qatar"
+  },
+  "IF-QZUF": {
+    "icao": "B77L",
+    "livery": "Qatar"
+  },
+  "IF-FOJY": {
+    "icao": "A333",
+    "livery": "Qatar"
+  }
+}

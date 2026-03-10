@@ -237,3 +237,152 @@ class PirepFilingService:
         }
         
         return result
+
+    async def submit_fleet_pirep(
+        self, 
+        pilot1_discord_id: int, 
+        pilot2_discord_id: int,
+        frame_data: dict,
+        dep_icao: str, 
+        arr_icao: str, 
+        total_duration_hours: int,
+        total_duration_minutes: int,
+        pilot1_name: str = None,
+        pilot2_name: str = None
+    ) -> Dict:
+        """
+        Submits dual-pilot PIREP with 50/50 hour split.
+        
+        Args:
+            pilot1_discord_id: Discord ID of Pilot 1
+            pilot2_discord_id: Discord ID of Pilot 2 (can be None for single pilot)
+            frame_data: Frame info from fleet_frames.json (contains icao and livery)
+            dep_icao: Departure airport ICAO
+            arr_icao: Arrival airport ICAO
+            total_duration_hours: Total flight hours
+            total_duration_minutes: Total flight minutes
+            pilot1_name: Discord display name of Pilot 1 (fallback if DB name is None)
+            pilot2_name: Discord display name of Pilot 2 (fallback if DB name is None)
+        
+        Returns:
+            Dict with success status and results
+        """
+        result = {
+            'success': False,
+            'pilot1_result': None,
+            'pilot2_result': None,
+            'error': None
+        }
+        
+        # Hardcoded values
+        aircraft_id = 11
+        multiplier = "150000"
+        
+        # Calculate duration string
+        total_minutes = (total_duration_hours * 60) + total_duration_minutes
+        
+        # Determine split
+        if pilot2_discord_id:
+            # 50/50 split
+            split_minutes = total_minutes // 2
+            pilot1_hours = split_minutes // 60
+            pilot1_minutes = split_minutes % 60
+            pilot2_hours = split_minutes // 60
+            pilot2_minutes = split_minutes % 60
+            
+            # Handle odd minute remainder - add to pilot 1
+            if total_minutes % 2 == 1:
+                pilot1_minutes += 1
+                if pilot1_minutes >= 60:
+                    pilot1_hours += 1
+                    pilot1_minutes -= 60
+        else:
+            # Full duration for pilot 1 only
+            pilot1_hours = total_duration_hours
+            pilot1_minutes = total_duration_minutes
+            pilot2_hours = 0
+            pilot2_minutes = 0
+        
+        # Get frame name (becomes flight number)
+        frame_name = frame_data.get('name')
+        
+        # Use hardcoded aircraft_id = 11 for all fleet PIREPs
+        # Use hardcoded multiplier = 150000 for all fleet PIREPs
+        
+        # Get Pilot 1 data
+        pilot1_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(pilot1_discord_id))
+        if not pilot1_data:
+            result['error'] = "Pilot 1 not found in database. Please link their account."
+            return result
+        
+        # Submit PIREP for Pilot 1
+        pilot1_duration = f"{pilot1_hours:02d}:{pilot1_minutes:02d}"
+        try:
+            pilot1_response = await self.bot.cc_api_manager.submit_pirep(
+                pilot_id=pilot1_data['id'],
+                flight_num=frame_name or 'FLEET',
+                departure=dep_icao,
+                arrival=arr_icao,
+                flight_time=pilot1_duration,
+                date=datetime.now().strftime("%Y-%m-%d"),
+                aircraft_id=aircraft_id,  # Always 11
+                fuel_used=0,
+                multiplier=multiplier  # Always 150000
+            )
+            result['pilot1_result'] = {
+                'success': pilot1_response and pilot1_response.get('status') == 0,
+                'pilot_name': pilot1_name,  # Always use Discord name
+                'duration': pilot1_duration,
+                'response': pilot1_response
+            }
+        except Exception as e:
+            self.logger.error(f"Error submitting PIREP for Pilot 1: {e}")
+            result['pilot1_result'] = {
+                'success': False,
+                'pilot_name': pilot1_name or "Unknown",
+                'duration': pilot1_duration,
+                'error': str(e)
+            }
+        
+        # Submit PIREP for Pilot 2 if provided
+        if pilot2_discord_id:
+            pilot2_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(pilot2_discord_id))
+            if not pilot2_data:
+                result['pilot2_result'] = {
+                    'success': False,
+                    'pilot_name': pilot2_name or "Unknown",
+                    'error': "Pilot 2 not found in database"
+                }
+            else:
+                pilot2_duration = f"{pilot2_hours:02d}:{pilot2_minutes:02d}"
+                try:
+                    pilot2_response = await self.bot.cc_api_manager.submit_pirep(
+                        pilot_id=pilot2_data['id'],
+                        flight_num=frame_name or 'FLEET',
+                        departure=dep_icao,
+                        arrival=arr_icao,
+                        flight_time=pilot2_duration,
+                        date=datetime.now().strftime("%Y-%m-%d"),
+                        aircraft_id=aircraft_id,  # Always 11
+                        fuel_used=0,
+                        multiplier=multiplier  # Always 150000
+                    )
+                    result['pilot2_result'] = {
+                        'success': pilot2_response and pilot2_response.get('status') == 0,
+                        'pilot_name': pilot2_name,  # Always use Discord name
+                        'duration': pilot2_duration,
+                        'response': pilot2_response
+                    }
+                except Exception as e:
+                    self.logger.error(f"Error submitting PIREP for Pilot 2: {e}")
+                    result['pilot2_result'] = {
+                        'success': False,
+                        'pilot_name': pilot2_name or "Unknown",
+                        'duration': pilot2_duration,
+                        'error': str(e)
+                    }
+        
+        # Determine overall success
+        result['success'] = result['pilot1_result'] and result['pilot1_result'].get('success', False)
+        
+        return result
