@@ -15,7 +15,11 @@
     "icao": "A359",
     "livery": "Qatar"
   },
-  "A7-BAE": {
+  "A7-DAC": {
+    "icao": "A359",
+    "livery": "Qatar"
+  },
+  "IF-CYDQ": {
     "icao": "B77W",
     "livery": "Qatar"
   },
