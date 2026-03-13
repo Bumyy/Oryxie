@@ -320,44 +320,59 @@ class RankManagement(commands.Cog):
             await interaction.followup.send(f"✅ Roles updated to **{rank_name}**, but no specific promo message is defined for this rank.", ephemeral=True)
 
 
-    @app_commands.command(name="verify_roles", description="Check if all configured role IDs exist in the server.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def verify_roles(self, interaction: discord.Interaction):
-        """Verify all role IDs from config exist in the server."""
-        guild = interaction.guild
-        role_status = []
+    # @app_commands.command(name="verify_roles", description="Check if all configured role IDs exist in the server.")
+    # @app_commands.checks.has_permissions(administrator=True)
+    # async def verify_roles(self, interaction: discord.Interaction):
+    #     """Verify all role IDs from config exist in the server."""
+    #     guild = interaction.guild
+    #     role_status = []
         
-        # Check cargo channel
-        cargo_channel = self.bot.get_channel(ASK_FOR_CARGO_CHANNEL_ID)
-        channel_status = f"✅ {cargo_channel.name}" if cargo_channel else "❌ Channel not found"
-        role_status.append(f"**Cargo Channel:** {channel_status}")
-        role_status.append("")
+    #     # Check cargo channel
+    #     cargo_channel = self.bot.get_channel(ASK_FOR_CARGO_CHANNEL_ID)
+    #     channel_status = f"✅ {cargo_channel.name}" if cargo_channel else "❌ Channel not found"
+    #     role_status.append(f"**Cargo Channel:** {channel_status}")
+    #     role_status.append("")
         
-        # Check all rank roles
-        for rank_name, rank_data in RANK_CONFIG.items():
-            role_id = rank_data["role_id"]
-            role = guild.get_role(role_id)
+    #     # Check all rank roles
+    #     for rank_name, rank_data in RANK_CONFIG.items():
+    #         role_id = rank_data["role_id"]
+    #         role = guild.get_role(role_id)
             
-            if role:
-                status = f"✅ {role.name}"
-            else:
-                status = "❌ Role not found"
+    #         if role:
+    #             status = f"✅ {role.name}"
+    #         else:
+    #             status = "❌ Role not found"
             
-            role_status.append(f"**{rank_name}:** {status}")
+    #         role_status.append(f"**{rank_name}:** {status}")
             
-            # Check cargo role for Captain
-            if "cargo_role_id" in rank_data:
-                cargo_role_id = rank_data["cargo_role_id"]
-                cargo_role = guild.get_role(cargo_role_id)
-                cargo_status = f"✅ {cargo_role.name}" if cargo_role else "❌ Cargo role not found"
-                role_status.append(f"  └─ **Cargo Role:** {cargo_status}")
+    #         # Check cargo role for Captain
+    #         if "cargo_role_id" in rank_data:
+    #             cargo_role_id = rank_data["cargo_role_id"]
+    #             cargo_role = guild.get_role(cargo_role_id)
+    #             cargo_status = f"✅ {cargo_role.name}" if cargo_role else "❌ Cargo role not found"
+    #             role_status.append(f"  └─ **Cargo Role:** {cargo_status}")
         
-        await interaction.response.send_message("\n".join(role_status), ephemeral=True)
+    #     await interaction.response.send_message("\n".join(role_status), ephemeral=True)
+
+    async def _check_executive_or_staff(self, interaction: discord.Interaction) -> bool:
+        """Custom check: Returns True if user is Executive (QRV001-QRV004) or Staff (QRV005-QRV019)"""
+        discord_id = str(interaction.user.id)
+        is_executive = await self.bot.pilots_model.is_executive(discord_id)
+        is_staff = await self.bot.pilots_model.is_staff(discord_id)
+        return is_executive or is_staff
 
     @app_commands.command(name="promocheck", description="Check rank status for a pilot and promote if needed.")
     @app_commands.describe(callsign_digits="The 3 or 4 digits of the callsign (e.g., 101 for QRV101)")
     async def promocheck(self, interaction: discord.Interaction, callsign_digits: str):
         """Allows manual rank checking and updating with confirmation."""
+        # Check if user is Executive or Staff
+        if not await self._check_executive_or_staff(interaction):
+            await interaction.response.send_message(
+                "❌ You must be an Executive (QRV001-QRV004) or Staff (QRV005-QRV019) to use this command.",
+                ephemeral=True
+            )
+            return
+        
         # Clean up input (e.g., allow "101" or "QRV101")
         full_callsign = callsign_digits.upper()
         if not full_callsign.startswith("QRV"):
@@ -395,57 +410,57 @@ class RankManagement(commands.Cog):
             ephemeral=True
         )
 
-    @app_commands.command(name="audit_ranks", description="Admin: Audits and Syncs roles for all server members.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def audit_ranks(self, interaction: discord.Interaction):
-        """Admin Tool: Loops through everyone, matches DB, corrects roles."""
-        await interaction.response.defer(ephemeral=True)
+    # @app_commands.command(name="audit_ranks", description="Admin: Audits and Syncs roles for all server members.")
+    # @app_commands.checks.has_permissions(administrator=True)
+    # async def audit_ranks(self, interaction: discord.Interaction):
+    #     """Admin Tool: Loops through everyone, matches DB, corrects roles."""
+    #     await interaction.response.defer(ephemeral=True)
         
-        guild = interaction.guild
-        members = guild.members
+    #     guild = interaction.guild
+    #     members = guild.members
         
-        stats = {"checked": 0, "updated": 0, "skipped": 0, "errors": 0}
+    #     stats = {"checked": 0, "updated": 0, "skipped": 0, "errors": 0}
 
-        await interaction.followup.send(f"⏳ Starting Audit for {len(members)} members... Please wait.")
+    #     await interaction.followup.send(f"⏳ Starting Audit for {len(members)} members... Please wait.")
 
-        for member in members:
-            if member.bot: 
-                continue
+    #     for member in members:
+    #         if member.bot: 
+    #             continue
 
-            try:
-                # 1. Find pilot in DB
-                pilot_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(member.id))
-                if not pilot_data:
-                    stats["skipped"] += 1
-                    continue
+    #         try:
+    #             # 1. Find pilot in DB
+    #             pilot_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(member.id))
+    #             if not pilot_data:
+    #                 stats["skipped"] += 1
+    #                 continue
 
-                # 2. Calculate correct rank using total hours (transfer + PIREP)
-                pilot_id = pilot_data['id']
-                total_hours = await self.bot.pilots_model.get_pilot_total_hours(pilot_id, pilot_data['callsign'])
-                correct_rank_name = self._get_rank_from_hours(total_hours)
+    #             # 2. Calculate correct rank using total hours (transfer + PIREP)
+    #             pilot_id = pilot_data['id']
+    #             total_hours = await self.bot.pilots_model.get_pilot_total_hours(pilot_id, pilot_data['callsign'])
+    #             correct_rank_name = self._get_rank_from_hours(total_hours)
                 
-                # 3. Strict Check: If they don't have exactly the right roles, Update.
-                # To be efficient, we check if they ALREADY have the correct Main Role.
-                # (However, for a clean Audit, simply running manage_roles ensures older/wrong roles are removed too).
+    #             # 3. Strict Check: If they don't have exactly the right roles, Update.
+    #             # To be efficient, we check if they ALREADY have the correct Main Role.
+    #             # (However, for a clean Audit, simply running manage_roles ensures older/wrong roles are removed too).
                 
-                await self._manage_roles(member, correct_rank_name)
-                # We assume if the function ran without error, we updated/verified them.
-                # Differentiating "Verified" vs "Changed" would require inspecting roles_before vs roles_after
-                # For simplicity here, we count it as checked/handled.
-                stats["updated"] += 1 # In this context, Updated means "Processed/Synced"
+    #             await self._manage_roles(member, correct_rank_name)
+    #             # We assume if the function ran without error, we updated/verified them.
+    #             # Differentiating "Verified" vs "Changed" would require inspecting roles_before vs roles_after
+    #             # For simplicity here, we count it as checked/handled.
+    #             stats["updated"] += 1 # In this context, Updated means "Processed/Synced"
 
-            except Exception as e:
-                # print(f"Error auditing {member.name}: {e}")
-                stats["errors"] += 1
+    #         except Exception as e:
+    #             # print(f"Error auditing {member.name}: {e}")
+    #             stats["errors"] += 1
 
-        await interaction.followup.send(
-            content=(
-                f"✅ **Audit Complete**\n"
-                f"👥 Processed Pilots: {stats['updated']}\n"
-                f"👻 Non-Pilots Skipped: {stats['skipped']}\n"
-                f"⚠️ Errors: {stats['errors']}"
-            )
-        )
+    #     await interaction.followup.send(
+    #         content=(
+    #             f"✅ **Audit Complete**\n"
+    #             f"👥 Processed Pilots: {stats['updated']}\n"
+    #             f"👻 Non-Pilots Skipped: {stats['skipped']}\n"
+    #             f"⚠️ Errors: {stats['errors']}"
+    #         )
+    #     )
 
 async def setup(bot):
     await bot.add_cog(RankManagement(bot))

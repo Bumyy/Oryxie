@@ -270,6 +270,58 @@ class PilotsModel:
         result = await self.db.fetch_one(query, args)
         return result['transhours'] if result and result['transhours'] else 0
 
+    async def is_executive(self, discord_id: str) -> bool:
+        """
+        Checks if a pilot is an Executive based on their Discord ID.
+        Executives have callsigns in range QRV001 to QRV004.
+
+        Args:
+            discord_id: The pilot's Discord ID.
+
+        Returns:
+            True if the pilot is an Executive, False otherwise.
+        """
+        pilot_data = await self.get_pilot_by_discord_id(discord_id)
+        if not pilot_data or not pilot_data.get('callsign'):
+            return False
+        
+        callsign = pilot_data['callsign'].upper()
+        
+        # Extract numeric part from callsign (e.g., "QRV001" -> 1)
+        import re
+        match = re.match(r'QRV(\d+)', callsign)
+        if not match:
+            return False
+        
+        number = int(match.group(1))
+        return 1 <= number <= 4
+
+    async def is_staff(self, discord_id: str) -> bool:
+        """
+        Checks if a pilot is Staff based on their Discord ID.
+        Staff have callsigns in range QRV005 to QRV019.
+
+        Args:
+            discord_id: The pilot's Discord ID.
+
+        Returns:
+            True if the pilot is Staff, False otherwise.
+        """
+        pilot_data = await self.get_pilot_by_discord_id(discord_id)
+        if not pilot_data or not pilot_data.get('callsign'):
+            return False
+        
+        callsign = pilot_data['callsign'].upper()
+        
+        # Extract numeric part from callsign (e.g., "QRV005" -> 5)
+        import re
+        match = re.match(r'QRV(\d+)', callsign)
+        if not match:
+            return False
+        
+        number = int(match.group(1))
+        return 5 <= number <= 19
+
     def get_html_template(self):
         """Returns HTML template for pilot documentation"""
         import os
