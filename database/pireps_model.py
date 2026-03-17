@@ -622,6 +622,74 @@ class PirepsModel:
         results = await self.db.fetch_all(query, (limit,))
         return results if results else []
 
+    async def get_flight_hour_milestones(self) -> dict:
+        """
+        Calculates when total fleet flight hours reached milestone thresholds.
+        Only includes accepted PIREPs with flight time > 5 minutes.
+        
+        Returns:
+            Dictionary with milestone dates and current total hours
+        """
+        # Query all accepted PIREPs ordered by date to calculate cumulative hours
+        query = """
+            SELECT 
+                DATE(date) as flight_date,
+                flighttime
+            FROM pireps
+            WHERE status = 1 
+                AND flighttime > 300
+            ORDER BY date ASC
+        """
+        
+        pireps = await self.db.fetch_all(query)
+        
+        if not pireps:
+            return {
+                'milestones': [],
+                'current_total_hours': 0,
+                'total_flights': 0
+            }
+        
+        # Define milestone thresholds in hours (converted to seconds for comparison)
+        # 100000 hours = 360,000,000 seconds
+        # 200000 hours = 720,000,000 seconds
+        # 300000 hours = 1,080,000,000 seconds
+        thresholds = [
+            (360000000, '100,000 hours'),
+            (720000000, '200,000 hours'),
+            (1080000000, '300,000 hours')
+        ]
+        
+        cumulative_seconds = 0
+        milestones_reached = []
+        
+        for pirep in pireps:
+            flight_time = pirep['flighttime'] or 0
+            cumulative_seconds += flight_time
+            
+            # Check if we crossed any threshold we haven't recorded yet
+            for threshold_seconds, threshold_label in thresholds:
+                # Check if this milestone hasn't been reached yet
+                milestone_key = f"milestone_{threshold_label.replace(',', '').replace(' ', '_')}"
+                already_recorded = any(m.get('milestone') == threshold_label for m in milestones_reached)
+                
+                if cumulative_seconds >= threshold_seconds and not already_recorded:
+                    milestones_reached.append({
+                        'milestone': threshold_label,
+                        'date_reached': pirep['flight_date'].isoformat() if pirep['flight_date'] else 'Unknown',
+                        'cumulative_hours': round(cumulative_seconds / 3600, 2)
+                    })
+        
+        # Calculate current total
+        total_seconds = sum(p.get('flighttime', 0) or 0 for p in pireps)
+        current_hours = round(total_seconds / 3600, 2)
+        
+        return {
+            'milestones': milestones_reached,
+            'current_total_hours': current_hours,
+            'total_flights': len(pireps)
+        }
+
 '''
 === DATABASE STRUCTURE: pireps ===
 

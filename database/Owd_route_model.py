@@ -67,6 +67,26 @@ class OwdRouteModel:
         
         return None
 
+    async def find_flight_numbers_by_icao(self, dep_icao: str, arr_icao: str) -> List[str]:
+        """
+        Finds all OWD flight numbers for a given route.
+        """
+        routes = self._load_routes()
+        found_flights = []
+        
+        for route in routes:
+            # Ensure case-insensitive comparison for ICAOs
+            if route.get('Departure', '').upper() == dep_icao.upper() and \
+               route.get('Arrival', '').upper() == arr_icao.upper():
+                flight_num = route.get('Flight Number')
+                if flight_num:
+                    found_flights.append(flight_num.strip())
+        
+        # Return unique and sorted flight numbers
+        return sorted(list(set(found_flights)))
+
+
+
     async def find_route_by_flight_number(self, flight_number: str) -> Optional[Dict]:
         """
         Finds a route in the OWD CSV matching a specific flight number.

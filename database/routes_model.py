@@ -69,6 +69,30 @@ class RoutesModel:
         
         return route_data
 
+    async def find_flight_numbers_by_icao(self, dep_icao: str, arr_icao: str) -> List[str]:
+        """
+        Finds all unique flight numbers for a given route.
+        Handles multiple rows and comma-separated flight numbers.
+        """
+        query = "SELECT fltnum FROM routes WHERE dep = %s AND arr = %s"
+        results = await self.db.fetch_all(query, (dep_icao, arr_icao))
+
+        if not results:
+            return []
+
+        all_flight_numbers = set()
+        for row in results:
+            # Ensure 'fltnum' is not None before splitting
+            if row['fltnum']:
+                # Split by comma and strip whitespace from each part
+                flight_nums_in_row = [num.strip() for num in row['fltnum'].split(',')]
+                # Add to a set to ensure uniqueness
+                all_flight_numbers.update(flight_nums_in_row)
+
+        # Convert set to list and sort for consistent output
+        return sorted(list(all_flight_numbers))
+
+
     async def find_route_by_fltnum(self, fltnum: str) -> Optional[Dict]:
         """
         Finds a route in the database matching a specific flight number,

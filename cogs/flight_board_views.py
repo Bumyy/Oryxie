@@ -166,18 +166,41 @@ class StatusSelectView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         new_status = interaction.data['values'][0]
         self.flight_data['status'] = new_status
-        
+
         embed, _ = await interaction.client.flight_board_service.create_flight_embed(self.flight_data)
-        
-        # Preserve image attachment if it exists in the original message
-        if self.original_message.embeds and self.original_message.embeds[0].image:
-            if self.original_message.embeds[0].image.url:
-                embed.set_image(url=self.original_message.embeds[0].image.url)
+
+        # Build content with pilot mention
+        content = f"Pilot: <@{self.flight_data.get('pilot_id')}>"
+
+        # Get attachments and preserve embed image references
+        attachments_to_keep = []
+        if getattr(self, "original_message", None) and self.original_message.attachments:
+            attachments_to_keep = list(self.original_message.attachments)
+            # Keep using attachment:// format for embed references
+            for attachment in self.original_message.attachments:
+                if "route_map" in attachment.filename.lower():
+                    embed.set_image(url=f"attachment://{attachment.filename}")
 
         view = FlightBoardView(self.flight_data)
-        
-        await self.original_message.edit(embed=embed, view=view)
-        await interaction.followup.send(f"✅ Status updated to: **{new_status}**", ephemeral=True)
+
+        try:
+            # Pass attachments to prevent Discord from detaching them
+            if attachments_to_keep:
+                await self.original_message.edit(
+                    content=content,
+                    embed=embed,
+                    view=view,
+                    attachments=attachments_to_keep
+                )
+            else:
+                await self.original_message.edit(
+                    content=content,
+                    embed=embed,
+                    view=view
+                )
+            await interaction.followup.send(f"✅ Status updated to: **{new_status}**", ephemeral=True)
+        except Exception as e:
+            logging.warning(f"Interaction followup failed: {e}")
 
 class AircraftSelectView(discord.ui.View):
     def __init__(self, flight_data, aircraft_options, bot, aircraft_db):
@@ -234,6 +257,8 @@ class FlightBoardView(discord.ui.View):
                 item.custom_id = f"fb:edit:{uid}:{expiry}"
             elif label == "SimBrief":
                 item.custom_id = f"fb:simbrief:{uid}:{expiry}"
+            elif label == "FlightAware":
+                item.custom_id = f"fb:flightaware:{uid}:{expiry}"
             elif label == "Checklist":
                 item.custom_id = f"fb:checklist:{uid}:{expiry}"
             elif label == "Status":
@@ -258,7 +283,7 @@ class FlightBoardView(discord.ui.View):
             if not pilot_data:
                 await interaction.followup.send("❌ Pilot not found in database.", ephemeral=True)
                 return
-            
+
             aircraft_icao = self.flight_data.get('aircraft', 'B77W')
             link = interaction.client.simbrief_service.generate_dispatch_link(
                 origin=self.flight_data['departure'],
@@ -270,6 +295,18 @@ class FlightBoardView(discord.ui.View):
             await interaction.followup.send(f"🔗 **SimBrief Flight Plan Generator**\n{link}", ephemeral=True)
         else:
             await interaction.followup.send("SimBrief service not available!", ephemeral=True)
+
+    @discord.ui.button(label="FlightAware", style=discord.ButtonStyle.secondary, emoji="🛫")
+    async def flightaware_link(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if hasattr(interaction.client, 'simbrief_service') and interaction.client.simbrief_service:
+            link = interaction.client.simbrief_service.generate_flightaware_link(
+                origin=self.flight_data['departure'],
+                destination=self.flight_data['arrival']
+            )
+            await interaction.followup.send(f"🔗 **FlightAware Live Flight Tracker**\n{link}", ephemeral=True)
+        else:
+            await interaction.followup.send("FlightAware service not available!", ephemeral=True)
 
     async def _handle_checklist(self, interaction: discord.Interaction):
         aircraft_icao = self.flight_data.get('aircraft', '')
@@ -325,12 +362,12 @@ class FlightEditModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        
+
         self.flight_data.update({
             'etd': self.etd.value,
             'note': self.note.value
         })
-        
+
         if self.etd.value and self.flight_data.get('duration'):
             try:
                 etd_time = datetime.strptime(self.etd.value, "%H%M")
@@ -338,34 +375,71 @@ class FlightEditModal(discord.ui.Modal):
                 self.flight_data['eta'] = eta_time.strftime("%H%M")
             except (ValueError, TypeError):
                 pass
-        
-        embed, thumbnail_file = await interaction.client.flight_board_service.create_flight_embed(self.flight_data)
+
+        # Create the new embed with updated text content
+        embed, _ = await interaction.client.flight_board_service.create_flight_embed(self.flight_data)
+
         view = FlightBoardView(self.flight_data)
-        
-        files_to_upload = []
-        if thumbnail_file:
-            files_to_upload.append(thumbnail_file)
-        
-        if hasattr(interaction.client, 'route_map_service'):
-            try:
-                map_result = await interaction.client.route_map_service.create_route_map(
-                    self.flight_data['departure'], self.flight_data['arrival']
+
+        # Build content with pilot mention
+        content = f"Pilot: <@{self.flight_data.get('pilot_id')}>"
+
+        # Get attachments and preserve embed image references
+        attachments_to_keep = []
+        if getattr(self, "message", None) and self.message.attachments:
+            attachments_to_keep = list(self.message.attachments)
+            # Keep using attachment:// format for embed references
+            for attachment in self.message.attachments:
+                if "route_map" in attachment.filename.lower():
+                    embed.set_image(url=f"attachment://{attachment.filename}")
+
+        try:
+            # Pass attachments to prevent Discord from detaching them
+            if attachments_to_keep:
+                await self.message.edit(
+                    content=content,
+                    embed=embed,
+                    view=view,
+                    attachments=attachments_to_keep
                 )
-                if not isinstance(map_result, str):
-                    if isinstance(map_result, bytes):
-                        map_result = io.BytesIO(map_result)
-                    if hasattr(map_result, 'seek'):
-                        map_result.seek(0)
-                    files_to_upload.append(discord.File(fp=map_result, filename="route_map.png"))
-                    embed.set_image(url="attachment://route_map.png")
-            except Exception:
-                pass
-        
-        target_message = self.message or interaction.message
-        if target_message:
-            try:
-                await target_message.edit(content=None, embed=embed, view=view, attachments=files_to_upload)
-            except discord.HTTPException as e:
-                logging.error(f"Failed to edit message: {e}")
-        
-        await interaction.followup.send("✅ **Flight Updated!**", ephemeral=True)
+            else:
+                await self.message.edit(
+                    content=content,
+                    embed=embed,
+                    view=view
+                )
+            await interaction.followup.send("✅ **Flight Updated!**", ephemeral=True)
+        except Exception as e:
+            logging.warning(f"Interaction followup failed: {e}")
+
+
+class FlightNumberSelectView(discord.ui.View):
+    def __init__(self, flight_numbers: list, original_options: dict, flight_board_cog):
+        super().__init__(timeout=300)
+        self.original_options = original_options
+        self.cog = flight_board_cog
+
+        # Create the dropdown options
+        options = []
+        for fn in flight_numbers:
+            # Ensure label is not too long for Discord SelectOption (max 100 chars)
+            label = fn
+            if len(label) > 100:
+                label = label[:97] + "..."
+            options.append(discord.SelectOption(label=label, value=fn))
+
+        select = discord.ui.Select(placeholder="Choose your flight number...", options=options)
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected_flight_num = interaction.data['values'][0]
+        await interaction.response.defer(ephemeral=True)
+
+        await self.cog._process_flight_request(
+            interaction,
+            flight_num=selected_flight_num,
+            **self.original_options # Pass all original options
+        )
+
+        await interaction.followup.send(f"✅ You selected **{selected_flight_num}**. Processing...", ephemeral=True)

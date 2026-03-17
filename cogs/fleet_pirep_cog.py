@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 # Load fleet frames data
 FLEET_FRAMES_FILE = "assets/fleet_frames.json"
 
+# Fleet role ID
+FLEET_ROLE_ID = 1480252371320967239
+
 def load_fleet_frames():
     """Load fleet frames from JSON file."""
     try:
@@ -179,6 +182,7 @@ class FleetPirepCog(commands.Cog):
         return choices
     
     @app_commands.command(name="live_fleet_pirep", description="File a dual-pilot PIREP for fleet flights")
+    @app_commands.checks.has_role(FLEET_ROLE_ID)
     @app_commands.autocomplete(frame=frame_autocomplete)
     async def live_fleet_pirep(
         self, 
