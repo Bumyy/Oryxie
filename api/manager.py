@@ -137,11 +137,68 @@ class InfiniteFlightAPIManager:
         # This returns a paginated result including 'data' list.
         return await self._request('GET', f'/users/{user_id}/flights')
     
+    async def get_user_flights_all_time(self, user_id: str, limit: int = 4) -> Dict:
+        """
+        Get a limited number of recent user flights.
+        Endpoint: GET /users/{userId}/flights
+        Args:
+            user_id: The user's Infinite Flight ID.
+            limit: The number of recent flights to fetch.
+        """
+        # The pageSize parameter seems to cause issues, returning 0 flights.
+        # Removing it and letting the calling service slice the result array.
+        return await self._request('GET', f'/users/{user_id}/flights')
+
+    async def get_last_user_flights(self, user_id: str, limit: int = 4) -> List[Dict]:
+    
+        params = {
+            "pageIndex": 0,
+            "pageSize": 25
+        }
+    
+        response = await self._request(
+            "GET",
+            f"/users/{user_id}/flights",
+            params=params
+        )
+    
+        if not response:
+            return []
+    
+        flights = response.get("result", {}).get("data", [])
+    
+        # sort newest first using created timestamp
+        flights.sort(
+            key=lambda x: x.get("created") or "",
+            reverse=True
+        )
+    
+        processed = []
+    
+        for f in flights:
+    
+            # basic meaningful flight detection
+            if (f.get("totalTime") or 0) <= 0:
+                continue
+    
+            entry = {
+                "if_flight_id": f.get("id"),
+                "departure": (f.get("originAirport") or "").upper(),
+                "arrival": (f.get("destinationAirport") or "").upper(),
+                "aircraft_id": f.get("aircraftId"),
+                "livery_id": f.get("liveryId"),
+                "duration_minutes": f.get("totalTime"),
+                "created": f.get("created")
+            }
+    
+            processed.append(entry)
+    
+            if len(processed) == limit:
+                break
+    
+        return processed
+
     async def get_user_by_ifc_username(self, username: str) -> Dict:
-        """
-        Get user information by IFC username.
-        Uses POST /user/stats endpoint with proper JSON formatting.
-        """
         payload = {"discourseNames": [username]}
         response = await self._request('POST', '/user/stats', json=payload)
         
