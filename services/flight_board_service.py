@@ -28,7 +28,8 @@ class FlightBoardService:
     def _load_logos(self) -> dict:
         return {
             'amiri': 'assets/Amiri  flight logo.png',
-            'executive': 'assets/Qatar_Executive_Logo.png'
+            'executive': 'assets/Qatar_Executive_Logo.png',
+            'oneworld': 'assets/oneworld_Virtual_Logo.png'
         }
     
     def get_airport_name(self, icao_code: str) -> str:
@@ -253,7 +254,10 @@ class FlightBoardService:
                 logging.error(f"Map generation failed: {e}")
         
         content = f"Pilot: <@{flight_data.get('pilot_id')}>"
-        
+
         if files:
-            return await channel.send(content=content, embed=embed, view=view, files=files)
-        return await channel.send(content=content, embed=embed, view=view)
+            msg = await channel.send(content=content, embed=embed, view=view, files=files)
+        else:
+            msg = await channel.send(content=content, embed=embed, view=view)
+
+        return msg

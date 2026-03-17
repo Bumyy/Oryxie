@@ -86,6 +86,106 @@ class RankModel:
         if not rank_data:
             return False
         return rank_data['name'] in ['OneWorld', 'Oryx']
+
+    async def get_aircraft_rank_requirement(self, aircraft_id: int) -> Optional[Dict]:
+        """
+        Get the minimum rank required to fly a specific aircraft.
+        
+        Args:
+            aircraft_id: The Crew Center aircraft ID (from aircraft table)
+            
+        Returns:
+            Dict with rank info (id, name, timereq) or None if aircraft not found
+        """
+        query = "SELECT rankreq FROM aircraft WHERE id = %s"
+        aircraft = await self.db.fetch_one(query, (aircraft_id,))
+        
+        if not aircraft or not aircraft.get('rankreq'):
+            return None
+        
+        # Get the rank details
+        rank_id = aircraft['rankreq']
+        return await self.get_rank_by_id(rank_id)
+    
+    async def can_pilot_fly_aircraft(self, pilot_id: int, aircraft_id: int) -> Dict:
+        """
+        Check if a pilot can fly a specific aircraft based on their rank.
+        
+        Args:
+            pilot_id: The pilot's database ID
+            aircraft_id: The aircraft's database ID (Crew Center ID)
+            
+        Returns:
+            Dict with:
+                - 'can_fly': bool
+                - 'pilot_rank': Dict with pilot's rank info
+                - 'required_rank': Dict with aircraft's required rank info
+                - 'message': str explanation
+        """
+        result = {
+            'can_fly': False,
+            'pilot_rank': None,
+            'required_rank': None,
+            'message': ''
+        }
+        
+        # Get pilot's current rank
+        pilot_rank = await self.get_pilot_rank(pilot_id)
+        if not pilot_rank:
+            result['message'] = 'Pilot not found in database'
+            return result
+        
+        # Get aircraft's required rank
+        required_rank = await self.get_aircraft_rank_requirement(aircraft_id)
+        if not required_rank:
+            result['pilot_rank'] = pilot_rank
+            result['message'] = 'Aircraft not found or has no rank requirement'
+            result['can_fly'] = True  # Allow if aircraft has no rank req
+            return result
+        
+        # Compare ranks
+        pilot_rank_id = pilot_rank['id']
+        required_rank_id = required_rank['id']
+        
+        result['pilot_rank'] = pilot_rank
+        result['required_rank'] = required_rank
+        
+        if pilot_rank_id >= required_rank_id:
+            result['can_fly'] = True
+            result['message'] = f"Pilot rank '{pilot_rank['name']}' meets requirement '{required_rank['name']}'"
+        else:
+            result['can_fly'] = False
+            result['message'] = f"Pilot rank '{pilot_rank['name']}' is below required rank '{required_rank['name']}'"
+        
+        return result
+    
+    async def can_pilot_fly_if_aircraft(self, pilot_id: int, if_aircraft_id: str) -> Dict:
+        """
+        Check if a pilot can fly an aircraft using Infinite Flight aircraft ID.
+        This is the main method for Ascaris - uses IF aircraft UUID to find VA aircraft.
+        
+        Args:
+            pilot_id: The pilot's database ID
+            if_aircraft_id: The Infinite Flight aircraft UUID (e.g., 'a266b67f-03e3-4f8c-a2bb-b57cfd4b12f3')
+            
+        Returns:
+            Dict with same structure as can_pilot_fly_aircraft
+        """
+        # First, find the VA aircraft by IF aircraft ID
+        from .va_data_model import AircraftModel
+        aircraft_model = AircraftModel(self.db)
+        
+        aircraft = await aircraft_model.get_aircraft_by_if_id(if_aircraft_id)
+        if not aircraft:
+            return {
+                'can_fly': False,
+                'pilot_rank': None,
+                'required_rank': None,
+                'message': f'Aircraft not found in VA database (IF ID: {if_aircraft_id})'
+            }
+        
+        # Now check rank requirement
+        return await self.can_pilot_fly_aircraft(pilot_id, aircraft['id'])
     
     async def get_pilot_rank(self, pilot_id: int) -> Optional[Dict]:
         """
@@ -129,6 +229,43 @@ class AircraftModel:
         """Get aircraft details by Infinite Flight aircraft UUID."""
         query = "SELECT * FROM aircraft WHERE ifaircraftid = %s"
         return await self.db.fetch_one(query, (if_aircraft_id,))
+    
+    async def get_aircraft_by_if_ids(self, if_aircraft_id: str, if_livery_id: str) -> Optional[Dict]:
+        """
+        Get aircraft details by BOTH Infinite Flight aircraft UUID AND livery UUID.
+        This is the primary method for Ascaris - matches exact aircraft+livery combination.
+        
+        Args:
+            if_aircraft_id: The Infinite Flight aircraft UUID (e.g., 'a266b67f-03e3-4f8c-a2bb-b57cfd4b12f3')
+            if_livery_id: The Infinite Flight livery UUID (e.g., '38ad8ab5-57fd-4e9b-9367-8792aebc15b6')
+            
+        Returns:
+            Dict with aircraft details including 'id' (CC aircraft ID) or None if not found
+        """
+        query = "SELECT * FROM aircraft WHERE ifaircraftid = %s AND ifliveryid = %s AND status = 1"
+        return await self.db.fetch_one(query, (if_aircraft_id, if_livery_id))
+    
+    async def get_aircraft_by_if_ids_fallback(self, if_aircraft_id: str, if_livery_id: str) -> Optional[Dict]:
+        """
+        Get aircraft by IF IDs with fallback logic:
+        1. First try exact match (aircraft + livery)
+        2. If not found, return generic aircraft (id=11) - DO NOT search by aircraft only
+        
+        Args:
+            if_aircraft_id: The Infinite Flight aircraft UUID
+            if_livery_id: The Infinite Flight livery UUID
+            
+        Returns:
+            Dict with aircraft details or generic aircraft (id=11)
+        """
+        # Try exact match first
+        aircraft = await self.get_aircraft_by_if_ids(if_aircraft_id, if_livery_id)
+        if aircraft:
+            return aircraft
+        
+        # Fallback: Return generic aircraft (id=11) instead of searching by aircraft only
+        # Searching by only ifaircraftid would return 50+ results which is ambiguous
+        return await self.get_aircraft_by_id(11)
     
     async def get_aircraft_by_icao(self, icao: str) -> Optional[Dict]:
         """Get aircraft details by ICAO code."""

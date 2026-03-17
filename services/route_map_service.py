@@ -27,7 +27,7 @@ class RouteMapService:
             
         self.coast_low = cfeature.NaturalEarthFeature(
             'physical', 'coastline', '110m',
-            edgecolor='#dcdcdc', linewidth=0.7, facecolor='none')
+            edgecolor='#dcdcdc', linewidth=0.9, facecolor='none')
 
     def _generate_image_sync(self, dep_icao: str, arr_icao: str, duration: int = 0):
         # 1. Setup
@@ -41,8 +41,8 @@ class RouteMapService:
         arr_data = self.airports[arr_icao]
         
         # --- OPTIMIZATION: Reduce Points ---
-        # 40 points is enough for a smooth curve at low resolution
-        n_points = 40
+        # 60 points for smoother curve
+        n_points = 60
         result = self.geod.inv_intermediate(
             dep_data['lon'], dep_data['lat'], 
             arr_data['lon'], arr_data['lat'], 
@@ -102,8 +102,8 @@ class RouteMapService:
             max_lon += diff / 2
 
         # --- OPTIMIZATION: Low DPI ---
-        # dpi=72 is standard screen resolution. Very low memory usage.
-        fig = Figure(figsize=(10, 5), dpi=72, facecolor='#2f3136')
+        # dpi=90 for better quality while maintaining performance
+        fig = Figure(figsize=(10, 5), dpi=90, facecolor='#2f3136')
         canvas = FigureCanvasAgg(fig)
 
         # Map Projection

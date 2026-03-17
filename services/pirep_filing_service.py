@@ -80,8 +80,8 @@ class PirepFilingService:
             response = await self.bot.if_api_manager.get_user_flights(if_user_id)
             
             flights = []
-            if isinstance(response, dict):
-                 flights = response.get('data', [])
+            if isinstance(response, dict) and response.get("result"):
+                 flights = response.get("result", {}).get("data", [])
             
             for flight in flights:
                 # Check route match
@@ -386,3 +386,504 @@ class PirepFilingService:
         result['success'] = result['pilot1_result'] and result['pilot1_result'].get('success', False)
         
         return result
+
+    # ================================================================================
+    # ASCARIS PIREP FILING METHODS
+    # ================================================================================
+
+    async def fetch_if_flights(self, discord_id: int, limit: int = 4) -> Dict:
+        """
+        Fetch recent flights from Infinite Flight API for a pilot.
+        
+        Args:
+            discord_id: Discord user ID
+            limit: Number of flights to fetch (default 4)
+            
+        Returns:
+            {
+                'success': True/False,
+                'pilot_data': {...},
+                'flights': [...],
+                'error': 'error message if failed'
+            }
+        """
+        self.logger.info(f"[ASCARIS] fetch_if_flights called for discord_id={discord_id}, limit={limit}")
+        
+        result = {
+            'success': False,
+            'pilot_data': None,
+            'flights': [],
+            'error': None
+        }
+        
+        # 1. Get pilot by Discord ID
+        self.logger.info(f"[ASCARIS] Looking up pilot by discord_id={discord_id}")
+        pilot_data = await self.bot.pilots_model.get_pilot_by_discord_id(str(discord_id))
+        
+        if not pilot_data:
+            self.logger.warning(f"[ASCARIS] Pilot not found for discord_id={discord_id}")
+            result['error'] = "Pilot not found. Please link your account first."
+            return result
+        
+        self.logger.info(f"[ASCARIS] Pilot found: id={pilot_data.get('id')}, callsign={pilot_data.get('callsign')}")
+        
+        # 2. Check if user has IF user ID
+        ifuserid = pilot_data.get('ifuserid')
+        if not ifuserid:
+            self.logger.warning(f"[ASCARIS] No IF user ID linked for pilot_id={pilot_data.get('id')}")
+            result['error'] = "No Infinite Flight account linked. Please link your IF account first."
+            return result
+        
+        self.logger.info(f"[ASCARIS] IF user ID found: {ifuserid}")
+        
+        # 3. Fetch flights from IF API (all time, not just last 72 hours)
+        try:
+            self.logger.info(f"[ASCARIS] Fetching up to {limit} flights from IF API for user_id={ifuserid}")
+            flights_data = await self.bot.if_api_manager.get_last_user_flights(ifuserid, limit=limit)
+            
+            self.logger.info(f"[ASCARIS] IF API response received: {type(flights_data)}")
+            
+            flights = []
+            if isinstance(flights_data, list):
+                self.logger.info(f"[ASCARIS] Processing {len(flights_data)} flights from API manager")
+                
+                for i, flight in enumerate(flights_data): # flights_data is already processed
+                    duration_minutes = flight.get('duration_minutes', 0) or 0
+                    duration_seconds = int(duration_minutes * 60)
+                    hours = int(duration_minutes // 60)
+                    minutes = int(duration_minutes % 60)
+                    duration_str = f"{hours:02d}:{minutes:02d}"
+                    
+                    created_str = flight.get('created', '')
+                    flight_date = created_str[:10] if created_str else datetime.now().strftime('%Y-%m-%d')
+                    
+                    flight_entry = {
+                        'if_flight_id': flight.get('if_flight_id'),
+                        'departure': flight.get('departure'),
+                        'arrival': flight.get('arrival'),
+                        'aircraft_id': flight.get('aircraft_id'),
+                        'livery_id': flight.get('livery_id'),
+                        'duration_seconds': duration_seconds,
+                        'duration': duration_str,
+                        'date': flight_date
+                    }
+                    flights.append(flight_entry)
+                    self.logger.info(f"[ASCARIS] Flight {i+1}: {flight_entry['departure']}→{flight_entry['arrival']}, aircraft={flight_entry['aircraft_id'][:20]}..., livery={flight_entry['livery_id'][:20] if flight_entry['livery_id'] else 'None'}...")
+
+            result['success'] = True
+            result['pilot_data'] = pilot_data
+            result['flights'] = flights
+            self.logger.info(f"[ASCARIS] Successfully processed {len(flights)} flights")
+            
+        except Exception as e:
+            self.logger.error(f"[ASCARIS] Error fetching IF flights: {e}", exc_info=True)
+            result['error'] = f"Failed to fetch flights from Infinite Flight: {str(e)}"
+        
+        return result
+
+    async def process_flight(self, pilot_id: int, flight_data: Dict) -> Dict:
+        """
+        Process a single flight - match aircraft, check rank, validate route.
+        
+        Args:
+            pilot_id: Pilot's database ID
+            flight_data: Flight data from IF API
+            
+        Returns:
+            {
+                'success': True/False,
+                'aircraft_data': {...},
+                'route_data': {...},
+                'rank_check': {...},
+                'pirep_data': {...},
+                'error': 'error message if failed'
+            }
+        """
+        self.logger.info(f"[ASCARIS] process_flight called for pilot_id={pilot_id}")
+        self.logger.info(f"[ASCARIS] Flight data: dep={flight_data.get('departure')}, arr={flight_data.get('arrival')}, aircraft_id={flight_data.get('aircraft_id', '')[:30]}..., livery_id={flight_data.get('livery_id', '')[:30] if flight_data.get('livery_id') else 'None'}...")
+        
+        result = {
+            'success': False,
+            'aircraft_data': None,
+            'route_data': None,
+            'rank_check': None,
+            'pirep_data': None,
+            'error': None
+        }
+        
+        # 1. Match aircraft (IF aircraft + livery → CC aircraft)
+        self.logger.info(f"[ASCARIS] Step 1: Matching aircraft...")
+        aircraft = await self.bot.aircraft_model.get_aircraft_by_if_ids_fallback(
+            flight_data.get('aircraft_id', ''),
+            flight_data.get('livery_id', '')
+        )
+        
+        if not aircraft:
+            self.logger.error(f"[ASCARIS] Aircraft not found in VA database for IF aircraft_id={flight_data.get('aircraft_id')}")
+            result['error'] = "Aircraft not found in VA database."
+            return result
+        
+        self.logger.info(f"[ASCARIS] Aircraft matched: CC aircraft_id={aircraft.get('id')}, name={aircraft.get('name')}, livery={aircraft.get('liveryname')}")
+        result['aircraft_data'] = aircraft
+        
+        # 2. Check rank requirement
+        self.logger.info(f"[ASCARIS] Step 2: Checking rank requirement for pilot_id={pilot_id} and aircraft_id={aircraft.get('id')}")
+        rank_check = await self.bot.rank_model.can_pilot_fly_aircraft(pilot_id, aircraft['id'])
+        self.logger.info(f"[ASCARIS] Rank check result: can_fly={rank_check.get('can_fly')}, message={rank_check.get('message')}")
+        result['rank_check'] = rank_check
+        
+        if not rank_check.get('can_fly'):
+            self.logger.warning(f"[ASCARIS] Rank check failed: {rank_check.get('message')}")
+        
+        # 3. Validate route
+        dep = flight_data.get('departure', '')
+        arr = flight_data.get('arrival', '')
+        
+        self.logger.info(f"[ASCARIS] Step 3: Validating route {dep} → {arr}")
+        route_data = await self.bot.routes_model.find_route_by_icao(dep, arr)
+        
+        if route_data:
+            self.logger.info(f"[ASCARIS] Route found: fltnum={route_data.get('fltnum')}, duration={route_data.get('duration')}")
+        else:
+            self.logger.warning(f"[ASCARIS] Route NOT found in database for {dep} → {arr}")
+        
+        result['route_data'] = route_data
+        
+        # 4. Build PIREP data
+        flight_num = route_data.get('fltnum', '').split(',')[0] if route_data else ''
+        
+        self.logger.info(f"[ASCARIS] Step 4: Building PIREP data")
+        result['pirep_data'] = {
+            'departure': dep,
+            'arrival': arr,
+            'duration': flight_data.get('duration', '00:00'),
+            'duration_seconds': flight_data.get('duration_seconds', 0),
+            'date': flight_data.get('date', datetime.now().strftime('%Y-%m-%d')),
+            'aircraft_id': aircraft['id'],  # CC aircraft ID
+            'aircraft_name': aircraft.get('name', ''),
+            'livery': aircraft.get('liveryname', ''),
+            'route_found': route_data is not None,
+            'flight_num': flight_num
+        }
+        
+        self.logger.info(f"[ASCARIS] PIREP data built: flight_num={flight_num}, aircraft_id={aircraft['id']}, route_found={route_data is not None}")
+        
+        result['success'] = True
+        return result
+
+    async def _has_owd_rank(self, pilot_rank: dict) -> bool:
+        """
+        Check if pilot has OneWorld rank or higher.
+        
+        Args:
+            pilot_rank: Dictionary containing rank info from get_pilot_rank
+            
+        Returns:
+            True if pilot has OWD rank, False otherwise
+        """
+        if not pilot_rank:
+            return False
+        
+        rank_name = pilot_rank.get('name', '').lower()
+        # Check for OneWorld or higher ranks
+        owd_ranks = ['oneworld', 'one world', 'discover']
+        
+        # Also check rank level/id - assuming higher IDs = higher ranks
+        rank_id = pilot_rank.get('id', 0)
+        
+        return rank_name in owd_ranks or rank_id >= 5  # Adjust threshold as needed
+
+    async def process_flight_by_type(
+        self, 
+        pilot_id: int, 
+        flight_data: Dict,
+        flight_type: str,
+        selected_aircraft_id: int = None
+    ) -> Dict:
+        """
+        Process a single flight based on flight type (normal, oneworld, event).
+        
+        Args:
+            pilot_id: Pilot's database ID
+            flight_data: Flight data from IF API
+            flight_type: 'normal' | 'oneworld' | 'event'
+            selected_aircraft_id: Aircraft ID selected from dropdown (optional)
+            
+        Returns:
+            {
+                'success': True/False,
+                'aircraft_data': {...},
+                'route_data': {...},
+                'rank_check': {...},
+                'pirep_data': {...},
+                'error': 'error message if failed'
+            }
+        """
+        self.logger.info(f"[ASCARIS] process_flight_by_type called for pilot_id={pilot_id}, flight_type={flight_type}")
+        
+        result = {
+            'success': False,
+            'aircraft_data': None,
+            'route_data': None,
+            'rank_check': None,
+            'pirep_data': None,
+            'error': None
+        }
+        
+        dep = flight_data.get('departure', '')
+        arr = flight_data.get('arrival', '')
+        
+        if flight_type == 'oneworld':
+            # ONE WORLD: Check rank first, then search OWD routes only
+            self.logger.info(f"[ASCARIS] Processing as One World flight")
+            
+            # 1. Check pilot rank for OWD access
+            pilot_rank = await self.bot.rank_model.get_pilot_rank(pilot_id)
+            if not self._has_owd_rank(pilot_rank):
+                self.logger.warning(f"[ASCARIS] Pilot does not have OneWorld rank")
+                result['error'] = "You need OneWorld rank or higher to file OWD flights."
+                return result
+            
+            # 2. Get aircraft data for ID 78 (fixed for OWD)
+            self.logger.info(f"[ASCARIS] Getting aircraft ID 78 for OWD")
+            aircraft = await self.bot.aircraft_model.get_aircraft_by_id(78)
+            if not aircraft:
+                self.logger.error(f"[ASCARIS] One World aircraft (ID: 78) not found in database")
+                result['error'] = "One World aircraft (ID: 78) not found in database."
+                return result
+            
+            result['aircraft_data'] = aircraft
+            
+            # 3. Search OWD routes ONLY
+            self.logger.info(f"[ASCARIS] Searching OWD route for {dep} → {arr}")
+            if hasattr(self.bot, 'owd_route_model'):
+                route_data = await self.bot.owd_route_model.find_route_by_icao(dep, arr)
+            else:
+                self.logger.error(f"[ASCARIS] owd_route_model not available")
+                route_data = None
+            
+            if not route_data:
+                self.logger.warning(f"[ASCARIS] OWD route NOT found for {dep} → {arr}")
+                result['error'] = f"One World route not found for {dep} → {arr}."
+                return result
+            
+            self.logger.info(f"[ASCARIS] OWD route found: {route_data}")
+            result['route_data'] = route_data
+            
+            # 4. Build PIREP data with fixed aircraft_id = 78
+            flight_num = route_data.get('flight_number', '')
+            
+            result['rank_check'] = {'can_fly': True, 'message': 'OneWorld rank verified'}
+            result['pirep_data'] = {
+                'departure': dep,
+                'arrival': arr,
+                'aircraft_id': 78,  # Fixed for OWD
+                'aircraft_name': aircraft.get('name', ''),
+                'livery': aircraft.get('liveryname', ''),
+                'flight_num': flight_num,
+                'duration': flight_data.get('duration', '00:00'),
+                'duration_seconds': flight_data.get('duration_seconds', 0),
+                'date': flight_data.get('date', datetime.now().strftime('%Y-%m-%d')),
+                'route_found': True,
+                'is_owd': True
+            }
+            
+            result['success'] = True
+            return result
+        
+        elif flight_type == 'event':
+            # EVENTS: Skip all searches, go to manual entry with aircraft_id=11
+            self.logger.info(f"[ASCARIS] Processing as Event flight")
+            
+            # 1. Get aircraft data for ID 11 (fixed for events)
+            aircraft = await self.bot.aircraft_model.get_aircraft_by_id(11)
+            if not aircraft:
+                self.logger.error(f"[ASCARIS] Event aircraft (ID: 11) not found in database")
+                result['error'] = "Event aircraft (ID: 11) not found in database."
+                return result
+            
+            result['aircraft_data'] = aircraft
+            
+            # 2. No route search for events
+            result['route_data'] = None
+            
+            # 3. Build PIREP data for manual entry
+            result['rank_check'] = {'can_fly': True, 'message': 'Event flight - no rank check'}
+            result['pirep_data'] = {
+                'departure': dep,
+                'arrival': arr,
+                'aircraft_id': 11,  # Fixed for events
+                'aircraft_name': aircraft.get('name', ''),
+                'livery': aircraft.get('liveryname', ''),
+                'flight_num': '',  # Empty - user must enter
+                'duration': flight_data.get('duration', ''),
+                'duration_seconds': flight_data.get('duration_seconds', 0),
+                'date': flight_data.get('date', datetime.now().strftime('%Y-%m-%d')),
+                'route_found': False,
+                'is_manual': True,
+                'is_event': True
+            }
+            
+            result['success'] = True
+            return result
+        
+        else:
+            # NORMAL: Search CC routes, no OWD fallback
+            self.logger.info(f"[ASCARIS] Processing as Normal flight")
+            
+            # 1. Check if aircraft_id/livery_id is invalid
+            if_aircraft_id = flight_data.get('aircraft_id', '')
+            if_livery_id = flight_data.get('livery_id', '')
+            is_invalid_aircraft = (if_aircraft_id == '0000000000000' or if_livery_id == '0000000000000')
+            
+            # 2. Try to match aircraft if valid
+            aircraft = None
+            rank_warning = None
+            
+            if not is_invalid_aircraft:
+                aircraft = await self.bot.aircraft_model.get_aircraft_by_if_ids_fallback(
+                    if_aircraft_id,
+                    if_livery_id
+                )
+            
+            # 3. If no aircraft matched or invalid, try to use aircraft from selected dropdown or default to 11
+            if not aircraft:
+                if selected_aircraft_id:
+                    aircraft = await self.bot.aircraft_model.get_aircraft_by_id(selected_aircraft_id)
+                else:
+                    # Try to get aircraft ID 11 as fallback
+                    aircraft = await self.bot.aircraft_model.get_aircraft_by_id(11)
+                    if aircraft:
+                        rank_warning = "⚠️ Aircraft not recognized, used default"
+            
+            if not aircraft:
+                self.logger.error(f"[ASCARIS] Aircraft not found in VA database")
+                result['error'] = "Aircraft not found in VA database."
+                return result
+            
+            self.logger.info(f"[ASCARIS] Aircraft matched: CC aircraft_id={aircraft.get('id')}, name={aircraft.get('name')}")
+            result['aircraft_data'] = aircraft
+            
+            # 4. Check rank requirement
+            self.logger.info(f"[ASCARIS] Checking rank requirement for aircraft_id={aircraft.get('id')}")
+            rank_check = await self.bot.rank_model.can_pilot_fly_aircraft(pilot_id, aircraft['id'])
+            
+            # If rank check fails, use aircraft_id=11
+            if not rank_check.get('can_fly'):
+                self.logger.warning(f"[ASCARIS] Rank check failed, using aircraft_id=11")
+                aircraft = await self.bot.aircraft_model.get_aircraft_by_id(11)
+                if aircraft:
+                    rank_check = {'can_fly': True, 'message': 'Used default aircraft due to rank'}
+                    rank_warning = "⚠️ Aircraft not in rank, used default aircraft"
+                    result['aircraft_data'] = aircraft
+            
+            result['rank_check'] = rank_check
+            
+            # 5. Search CC routes ONLY (no OWD fallback)
+            self.logger.info(f"[ASCARIS] Searching CC route for {dep} → {arr}")
+            route_data = await self.bot.routes_model.find_route_by_icao(dep, arr)
+            
+            if route_data:
+                self.logger.info(f"[ASCARIS] CC route found: {route_data.get('fltnum')}")
+            else:
+                self.logger.warning(f"[ASCARIS] CC route NOT found for {dep} → {arr}")
+            
+            result['route_data'] = route_data
+            
+            # 6. Build PIREP data
+            flight_num = route_data.get('fltnum', '').split(',')[0] if route_data else ''
+            
+            result['pirep_data'] = {
+                'departure': dep,
+                'arrival': arr,
+                'aircraft_id': aircraft['id'],
+                'aircraft_name': aircraft.get('name', ''),
+                'livery': aircraft.get('liveryname', ''),
+                'flight_num': flight_num,
+                'duration': flight_data.get('duration', '00:00'),
+                'duration_seconds': flight_data.get('duration_seconds', 0),
+                'date': flight_data.get('date', datetime.now().strftime('%Y-%m-%d')),
+                'route_found': route_data is not None,
+                'rank_warning': rank_warning
+            }
+            
+            result['success'] = True
+            return result
+
+    async def submit_ascaris_pirep(
+        self, 
+        pilot_id: int, 
+        flight_num: str, 
+        departure: str, 
+        arrival: str, 
+        flight_time: str, 
+        date: str,
+        aircraft_id: int, 
+        multiplier: str = None
+    ) -> Dict:
+        """
+        Submit PIREP via Crew Center API.
+        
+        Args:
+            pilot_id: Pilot's database ID
+            flight_num: Flight number
+            departure: Departure airport ICAO
+            arrival: Arrival airport ICAO
+            flight_time: Duration in HH:MM format
+            date: Flight date YYYY-MM-DD
+            aircraft_id: CC aircraft ID
+            multiplier: Multiplier code (e.g., '100000', '120000')
+            
+        Returns:
+            {
+                'success': True/False,
+                'response': {...},
+                'error': 'error message if failed'
+            }
+        """
+        self.logger.info(f"[ASCARIS] submit_ascaris_pirep called:")
+        self.logger.info(f"  - pilot_id: {pilot_id}")
+        self.logger.info(f"  - flight_num: {flight_num}")
+        self.logger.info(f"  - departure: {departure}")
+        self.logger.info(f"  - arrival: {arrival}")
+        self.logger.info(f"  - flight_time: {flight_time}")
+        self.logger.info(f"  - date: {date}")
+        self.logger.info(f"  - aircraft_id: {aircraft_id}")
+        self.logger.info(f"  - multiplier: {multiplier}")
+        
+        try:
+            self.logger.info(f"[ASCARIS] Submitting PIREP to Crew Center API...")
+            response = await self.bot.cc_api_manager.submit_pirep(
+                pilot_id=pilot_id,
+                flight_num=flight_num,
+                departure=departure,
+                arrival=arrival,
+                flight_time=flight_time,
+                date=date,
+                aircraft_id=aircraft_id,
+                fuel_used=0,
+                multiplier=multiplier
+            )
+            
+            self.logger.info(f"[ASCARIS] Crew Center API response: {response}")
+            
+            success = response and response.get('status') == 0
+            
+            if success:
+                self.logger.info(f"[ASCARIS] PIREP submitted successfully!")
+            else:
+                self.logger.warning(f"[ASCARIS] PIREP submission failed: status={response.get('status') if response else 'None'}, message={response.get('message') if response else 'None'}")
+            
+            return {
+                'success': success,
+                'response': response,
+                'error': None if success else response.get('message', 'Unknown error')
+            }
+            
+        except Exception as e:
+            self.logger.error(f"[ASCARIS] Error submitting Ascaris PIREP: {e}", exc_info=True)
+            return {
+                'success': False,
+                'response': None,
+                'error': str(e)
+            }
