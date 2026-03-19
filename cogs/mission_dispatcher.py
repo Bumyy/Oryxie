@@ -34,7 +34,7 @@ MISSION_CONFIG = {
     "BUTTON_PIREP_EMOJI": "📄",
     "BUTTON_LEADERBOARD_LABEL": "Leaderboard",
     "BUTTON_LEADERBOARD_EMOJI": "🏆",
-    "ACTIVE_SETS": ["WorldTourSet2", "WorldTourSet1"],
+    "ACTIVE_SETS": ["WorldTourSet3","WorldTourSet2", "WorldTourSet1"],
     "LOGO_PATH": "assets/WT2026.png"
 }
 
