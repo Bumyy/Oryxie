@@ -731,20 +731,19 @@ class PirepFilingService:
             # NORMAL: Search CC routes, no OWD fallback
             self.logger.info(f"[ASCARIS] Processing as Normal flight")
             
-            # 1. Check if aircraft_id/livery_id is invalid
             if_aircraft_id = flight_data.get('aircraft_id', '')
             if_livery_id = flight_data.get('livery_id', '')
-            is_invalid_aircraft = (if_aircraft_id == '0000000000000' or if_livery_id == '0000000000000')
             
-            # 2. Try to match aircraft if valid
+            # 1. Check if aircraft is valid by attempting exact match
+            exact_aircraft = await self.bot.aircraft_model.get_aircraft_by_if_ids(if_aircraft_id, if_livery_id)
+            is_invalid_aircraft = (exact_aircraft is None)
+            
+            # 2. Assign aircraft
             aircraft = None
             rank_warning = None
             
             if not is_invalid_aircraft:
-                aircraft = await self.bot.aircraft_model.get_aircraft_by_if_ids_fallback(
-                    if_aircraft_id,
-                    if_livery_id
-                )
+                aircraft = exact_aircraft
             
             # 3. If no aircraft matched or invalid, try to use aircraft from selected dropdown or default to 11
             if not aircraft:
@@ -780,18 +779,38 @@ class PirepFilingService:
             result['rank_check'] = rank_check
             
             # 5. Search CC routes ONLY (no OWD fallback)
-            self.logger.info(f"[ASCARIS] Searching CC route for {dep} → {arr}")
-            route_data = await self.bot.routes_model.find_route_by_icao(dep, arr)
+            self.logger.info(f"[ASCARIS-ROUTE-DEBUG] Starting extensive route search for DEP={dep} ARR={arr}")
+            self.logger.info(f"[ASCARIS-ROUTE-DEBUG] Calling: self.bot.routes_model.find_all_routes_with_exact_aircraft_by_icao('{dep}', '{arr}')")
             
-            if route_data:
-                self.logger.info(f"[ASCARIS] CC route found: {route_data.get('fltnum')}")
+            routes_list = await self.bot.routes_model.find_all_routes_with_exact_aircraft_by_icao(dep, arr)
+            
+            self.logger.info(f"[ASCARIS-ROUTE-DEBUG] Database returned {len(routes_list)} route row(s).")
+            
+            for idx, r in enumerate(routes_list):
+                r_fltnum = r.get('fltnum', 'N/A')
+                r_duration = r.get('duration', 'N/A')
+                r_aircraft = [ac.get('icao', 'Unk') for ac in r.get('aircraft', [])]
+                self.logger.info(f"[ASCARIS-ROUTE-DEBUG] Route #{idx+1} -> FltNum: {r_fltnum} | Duration: {r_duration} | Aircraft Allowed: {r_aircraft}")
+                
+            if len(routes_list) == 0:
+                route_data = None
+                multiple_routes = False
+                self.logger.warning(f"[ASCARIS-ROUTE-DEBUG] CC route NOT found for {dep} → {arr}")
+            elif len(routes_list) == 1:
+                route_data = routes_list[0]
+                multiple_routes = False
+                self.logger.info(f"[ASCARIS-ROUTE-DEBUG] Single CC route selected: {route_data.get('fltnum')}")
             else:
-                self.logger.warning(f"[ASCARIS] CC route NOT found for {dep} → {arr}")
+                route_data = routes_list[0]
+                multiple_routes = True
+                self.logger.info(f"[ASCARIS-ROUTE-DEBUG] Multiple CC routes found ({len(routes_list)}). Selected default index 0: {route_data.get('fltnum')}")
             
             result['route_data'] = route_data
+            result['routes_list'] = routes_list
+            result['multiple_routes'] = multiple_routes
             
             # 6. Build PIREP data
-            flight_num = route_data.get('fltnum', '').split(',')[0] if route_data else ''
+            flight_num = route_data.get('fltnum', '') if route_data else ''
             
             result['pirep_data'] = {
                 'departure': dep,
@@ -877,7 +896,7 @@ class PirepFilingService:
             return {
                 'success': success,
                 'response': response,
-                'error': None if success else response.get('message', 'Unknown error')
+                'error': None if success else (response.get('message', 'API error') if response else 'Crew Center returned empty response (400 Bad Request)')
             }
             
         except Exception as e:

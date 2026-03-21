@@ -8,6 +8,84 @@ class RoutesModel:
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
 
+    async def find_all_routes_by_icao(self, dep_icao: str, arr_icao: str) -> List[Dict]:
+        """
+        Finds all routes matching departure and arrival ICAO.
+        Groups by route ID to return distinct route rows, including their respective aircraft.
+        """
+        query = """
+            SELECT
+                r.id AS route_id,
+                r.fltnum,
+                r.duration,
+                a.icao AS aircraft_icao,
+                a.name AS aircraft_name
+            FROM
+                routes r
+            LEFT JOIN
+                route_aircraft ra ON r.id = ra.routeid
+            LEFT JOIN
+                aircraft a ON ra.aircraftid = a.id
+            WHERE
+                r.dep = %s AND r.arr = %s
+            ORDER BY
+                a.name
+        """
+        results = await self.db.fetch_all(query, (dep_icao, arr_icao))
+        
+        if not results:
+            return []
+            
+        routes_dict = {}
+        for row in results:
+            rid = row["route_id"]
+            if rid not in routes_dict:
+                routes_dict[rid] = {"route_id": rid, "fltnum": row["fltnum"], "duration": row["duration"], "aircraft": []}
+            if row["aircraft_icao"] is not None and row["aircraft_name"] is not None:
+                routes_dict[rid]["aircraft"].append({"icao": row["aircraft_icao"], "name": row["aircraft_name"]})
+                
+        return list(routes_dict.values())
+
+    async def find_all_routes_with_exact_aircraft_by_icao(self, dep_icao: str, arr_icao: str) -> List[Dict]:
+        """
+        Finds all routes matching departure and arrival ICAO, including exact aircraft IDs and liveries.
+        Built specifically to prevent N+1 query loops in the Ascaris V2 system.
+        """
+        query = """
+            SELECT
+                r.id AS route_id,
+                r.fltnum,
+                r.duration,
+                a.id AS aircraft_id,
+                a.icao AS aircraft_icao,
+                a.name AS aircraft_name,
+                a.liveryname AS aircraft_livery
+            FROM
+                routes r
+            LEFT JOIN
+                route_aircraft ra ON r.id = ra.routeid
+            LEFT JOIN
+                aircraft a ON ra.aircraftid = a.id
+            WHERE
+                r.dep = %s AND r.arr = %s
+            ORDER BY
+                a.name
+        """
+        results = await self.db.fetch_all(query, (dep_icao, arr_icao))
+        
+        if not results:
+            return []
+            
+        routes_dict = {}
+        for row in results:
+            rid = row["route_id"]
+            if rid not in routes_dict:
+                routes_dict[rid] = {"route_id": rid, "fltnum": row["fltnum"], "duration": row["duration"], "aircraft": []}
+            if row["aircraft_id"] is not None:
+                routes_dict[rid]["aircraft"].append({"id": row["aircraft_id"], "icao": row["aircraft_icao"], "name": row["aircraft_name"], "livery": row["aircraft_livery"] or "Standard"})
+                
+        return list(routes_dict.values())
+
     async def find_route_by_icao(self, dep_icao: str, arr_icao: str) -> Optional[Dict]:
         """
         Finds a route in the database matching a specific departure and arrival ICAO,
