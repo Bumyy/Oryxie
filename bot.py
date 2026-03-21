@@ -178,7 +178,7 @@ class MyBot(commands.Bot):
             
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
-            await self.load_extension('cogs.ayush')
+           # await self.load_extension('cogs.ayush')
             
             
             print("All cogs loaded.")
