@@ -19,7 +19,7 @@ from datetime import datetime
 import logging
 
 # Setup logging
-logger = logging.getLogger('oryxie.ascaris_cog_v2')
+logger = logging.getLogger('oryxie.ascaris_cog')
 
 def get_final_confirmation_ui(bot, flight_info, original_user_id):
     """Helper function to build the 2nd Confirmation Screen (State 5)."""
@@ -73,12 +73,12 @@ async def send_final_confirmation(interaction: discord.Interaction, bot, flight_
     embed, view = get_final_confirmation_ui(bot, flight_info, original_user_id)
     await interaction.edit_original_response(embed=embed, view=view)
 
-class AscarisCogV2(commands.Cog):
+class AscarisCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        logger.info("AscarisCogV2 initialized")
+        logger.info("AscarisCog initialized")
         
-    @app_commands.command(name="ascaris_v2", description="Automatic PIREP filing from Infinite Flight flights")
+    @app_commands.command(name="ascaris", description="Automatic PIREP filing from Infinite Flight flights")
     @app_commands.describe(flight_type="Type of flight: normal, oneworld, or event")
     @app_commands.choices(flight_type=[
         app_commands.Choice(name="Normal Flight", value="normal"),
@@ -686,6 +686,6 @@ class MultiplierSelectionView(ui.View):
 
 async def setup(bot):
     """Setup function to add cog to bot."""
-    logger.info("Loading AscarisCogV2...")
-    await bot.add_cog(AscarisCogV2(bot))
-    logger.info("AscarisCogV2 loaded successfully!")
+    logger.info("Loading AscarisCog...")
+    await bot.add_cog(AscarisCog(bot))
+    logger.info("AscarisCog loaded successfully!")
