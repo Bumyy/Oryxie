@@ -30,5 +30,13 @@
   "IF-FOJY": {
     "icao": "A333",
     "livery": "Qatar"
+  },
+  "IF-YOKD": {
+    "icao": "B77W",
+    "livery": "Qatar"
+  },
+  "IF-XZBM": {
+    "icao": "B788",
+    "livery": "Qatar"
   }
 }
