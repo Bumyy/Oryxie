@@ -38,5 +38,13 @@
   "IF-XZBM": {
     "icao": "B788",
     "livery": "Qatar"
+  },
+  "IF-PLNB": {
+    "icao": "A321",
+    "livery": "Qatar"
+  },
+  "IF-EFRN": {
+    "icao": "A388",
+    "livery": "Qatar"
   }
 }
