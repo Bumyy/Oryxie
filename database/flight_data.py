@@ -142,9 +142,6 @@ class FlightData:
         if not self.RANK_CONFIG or 'ranks' not in self.RANK_CONFIG:
             return "Cadet"
         
-        # Convert seconds to hours if needed
-        if total_hours > 10000:  # Assume it's in seconds if > 10000
-            total_hours = total_hours / 3600
         
         # Find highest rank pilot qualifies for
         qualified_rank = "Cadet"
@@ -232,4 +229,3 @@ class FlightData:
     def is_royal_dignitary(self, dignitary_name: str) -> bool:
         """Check if dignitary is from royal family"""
         return dignitary_name in self.ROYAL_NAMES
-
