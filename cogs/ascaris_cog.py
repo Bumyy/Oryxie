@@ -403,6 +403,63 @@ class RawDataConfirmationView(ui.View):
         flight_type = self.flight_info.get('flight_type', 'normal')
         
         logger.info(f"[ASCARIS V2] User {interaction.user.id} clicked Proceed on Raw Data. Processing {flight_data.get('departure')} -> {flight_data.get('arrival')} as {flight_type}")
+
+        # Optimistic path: If we have an exact aircraft and it matches a unique route, skip selections.
+        if flight_type == 'normal':
+            exact_aircraft = await self.bot.aircraft_model.get_aircraft_by_if_ids(
+                flight_data.get('aircraft_id', ''),
+                flight_data.get('livery_id', '')
+            )
+
+            if exact_aircraft:
+                logger.info(f"[ASCARIS V2] Optimistic Path: Found exact aircraft match: {exact_aircraft['name']} (ID: {exact_aircraft['id']})")
+                exact_routes = await self.bot.routes_model.find_routes_by_icao_and_aircraft(
+                    flight_data.get('departure'),
+                    flight_data.get('arrival'),
+                    exact_aircraft['id']
+                )
+
+                if len(exact_routes) == 1:
+                    logger.info(f"[ASCARIS V2] Optimistic Path: Found unique route match. Bypassing selection views.")
+                    unique_route = exact_routes[0]
+
+                    rank_check = await self.bot.rank_model.can_pilot_fly_aircraft(pilot_data['id'], exact_aircraft['id'])
+                    rank_warning = None
+                    final_aircraft = exact_aircraft
+
+                    if not rank_check.get('can_fly'):
+                        default_aircraft = await self.bot.aircraft_model.get_aircraft_by_id(11)
+                        if default_aircraft:
+                            final_aircraft = default_aircraft
+                            rank_warning = "⚠️ Selected aircraft not in rank, used default aircraft"
+                            rank_check = {'can_fly': True, 'message': rank_warning}
+                    
+                    pirep_data = {
+                        'departure': flight_data.get('departure', ''),
+                        'arrival': flight_data.get('arrival', ''),
+                        'aircraft_id': final_aircraft['id'],
+                        'aircraft_name': final_aircraft.get('name', ''),
+                        'livery': final_aircraft.get('liveryname', ''),
+                        'flight_num': unique_route.get('fltnum', ''),
+                        'duration': flight_data.get('duration', ''),
+                        'duration_seconds': flight_data.get('duration_seconds', 0),
+                        'date': flight_data.get('date', datetime.now().strftime('%Y-%m-%d')),
+                        'route_found': True,
+                        'rank_warning': rank_warning
+                    }
+
+                    self.flight_info.update({
+                        'aircraft_data': final_aircraft,
+                        'route_data': unique_route,
+                        'rank_check': rank_check,
+                        'pirep_data': pirep_data,
+                        'is_invalid_aircraft': False
+                    })
+                    await send_final_confirmation(interaction, self.bot, self.flight_info, self.original_user_id)
+                    return
+
+        # Fallback to standard flow if optimistic path fails
+        logger.info(f"[ASCARIS V2] Optimistic path failed or not applicable. Proceeding with standard flow.")
         result = await self.bot.pirep_filing_service.process_flight_by_type(
             pilot_data['id'],
             flight_data,
