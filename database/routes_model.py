@@ -86,6 +86,44 @@ class RoutesModel:
                 
         return list(routes_dict.values())
 
+    async def find_routes_by_icao_and_aircraft(self, dep_icao: str, arr_icao: str, aircraft_id: int) -> List[Dict]:
+        """
+        Finds all routes matching departure, arrival, and a specific aircraft ID.
+        This is used for the optimistic direct match in Ascaris.
+        """
+        query = """
+            SELECT
+                r.id AS route_id,
+                r.fltnum,
+                r.duration,
+                a.id AS aircraft_id,
+                a.icao AS aircraft_icao,
+                a.name AS aircraft_name,
+                a.liveryname AS aircraft_livery
+            FROM
+                routes r
+            JOIN
+                route_aircraft ra ON r.id = ra.routeid
+            JOIN
+                aircraft a ON ra.aircraftid = a.id
+            WHERE
+                r.dep = %s AND r.arr = %s AND ra.aircraftid = %s
+        """
+        results = await self.db.fetch_all(query, (dep_icao, arr_icao, aircraft_id))
+        
+        if not results:
+            return []
+            
+        routes_dict = {}
+        for row in results:
+            rid = row["route_id"]
+            if rid not in routes_dict:
+                routes_dict[rid] = {"route_id": rid, "fltnum": row["fltnum"], "duration": row["duration"], "aircraft": []}
+            if row["aircraft_id"] is not None:
+                routes_dict[rid]["aircraft"].append({"id": row["aircraft_id"], "icao": row["aircraft_icao"], "name": row["aircraft_name"], "livery": row.get("aircraft_livery") or "Standard"})
+                
+        return list(routes_dict.values())
+
     async def find_route_by_icao(self, dep_icao: str, arr_icao: str) -> Optional[Dict]:
         """
         Finds a route in the database matching a specific departure and arrival ICAO,
