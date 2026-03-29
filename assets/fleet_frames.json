@@ -1,5 +1,5 @@
 {
-  "A7BAB": {
+  "A7-BAB": {
     "icao": "B77W",
     "livery": "Qatar Retro"
   },
@@ -15,7 +15,7 @@
     "icao": "A359",
     "livery": "Qatar"
   },
-  "A7DAB": {
+  "A7-DAB": {
     "icao": "A359",
     "livery": "Qatar"
   },
@@ -23,28 +23,36 @@
     "icao": "B77W",
     "livery": "Qatar"
   },
-  "A7BBA": {
+  "A7-BBA": {
     "icao": "B77L",
     "livery": "Qatar"
   },
-  "A7AED": {
+  "A7-AED": {
     "icao": "A333",
     "livery": "Qatar"
   },
-  "A7BAF": {
+  "A7-BAF": {
     "icao": "B77W",
     "livery": "Qatar"
   },
-  "A7BCB": {
+  "A7-BCB": {
     "icao": "B788",
     "livery": "Qatar"
   },
-  "A7ADS": {
+  "A7-ADS": {
     "icao": "A321",
     "livery": "Qatar"
   },
-  "A7APD": {
+  "A7-APD": {
     "icao": "A388",
+    "livery": "Qatar"
+  },
+  "A7-BAG": {
+    "icao": "B77W",
+    "livery": "Qatar Retro"
+  },
+  "A7-ALR": {
+    "icao": "A359",
     "livery": "Qatar"
   }
 }
