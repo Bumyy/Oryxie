@@ -571,6 +571,42 @@ class PirepFilingService:
         result['success'] = True
         return result
 
+    async def auto_process_flight(self, pilot_id: int, flight_data: Dict) -> Dict:
+        """
+        Automatically determines the flight type and processes the flight
+        using a waterfall logic: CC Route -> OWD Route -> Event/Manual.
+        """
+        dep = flight_data.get('departure', '')
+        arr = flight_data.get('arrival', '')
+        self.logger.info(f"[ASCARIS-AUTO] Starting auto-detection for {dep} -> {arr}")
+
+        # 1. Check for Normal CC Route
+        self.logger.info("[ASCARIS-AUTO] -> Checking for CC Route...")
+        # Find any route for the airport pair first. Aircraft validity is handled inside process_flight_by_type.
+        all_cc_routes = await self.bot.routes_model.find_all_routes_with_exact_aircraft_by_icao(dep, arr)
+        if all_cc_routes:
+            self.logger.info(f"[ASCARIS-AUTO] -> CC Route found. Processing as 'normal'.")
+            return await self.process_flight_by_type(pilot_id, flight_data, 'normal')
+
+        # 2. Check for One World Route
+        self.logger.info("[ASCARIS-AUTO] -> CC Route check failed. Checking for OWD Route...")
+        pilot_rank = await self.bot.rank_model.get_pilot_rank(pilot_id)
+        if self._has_owd_rank(pilot_rank):
+            self.logger.info("[ASCARIS-AUTO] -> Pilot has OWD rank. Searching OWD routes.")
+            if hasattr(self.bot, 'owd_route_model'):
+                owd_route = await self.bot.owd_route_model.find_route_by_icao(dep, arr)
+                if owd_route:
+                    self.logger.info("[ASCARIS-AUTO] -> OWD Route found. Processing as 'oneworld'.")
+                    return await self.process_flight_by_type(pilot_id, flight_data, 'oneworld')
+        else:
+            self.logger.info("[ASCARIS-AUTO] -> Pilot does not have OWD rank. Skipping OWD check.")
+
+
+        # 3. Fallback to Event/Manual
+        self.logger.info("[ASCARIS-AUTO] -> All checks failed. Falling back to 'event' type.")
+        return await self.process_flight_by_type(pilot_id, flight_data, 'event')
+
+
     async def _has_owd_rank(self, pilot_rank: dict) -> bool:
         """
         Check if pilot has OneWorld rank or higher.
@@ -627,6 +663,7 @@ class PirepFilingService:
             'route_data': None,
             'rank_check': None,
             'pirep_data': None,
+            'flight_type': flight_type,
             'error': None
         }
         
@@ -687,6 +724,7 @@ class PirepFilingService:
                 'route_found': True,
                 'is_owd': True
             }
+            result['flight_type'] = 'oneworld'
             
             result['success'] = True
             return result
@@ -723,6 +761,7 @@ class PirepFilingService:
                 'is_manual': True,
                 'is_event': True
             }
+            result['flight_type'] = 'event'
             
             result['success'] = True
             return result
@@ -825,6 +864,7 @@ class PirepFilingService:
                 'route_found': route_data is not None,
                 'rank_warning': rank_warning
             }
+            result['flight_type'] = 'normal'
             
             result['success'] = True
             return result
