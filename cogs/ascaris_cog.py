@@ -77,25 +77,17 @@ class AscarisCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         logger.info("AscarisCog initialized")
-        
+
     @app_commands.command(name="ascaris", description="Automatic PIREP filing from Infinite Flight flights")
-    @app_commands.describe(flight_type="Type of flight: normal, oneworld, or event")
-    @app_commands.choices(flight_type=[
-        app_commands.Choice(name="Normal Flight", value="normal"),
-        app_commands.Choice(name="One World", value="oneworld"),
-        app_commands.Choice(name="Event", value="event")
-    ])
-    async def ascaris_command(self, interaction: discord.Interaction, flight_type: str = "normal"):
+    async def ascaris_command(self, interaction: discord.Interaction):
         """Main Ascaris slash command - fetch flights and start PIREP filing."""
-        logger.info(f"Ascaris slash command triggered by user: {interaction.user.id} ({interaction.user.display_name}), flight_type: {flight_type}")
-        
+        logger.info(f"Ascaris slash command triggered by user: {interaction.user.id} ({interaction.user.display_name})")
         await interaction.response.send_message("🔄 Fetching your recent flights from Infinite Flight...", ephemeral=False)
-        await self.fetch_and_display_flights(interaction, flight_type)
-    
-    async def fetch_and_display_flights(self, interaction: discord.Interaction, flight_type: str = "normal"):
+        await self.fetch_and_display_flights(interaction)
+
+    async def fetch_and_display_flights(self, interaction: discord.Interaction):
         """Fetch flights from IF API and display selection embed (for slash command usage)."""
         logger.info(f"Fetching IF flights for Discord user: {interaction.user.id}")
-        
         # Call service to fetch flights
         result = await self.bot.pirep_filing_service.fetch_if_flights(interaction.user.id)
         
@@ -111,9 +103,8 @@ class AscarisCog(commands.Cog):
         
         flights = result['flights']
         pilot_data = result['pilot_data']
-        
+
         if not flights:
-            logger.warning("No flights found in IF API response")
             embed = discord.Embed(
                 title="❌ No Flights Found",
                 description="No recent flights were found for your linked Infinite Flight account. Please make sure you have flown recently.",
@@ -121,18 +112,11 @@ class AscarisCog(commands.Cog):
             )
             await interaction.followup.send(embed=embed)
             return
-        
-        if flight_type == 'event':
-            flight_type_display = "Event (Manual Entry)"
-        elif flight_type == 'oneworld':
-            flight_type_display = "One World (OWD Routes)"
-        else:
-            flight_type_display = "Normal Flight (CC Routes)"
-        
+
         # Create selection embed
         embed = discord.Embed(
             title="✈️ Ascaris - Select Your Flight",
-            description=f"**{pilot_data.get('callsign', 'Unknown')}** - Choose a flight to file PIREP\nType: **{flight_type_display}**",
+            description=f"**{pilot_data.get('callsign', 'Unknown')}** - Choose a flight to file a PIREP for.",
             color=discord.Color.blue()
         )
         
@@ -144,24 +128,22 @@ class AscarisCog(commands.Cog):
                 value=f"🛫 **{route}**\n⏱️ Duration: {flight['duration']}\n📅 Date: {flight['date']}\n✈️ Aircraft ID: {str(flight.get('aircraft_id', 'N/A'))[:20]}...",
                 inline=True
             )
-        
+
         embed.set_footer(text="Click a button below to select your flight")
-        
         # Create view with buttons
-        view = FlightSelectionView(self.bot, pilot_data, flights, flight_type, interaction.user.id)
-        
+        view = FlightSelectionView(self.bot, pilot_data, flights, interaction.user.id)
+
         logger.info(f"Sending flight selection embed with {len(flights)} flights")
         await interaction.followup.send(embed=embed, view=view)
 
 class FlightSelectionView(ui.View):
     """View for selecting a flight from the list."""
-    
-    def __init__(self, bot, pilot_data, flights, flight_type: str, original_user_id: int):
+
+    def __init__(self, bot, pilot_data, flights, original_user_id: int):
         super().__init__(timeout=300)
         self.bot = bot
         self.pilot_data = pilot_data
         self.flights = flights
-        self.flight_type = flight_type
         self.original_user_id = original_user_id
         
         # Add buttons for each flight
@@ -173,7 +155,7 @@ class FlightSelectionView(ui.View):
             )
             button.callback = self.create_flight_callback(i - 1)
             self.add_item(button)
-    
+
     def create_flight_callback(self, flight_index):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.original_user_id:
@@ -181,7 +163,7 @@ class FlightSelectionView(ui.View):
                 return
             await self.process_flight_selection(interaction, flight_index)
         return callback
-    
+
     async def process_flight_selection(self, interaction: discord.Interaction, flight_index: int):
         """Process the selected flight based on flight type."""
         flight = self.flights[flight_index]
@@ -190,8 +172,7 @@ class FlightSelectionView(ui.View):
         logger.info(f"[ASCARIS V2] User {interaction.user.id} selected flight {flight_index + 1}: {flight.get('departure')} -> {flight.get('arrival')}")
         flight_info = {
             'pilot_data': self.pilot_data,
-            'flight_data': flight,
-            'flight_type': self.flight_type
+            'flight_data': flight
         }
         embed = discord.Embed(
             title="🔍 Step 1: Verify Raw Flight Data",
@@ -201,7 +182,7 @@ class FlightSelectionView(ui.View):
         embed.add_field(name="🛫 Route", value=f"**{flight.get('departure', 'N/A')} → {flight.get('arrival', 'N/A')}**", inline=False)
         embed.add_field(name="📅 Date", value=flight.get('date', 'N/A'), inline=True)
         embed.add_field(name="⏱️ Duration", value=flight.get('duration', 'N/A'), inline=True)
-        
+
         view = RawDataConfirmationView(self.bot, flight_info, self.original_user_id)
         await interaction.followup.send(embed=embed, view=view)
 
@@ -400,86 +381,32 @@ class RawDataConfirmationView(ui.View):
         await interaction.response.defer()
         flight_data = self.flight_info['flight_data']
         pilot_data = self.flight_info['pilot_data']
-        flight_type = self.flight_info.get('flight_type', 'normal')
         
-        logger.info(f"[ASCARIS V2] User {interaction.user.id} clicked Proceed on Raw Data. Processing {flight_data.get('departure')} -> {flight_data.get('arrival')} as {flight_type}")
+        logger.info(f"[ASCARIS V2] User {interaction.user.id} clicked Proceed. Auto-detecting flight type for {flight_data.get('departure')} -> {flight_data.get('arrival')}")
 
-        # Optimistic path: If we have an exact aircraft and it matches a unique route, skip selections.
-        if flight_type == 'normal':
-            exact_aircraft = await self.bot.aircraft_model.get_aircraft_by_if_ids(
-                flight_data.get('aircraft_id', ''),
-                flight_data.get('livery_id', '')
-            )
-
-            if exact_aircraft:
-                logger.info(f"[ASCARIS V2] Optimistic Path: Found exact aircraft match: {exact_aircraft['name']} (ID: {exact_aircraft['id']})")
-                exact_routes = await self.bot.routes_model.find_routes_by_icao_and_aircraft(
-                    flight_data.get('departure'),
-                    flight_data.get('arrival'),
-                    exact_aircraft['id']
-                )
-
-                if len(exact_routes) == 1:
-                    logger.info(f"[ASCARIS V2] Optimistic Path: Found unique route match. Bypassing selection views.")
-                    unique_route = exact_routes[0]
-
-                    rank_check = await self.bot.rank_model.can_pilot_fly_aircraft(pilot_data['id'], exact_aircraft['id'])
-                    rank_warning = None
-                    final_aircraft = exact_aircraft
-
-                    if not rank_check.get('can_fly'):
-                        default_aircraft = await self.bot.aircraft_model.get_aircraft_by_id(11)
-                        if default_aircraft:
-                            final_aircraft = default_aircraft
-                            rank_warning = "⚠️ Selected aircraft not in rank, used default aircraft"
-                            rank_check = {'can_fly': True, 'message': rank_warning}
-                    
-                    pirep_data = {
-                        'departure': flight_data.get('departure', ''),
-                        'arrival': flight_data.get('arrival', ''),
-                        'aircraft_id': final_aircraft['id'],
-                        'aircraft_name': final_aircraft.get('name', ''),
-                        'livery': final_aircraft.get('liveryname', ''),
-                        'flight_num': unique_route.get('fltnum', ''),
-                        'duration': flight_data.get('duration', ''),
-                        'duration_seconds': flight_data.get('duration_seconds', 0),
-                        'date': flight_data.get('date', datetime.now().strftime('%Y-%m-%d')),
-                        'route_found': True,
-                        'rank_warning': rank_warning
-                    }
-
-                    self.flight_info.update({
-                        'aircraft_data': final_aircraft,
-                        'route_data': unique_route,
-                        'rank_check': rank_check,
-                        'pirep_data': pirep_data,
-                        'is_invalid_aircraft': False
-                    })
-                    await send_final_confirmation(interaction, self.bot, self.flight_info, self.original_user_id)
-                    return
-
-        # Fallback to standard flow if optimistic path fails
-        logger.info(f"[ASCARIS V2] Optimistic path failed or not applicable. Proceeding with standard flow.")
-        result = await self.bot.pirep_filing_service.process_flight_by_type(
+        # NEW: Call the waterfall logic service method
+        result = await self.bot.pirep_filing_service.auto_process_flight(
             pilot_data['id'],
-            flight_data,
-            flight_type
+            flight_data
         )
         
-        logger.info(f"[ASCARIS V2] Process result: success={result.get('success')}")
+        logger.info(f"[ASCARIS V2] Auto-detection result: success={result.get('success')}, type={result.get('flight_type')}")
         
         if not result['success']:
             embed = discord.Embed(title="❌ Error", description=result.get('error'), color=discord.Color.red())
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
             
+        flight_type = result.get('flight_type')
+
         if flight_type == 'oneworld' or flight_type == 'event':
             self.flight_info.update({
                 'aircraft_data': result['aircraft_data'],
                 'route_data': result['route_data'],
                 'rank_check': result['rank_check'],
                 'pirep_data': result['pirep_data'],
-                'is_invalid_aircraft': False
+                'is_invalid_aircraft': False,
+                'flight_type': flight_type
             })
             await send_final_confirmation(interaction, self.bot, self.flight_info, self.original_user_id)
             return
@@ -501,7 +428,8 @@ class RawDataConfirmationView(ui.View):
             'route_data': result['route_data'],
             'rank_check': result['rank_check'],
             'pirep_data': result['pirep_data'],
-            'is_invalid_aircraft': is_invalid_aircraft
+            'is_invalid_aircraft': is_invalid_aircraft,
+            'flight_type': flight_type
         })
 
         if result.get('multiple_routes'):
