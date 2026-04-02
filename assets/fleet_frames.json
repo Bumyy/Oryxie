@@ -54,5 +54,17 @@
   "A7-ALR": {
     "icao": "A359",
     "livery": "Qatar"
+  },
+  "A7-AEE": {
+    "icao": "A333",
+    "livery": "Qatar"
+  },
+  "A7-DAA": {
+    "icao": "A359",
+    "livery": "Qatar"
+  },
+  "A7-BCC": {
+    "icao": "B788",
+    "livery": "Qatar"
   }
 }
