@@ -47,7 +47,7 @@ def get_final_confirmation_ui(bot, flight_info, original_user_id):
     rank_status = "✅ Rank Requirement Met" if rank_check.get('can_fly') else f"⚠️ {rank_check.get('message', 'Rank Issue')}"
     
     embed = discord.Embed(
-        title="✈️ Step 2: Final Flight Confirmation",
+        title="✈️ Step 3: Final Flight Confirmation",
         description=desc,
         color=discord.Color.green()
     )
@@ -55,6 +55,10 @@ def get_final_confirmation_ui(bot, flight_info, original_user_id):
     embed.add_field(name="🛫 Route", value=f"**{pirep['departure']} → {pirep['arrival']}**", inline=False)
     embed.add_field(name="✈️ Aircraft", value=aircraft_info, inline=True)
     embed.add_field(name="⏱️ Flight Info", value=f"Duration: **{pirep.get('duration', 'N/A')}**\nDate: **{pirep.get('date', 'N/A')}**", inline=True)
+    
+    multiplier_label = pirep.get('multiplier_label', '1x (Standard)')
+    embed.add_field(name="🎯 Multiplier", value=f"**{multiplier_label}**", inline=True)
+    
     embed.add_field(name="✅ Validation Status", value=f"{route_status}\n{rank_status}", inline=False)
     
     flight_num = pirep.get('flight_num', '')
@@ -64,12 +68,28 @@ def get_final_confirmation_ui(bot, flight_info, original_user_id):
     else:
         embed.add_field(name="🔢 Flight Number", value="⚠️ Not found - Must enter before proceeding", inline=False)
         
-    embed.set_footer(text="Click ✅ Confirm & Proceed to select multiplier, or ⬅️ Back to edit route")
+    embed.set_footer(text="Click ✅ Submit PIREP to file, or use Edit buttons to make changes")
     view = FinalConfirmationView(bot, flight_info, original_user_id)
     
     return embed, view
 
+async def send_multiplier_selection(interaction: discord.Interaction, bot, flight_info, original_user_id):
+    """Helper function to show Step 2: Multiplier Selection."""
+    embed = discord.Embed(
+        title="🎯 Step 2: Select Multiplier",
+        description="Choose a multiplier for this PIREP before final confirmation:",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="Available Multipliers",
+        value="• **1x** - Standard (100% hours)\n• **1.5x** - Bonus (150% hours)\n• **2x** - Double (200% hours)\n• **3x** - Triple (300% hours)",
+        inline=False
+    )
+    view = MultiplierSelectionView(bot, flight_info, original_user_id)
+    await interaction.edit_original_response(embed=embed, view=view)
+
 async def send_final_confirmation(interaction: discord.Interaction, bot, flight_info, original_user_id):
+    """Helper function to build the 3rd Confirmation Screen (Final)."""
     embed, view = get_final_confirmation_ui(bot, flight_info, original_user_id)
     await interaction.edit_original_response(embed=embed, view=view)
 
@@ -246,7 +266,7 @@ class RouteSelectionDropdownView(ui.View):
                     await interaction.edit_original_response(embed=embed, view=view)
                     return
                     
-        await send_final_confirmation(interaction, self.bot, self.flight_info, self.original_user_id)
+        await send_multiplier_selection(interaction, self.bot, self.flight_info, self.original_user_id)
 
 
 class AircraftDropdownView(ui.View):
@@ -361,8 +381,8 @@ class AircraftDropdownView(ui.View):
         await self._send_confirmation_from_dropdown(interaction, flight_info)
 
     async def _send_confirmation_from_dropdown(self, interaction: discord.Interaction, flight_info):
-        # For normal flights coming from the dropdown, immediately go to the 2nd screen
-        await send_final_confirmation(interaction, self.bot, flight_info, self.original_user_id)
+        # For normal flights coming from the dropdown, immediately go to the multiplier screen
+        await send_multiplier_selection(interaction, self.bot, flight_info, self.original_user_id)
 
 class RawDataConfirmationView(ui.View):
     """Step 1: Verification view for Normal flights."""
@@ -408,7 +428,7 @@ class RawDataConfirmationView(ui.View):
                 'is_invalid_aircraft': False,
                 'flight_type': flight_type
             })
-            await send_final_confirmation(interaction, self.bot, self.flight_info, self.original_user_id)
+            await send_multiplier_selection(interaction, self.bot, self.flight_info, self.original_user_id)
             return
             
         if not result.get('route_data'):
@@ -473,7 +493,7 @@ class RawDataConfirmationView(ui.View):
                     await interaction.edit_original_response(embed=embed, view=view)
                     return
                     
-        await send_final_confirmation(interaction, self.bot, self.flight_info, self.original_user_id)
+        await send_multiplier_selection(interaction, self.bot, self.flight_info, self.original_user_id)
 
     @ui.button(label="✏️ Edit", style=discord.ButtonStyle.secondary, custom_id="raw_edit")
     async def edit_btn(self, interaction: discord.Interaction, button: ui.Button):
@@ -538,15 +558,15 @@ class RawDataEditModal(ui.Modal):
         await interaction.response.edit_message(embed=embed, view=view)
 
 class FinalConfirmationView(ui.View):
-    """Step 2: Second confirmation screen for Normal flights."""
+    """Step 3: Final confirmation screen before submitting."""
     def __init__(self, bot, flight_info, original_user_id):
         super().__init__(timeout=300)
         self.bot = bot
         self.flight_info = flight_info
         self.original_user_id = original_user_id
     
-    @ui.button(label="✅ Confirm & Proceed", style=discord.ButtonStyle.success, custom_id="final_proceed")
-    async def proceed_button(self, interaction: discord.Interaction, button: ui.Button):
+    @ui.button(label="✅ Submit PIREP", style=discord.ButtonStyle.success, custom_id="final_submit")
+    async def submit_button(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.original_user_id:
             await interaction.response.send_message("❌ This interaction was not initiated by you.", ephemeral=True)
             return
@@ -559,19 +579,50 @@ class FinalConfirmationView(ui.View):
             
         await interaction.response.defer()
         
-        logger.info(f"[ASCARIS V2] User {interaction.user.id} confirmed final flight details. Prompting for multiplier.")
-        embed = discord.Embed(
-            title="🎯 Select Multiplier",
-            description="Choose a multiplier for this PIREP:",
-            color=discord.Color.blue()
+        pirep_data = self.flight_info['pirep_data']
+        pilot_data = self.flight_info['pilot_data']
+        multiplier = pirep_data.get('multiplier', '')
+        multiplier_label = pirep_data.get('multiplier_label', '1x (Standard)')
+        
+        logger.info(f"[ASCARIS V2] User {interaction.user.id} submitting PIREP with multiplier: '{multiplier_label}'")
+        
+        result = await self.bot.pirep_filing_service.submit_ascaris_pirep(
+            pilot_id=pilot_data['id'],
+            flight_num=pirep_data.get('flight_num', 'ASC'),
+            departure=pirep_data['departure'],
+            arrival=pirep_data['arrival'],
+            flight_time=pirep_data['duration'],
+            date=pirep_data['date'],
+            aircraft_id=pirep_data['aircraft_id'],
+            multiplier=multiplier
         )
-        embed.add_field(
-            name="Available Multipliers",
-            value="• **1x** - Standard (100% hours)\n• **1.5x** - Bonus (150% hours)\n• **2x** - Double (200% hours)\n• **3x** - Triple (300% hours)",
-            inline=False
-        )
-        view = MultiplierSelectionView(self.bot, self.flight_info, self.original_user_id)
-        await interaction.edit_original_response(embed=embed, view=view)
+        
+        logger.info(f"[ASCARIS V2] PIREP Submission result: success={result.get('success')}")
+        if result['success']:
+            embed = discord.Embed(title="✅ PIREP Filed Successfully!", description=f"🎉 Your PIREP has been submitted to Crew Center!", color=discord.Color.green())
+            embed.add_field(name="✈️ Flight Details", value=f"**{pirep_data.get('flight_num', 'N/A')}** | {pirep_data['departure']} → {pirep_data['arrival']}", inline=False)
+            embed.add_field(name="⏱️ Duration", value=pirep_data['duration'], inline=True)
+            embed.add_field(name="🎯 Multiplier", value=multiplier_label, inline=True)
+            embed.add_field(name="👤 Pilot", value=f"**{pilot_data.get('callsign', 'Unknown')}**", inline=True)
+            embed.set_footer(text="Your flight has been safely logged. Thanks for flying QRV! <:qatari:1094679033205227580>")
+        else:
+            embed = discord.Embed(title="❌ PIREP Submission Failed", description=f"**Error:** {result.get('error', 'Unknown error occurred')}\n\nPlease try again or contact staff.", color=discord.Color.red())
+            embed.add_field(name="Debug Info", value=f"Pilot ID: {pilot_data['id']}\nFlight: {pirep_data.get('flight_num')} {pirep_data['departure']}→{pirep_data['arrival']}\nAircraft ID: {pirep_data['aircraft_id']}", inline=False)
+        
+        # Disable all buttons upon submission
+        for child in self.children:
+            child.disabled = True
+        await interaction.edit_original_response(view=self)
+        await interaction.followup.send(embed=embed)
+
+    @ui.button(label="🎯 Edit Multiplier", style=discord.ButtonStyle.primary, custom_id="final_edit_multiplier")
+    async def edit_multiplier_button(self, interaction: discord.Interaction, button: ui.Button):
+        if interaction.user.id != self.original_user_id:
+            await interaction.response.send_message("❌ This interaction was not initiated by you.", ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        await send_multiplier_selection(interaction, self.bot, self.flight_info, self.original_user_id)
     
     @ui.button(label="⬅️ Back to Step 1", style=discord.ButtonStyle.secondary, custom_id="final_back")
     async def back_button(self, interaction: discord.Interaction, button: ui.Button):
@@ -613,6 +664,12 @@ class FlightNumberInputModal(ui.Modal):
         embed, view = get_final_confirmation_ui(self.bot, self.flight_info, self.original_user_id)
         await interaction.response.edit_message(embed=embed, view=view)
 
+async def setup(bot):
+    """Setup function to add cog to bot."""
+    logger.info("Loading AscarisCog...")
+    await bot.add_cog(AscarisCog(bot))
+    logger.info("AscarisCog loaded successfully!")
+
 class MultiplierSelectionView(ui.View):
     def __init__(self, bot, flight_info, original_user_id):
         super().__init__(timeout=300)
@@ -636,41 +693,13 @@ class MultiplierSelectionView(ui.View):
             return
 
         multiplier = select.values[0] if select.values[0] != "empty" else ""
+        multiplier_label = next((opt.label for opt in select.options if opt.value == select.values[0]), "1x (Standard)")
+        
         await interaction.response.defer()
         
-        logger.info(f"[ASCARIS V2] User {interaction.user.id} selected multiplier: '{multiplier}'. Submitting PIREP...")
-        pirep_data = self.flight_info['pirep_data']
-        pilot_data = self.flight_info['pilot_data']
+        logger.info(f"[ASCARIS V2] User {interaction.user.id} selected multiplier: '{multiplier_label}'. Proceeding to final confirmation.")
         
-        result = await self.bot.pirep_filing_service.submit_ascaris_pirep(
-            pilot_id=pilot_data['id'],
-            flight_num=pirep_data.get('flight_num', 'ASC'),
-            departure=pirep_data['departure'],
-            arrival=pirep_data['arrival'],
-            flight_time=pirep_data['duration'],
-            date=pirep_data['date'],
-            aircraft_id=pirep_data['aircraft_id'],
-            multiplier=multiplier
-        )
+        self.flight_info['pirep_data']['multiplier'] = multiplier
+        self.flight_info['pirep_data']['multiplier_label'] = multiplier_label
         
-        logger.info(f"[ASCARIS V2] PIREP Submission result: success={result.get('success')}")
-        if result['success']:
-            embed = discord.Embed(title="✅ PIREP Filed Successfully!", description=f"🎉 Your PIREP has been submitted to Crew Center!", color=discord.Color.green())
-            embed.add_field(name="✈️ Flight Details", value=f"**{pirep_data.get('flight_num', 'N/A')}** | {pirep_data['departure']} → {pirep_data['arrival']}", inline=False)
-            embed.add_field(name="⏱️ Duration", value=pirep_data['duration'], inline=True)
-            embed.add_field(name="🎯 Multiplier", value=multiplier, inline=True)
-            embed.add_field(name="👤 Pilot", value=f"**{pilot_data.get('callsign', 'Unknown')}**", inline=True)
-            embed.set_footer(text="Thank you for flying with Qatar Virtual! 🐫")
-        else:
-            embed = discord.Embed(title="❌ PIREP Submission Failed", description=f"**Error:** {result.get('error', 'Unknown error occurred')}\n\nPlease try again or contact staff.", color=discord.Color.red())
-            embed.add_field(name="Debug Info", value=f"Pilot ID: {pilot_data['id']}\nFlight: {pirep_data.get('flight_num')} {pirep_data['departure']}→{pirep_data['arrival']}\nAircraft ID: {pirep_data['aircraft_id']}", inline=False)
-        
-        select.disabled = True
-        await interaction.followup.send(embed=embed, ephemeral=False)
-
-
-async def setup(bot):
-    """Setup function to add cog to bot."""
-    logger.info("Loading AscarisCog...")
-    await bot.add_cog(AscarisCog(bot))
-    logger.info("AscarisCog loaded successfully!")
+        await send_final_confirmation(interaction, self.bot, self.flight_info, self.original_user_id)
