@@ -9,17 +9,21 @@ class Roster(commands.Cog):
         self.callsign_pattern = re.compile(r"(QRV\d{3})")
 
     @app_commands.command(name="sync_discord_ids", description="Syncs Discord IDs to the pilot roster based on nicknames.")
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def sync_discord_ids(self, interaction: discord.Interaction):
         """
         Iterates through all server members to link their Discord ID to their pilot profile.
         """
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
         guild = interaction.guild
         if not self.bot.pilots_model:
-            await interaction.followup.send("Error: Pilots database model is not initialized. Please contact the bot developer.")
+            await interaction.response.send_message("Error: Pilots database model is not initialized. Please contact the bot developer.", ephemeral=True)
             return
+
+        is_authorized = await self.bot.pilots_model.is_senior_management(str(interaction.user.id))
+        if not is_authorized:
+            await interaction.response.send_message("❌ You are not authorized to use this command. Only QRV001 to QRV007 can use it.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         updated_count = 0
         already_synced_count = 0
@@ -126,17 +130,11 @@ class Roster(commands.Cog):
 
     @sync_discord_ids.error
     async def on_sync_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            if not interaction.response.is_done():
-                await interaction.response.send_message("You do not have the `Manage Server` permission to use this command.", ephemeral=True)
-            else:
-                await interaction.followup.send("You do not have the `Manage Server` permission to use this command.", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"An unexpected error occurred: {error}", ephemeral=True)
         else:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"An unexpected error occurred: {error}", ephemeral=True)
-            else:
-                await interaction.followup.send(f"An unexpected error occurred: {error}", ephemeral=True)
-            print(f"Error in sync_discord_ids command: {error}")
+            await interaction.followup.send(f"An unexpected error occurred: {error}", ephemeral=True)
+        print(f"Error in sync_discord_ids command: {error}")
 
 
 async def setup(bot: commands.Bot):
