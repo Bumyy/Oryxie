@@ -322,6 +322,31 @@ class PilotsModel:
         number = int(match.group(1))
         return 5 <= number <= 19
 
+    async def is_senior_management(self, discord_id: str) -> bool:
+        """
+        Checks if a pilot is Senior Management based on their Discord ID.
+        Senior Management have callsigns in range QRV001 to QRV007.
+
+        Args:
+            discord_id: The pilot's Discord ID.
+
+        Returns:
+            True if the pilot is Senior Management, False otherwise.
+        """
+        pilot_data = await self.get_pilot_by_discord_id(discord_id)
+        if not pilot_data or not pilot_data.get('callsign'):
+            return False
+        
+        callsign = pilot_data['callsign'].upper()
+        
+        import re
+        match = re.match(r'QRV(\d+)', callsign)
+        if not match:
+            return False
+        
+        number = int(match.group(1))
+        return 1 <= number <= 7
+
     def get_html_template(self):
         """Returns HTML template for pilot documentation"""
         import os
