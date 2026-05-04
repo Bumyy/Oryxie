@@ -30,17 +30,20 @@ class Roster(commands.Cog):
 
         status_message = await interaction.followup.send(f"🚀 Starting sync for **{total_members}** members... This may take a moment.")
         
-        member_info = []
+        added_info = []
+        updated_info = []
+        failed_info = []
+        skipped_info = []
         
         for member in guild.members:
             if member.bot:
                 skipped_count += 1
-                member_info.append(f"{member.mention} : bot : skipped")
+                skipped_info.append(f"{member.mention} : bot : skipped")
                 continue
                 
             if not member.nick:
                 skipped_count += 1
-                member_info.append(f"{member.mention} : no nickname : skipped")
+                skipped_info.append(f"{member.mention} : no nickname : skipped")
                 continue
 
             match = self.callsign_pattern.search(member.nick)
@@ -59,7 +62,7 @@ class Roster(commands.Cog):
                         # No Discord ID present, add it
                         await self.bot.pilots_model.update_discord_id(callsign, member_id_str)
                         updated_count += 1
-                        member_info.append(f"{member.mention} : active : discord id added")
+                        added_info.append(f"{member.mention} : active : discord id added")
                     elif current_discord_id == member_id_str:
                         # Discord ID matches
                         already_synced_count += 1
@@ -67,7 +70,7 @@ class Roster(commands.Cog):
                         # Discord ID doesn't match, update with new one
                         await self.bot.pilots_model.update_discord_id(callsign, member_id_str)
                         updated_count += 1
-                        member_info.append(f"{member.mention} : active : discord id updated")
+                        updated_info.append(f"{member.mention} : active : discord id updated")
                 else:
                     # Step 2: Check other statuses
                     any_pilot = await self.bot.pilots_model.get_pilot_by_callsign_any_status(callsign)
@@ -76,16 +79,16 @@ class Roster(commands.Cog):
                         # Found pilot with different status
                         skipped_count += 1
                         failed_members.append(member)
-                        member_info.append(f"{member.mention} : status {any_pilot.get('status')} : not active pilot")
+                        failed_info.append(f"{member.mention} : status {any_pilot.get('status')} : not active pilot")
                     else:
                         # Callsign not found in database
                         no_db_match_count += 1
                         failed_members.append(member)
-                        member_info.append(f"{member.mention} : not found : callsign not in database")
+                        failed_info.append(f"{member.mention} : not found : callsign not in database")
             else:
                 skipped_count += 1
                 failed_members.append(member)
-                member_info.append(f"{member.mention} : no QRV found : {member.nick or 'no nickname'}")
+                skipped_info.append(f"{member.mention} : no QRV found : {member.nick or 'no nickname'}")
         
         embed = discord.Embed(
             title="✅ Discord ID Sync Report",
@@ -100,18 +103,26 @@ class Roster(commands.Cog):
         
         await status_message.edit(content="Sync complete!", embed=embed)
         
-        # Send member info in smaller batches to avoid 2000 char limit
-        if member_info:
-            for i in range(0, len(member_info), 15):
-                batch = member_info[i:i+15]
-                batch_text = "\n".join(batch)
-                batch_num = (i // 15) + 1
-                total_batches = (len(member_info) + 14) // 15
-                try:
-                    await interaction.followup.send(f"**Details (Batch {batch_num}/{total_batches}):**\n{batch_text}", ephemeral=True)
-                except discord.HTTPException:
-                    truncated_text = batch_text[:1800] + "...\n[Truncated]"
-                    await interaction.followup.send(f"**Details (Batch {batch_num}/{total_batches}):**\n{truncated_text}", ephemeral=True)
+        # Send member info in smaller batches grouped by category to avoid 2000 char limit
+        categories = [
+            ("✅ Newly Added IDs", added_info),
+            ("✍️ Updated IDs", updated_info),
+            ("❌ Failed (Not in DB / Inactive)", failed_info),
+            ("⏭️ Skipped", skipped_info)
+        ]
+        
+        for category_name, info_list in categories:
+            if info_list:
+                for i in range(0, len(info_list), 15):
+                    batch = info_list[i:i+15]
+                    batch_text = "\n".join(batch)
+                    batch_num = (i // 15) + 1
+                    total_batches = (len(info_list) + 14) // 15
+                    try:
+                        await interaction.followup.send(f"**{category_name} (Batch {batch_num}/{total_batches}):**\n{batch_text}", ephemeral=True)
+                    except discord.HTTPException:
+                        truncated_text = batch_text[:1800] + "...\n[Truncated]"
+                        await interaction.followup.send(f"**{category_name} (Batch {batch_num}/{total_batches}):**\n{truncated_text}", ephemeral=True)
 
     @sync_discord_ids.error
     async def on_sync_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
