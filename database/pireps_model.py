@@ -104,6 +104,27 @@ class PirepsModel:
 
         return accepted_reports
 
+    async def get_accepted_pireps_after_id(self, last_id: int) -> list[dict]:
+        """
+        Retrieves all accepted PIREPs from the database with an ID greater than `last_id`.
+        This is used for event-specific polling to find new PIREPs.
+        
+        Args:
+            last_id: The ID of the last PIREP that was successfully processed.
+                     Only PIREPs with an ID > last_id will be returned.
+                     
+        Returns:
+            A list of dictionaries, where each dictionary represents an accepted PIREP
+            with an ID greater than `last_id`. Returns an empty list if no new PIREPs are found or on error.
+        """
+        query = """
+            SELECT id AS pirep_id, pilotid, flightnum, departure, arrival, flighttime, multi
+            FROM pireps
+            WHERE status = 1 AND id > %s
+            ORDER BY pirep_id ASC
+        """
+        return await self.db.fetch_all(query, (last_id,))
+
     async def get_rejected_pireps_last_10_days(self) -> list[dict]:
         """
         Fetches all PIREPs with a status of 2 (rejected) from the last 10 days,

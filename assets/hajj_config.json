@@ -1,0 +1,12 @@
+{
+  "hajj_event_name": "HajjOperations2026",
+  "initial_pilgrims": {
+    "AS": 12600,
+    "EU": 9240,
+    "NA": 7560,
+    "AF": 6300,
+    "OC": 3780
+  },
+  "target_airports": ["OEJN", "OEMA"],
+  "description": "Configuration for the Hajj Operations 2026 event. Total: 39,480 pilgrims across 5 continents."
+}

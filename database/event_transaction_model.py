@@ -1,11 +1,11 @@
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from .manager import DatabaseManager
-
+import datetime
 class EventTransactionModel:
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(self, db_manager: DatabaseManager, event_name: str = "christmas_2025_v3", currency_name: str = "Cookies"):
         self.db = db_manager
-        self.event_name = "christmas_2025_v3"
-        self.currency_name = "Cookies"
+        self.event_name = event_name
+        self.currency_name = currency_name
 
     async def get_balance(self, pilot_id: int) -> int:
         # V3 Logic: PIREPs from V3 only + All other Cookie transactions (drops, admin, shop) excluding old system corrections
@@ -38,6 +38,11 @@ class EventTransactionModel:
     async def get_all_records(self) -> List[Dict]:
         query = "SELECT et.*, p.callsign FROM event_transactions et LEFT JOIN pilots p ON et.pilot_id = p.id ORDER BY et.transaction_date DESC"
         return await self.db.fetch_all(query)
+
+    async def get_all_records_for_event(self, event_name: str, currency_name: str) -> List[Dict]:
+        """Fetches all transactions for a specific event and currency."""
+        query = "SELECT et.*, p.callsign FROM event_transactions et LEFT JOIN pilots p ON et.pilot_id = p.id WHERE et.event_name = %s AND et.currency_name = %s ORDER BY et.transaction_date DESC"
+        return await self.db.fetch_all(query, (event_name, currency_name))
 
     async def get_top_holders(self, limit: int = 3) -> List[Dict]:
         query = """SELECT p.callsign, SUM(et.amount) as total_cookies 

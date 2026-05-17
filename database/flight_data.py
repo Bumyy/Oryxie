@@ -229,3 +229,25 @@ class FlightData:
     def is_royal_dignitary(self, dignitary_name: str) -> bool:
         """Check if dignitary is from royal family"""
         return dignitary_name in self.ROYAL_NAMES
+
+    def get_continent_from_icao(self, icao: str) -> Optional[str]:
+        """Returns the Hajj continent code (AS/EU/NA/AF/OC) for a given ICAO using airportsdata timezone."""
+        try:
+            import airportsdata
+            airports = airportsdata.load('ICAO')
+            ap = airports.get(icao.upper())
+            if not ap:
+                return None
+            tz_prefix = ap.get('tz', '').split('/')[0]
+            mapping = {
+                'Africa':    'AF',
+                'Europe':    'EU',
+                'America':   'NA',
+                'Australia': 'OC',
+                'Pacific':   'OC',
+                'Asia':      'AS',
+                'Indian':    'AS',
+            }
+            return mapping.get(tz_prefix, 'AS')
+        except Exception:
+            return None
