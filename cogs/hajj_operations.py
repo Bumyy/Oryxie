@@ -24,6 +24,11 @@ CONTINENT_NAME = {
     "OC": "Oceania",
 }
 
+DEST_LABEL = {
+    "OEJN": "🇸🇦 Jeddah (OEJN)",
+    "OEMA": "🇸🇦 Madinah (OEMA)",
+}
+
 def _progress_bar(pct: float, length: int = 10) -> str:
     filled = int(min(100, max(0, pct)) / 100 * length)
     return "▓" * filled + "░" * (length - filled)
@@ -111,6 +116,11 @@ class HajjOperationsCog(commands.Cog):
 
         embed = discord.Embed(
             title="🕋 HAJJ OPERATIONS 2026",
+            description=(
+                "A virtual pilgrimage operation uniting pilots worldwide.\n"
+                "Fly pilgrims from every corner of the earth to the Holy Land.\n"
+                "Track the journey from departure to final destination below."
+            ),
             color=_embed_color(overall_pct)
         )
         embed.set_image(url=DASHBOARD_THUMBNAIL)
@@ -122,12 +132,12 @@ class HajjOperationsCog(commands.Cog):
             emoji = CONTINENT_EMOJI.get(code, "🌐")
             name = CONTINENT_NAME.get(code, code)
 
-            if remaining < 0:
+            if remaining <= 0:
                 overbooked = abs(remaining)
-                continent_lines.append(
-                    f"{emoji} **{name}**\n"
-                    f"~~{initial:,} pilgrims~~ +{overbooked:,} Extra Tickets Booked 🎟️"
-                )
+                status = "All pilgrims departed ✅"
+                if overbooked > 0:
+                    status += f"\n+{overbooked:,} additional demand 🎟️"
+                continent_lines.append(f"{emoji} **{name}**\n{status}")
             else:
                 pct = (remaining / initial * 100) if initial > 0 else 0
                 bar = _progress_bar(pct)
@@ -154,7 +164,8 @@ class HajjOperationsCog(commands.Cog):
         dest_lines = []
         for airport in target_airports:
             arrived = current_state.get(f"{airport}_ARRIVED", 0)
-            dest_lines.append(f"🕌 **{airport}:** {arrived:,} pilgrims arrived")
+            label = DEST_LABEL.get(airport, f"🕌 {airport}")
+            dest_lines.append(f"{label}: **{arrived:,}** pilgrims arrived")
         embed.add_field(
             name="🕌 Final Destinations",
             value="\n".join(dest_lines) if dest_lines else "None yet",
@@ -162,12 +173,18 @@ class HajjOperationsCog(commands.Cog):
         )
 
         # --- Overall progress ---
-        overall_bar = _progress_bar(overall_pct)
-        embed.add_field(
-            name="📊 Overall Progress",
-            value=f"`{overall_bar}` **{overall_pct:.2f}%**\n{total_arrived:,} / {total_initial:,} pilgrims reached final destination",
-            inline=False
-        )
+        overall_bar = _progress_bar(min(overall_pct, 100))
+        if overall_pct >= 100:
+            overall_value = (
+                f"`{overall_bar}` **100%**\n"
+                f"🌙 **Hajj Operations Complete** — All pilgrims have reached their destination. 🕋"
+            )
+        else:
+            overall_value = (
+                f"`{overall_bar}` **{overall_pct:.2f}%**\n"
+                f"{total_arrived:,} / {total_initial:,} pilgrims reached final destination"
+            )
+        embed.add_field(name="📊 Overall Progress", value=overall_value, inline=False)
 
         now_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
         embed.set_footer(text=f"Hajj Operations 2026 • Last updated: {now_utc}")
@@ -255,25 +272,20 @@ class HajjOperationsCog(commands.Cog):
 
         pilot_data = await self.bot.pilots_model.get_pilot_by_id(pilot_id)
         pilot_callsign = pilot_data['callsign'] if pilot_data else f"Pilot ID: {pilot_id}"
+        pilot_mention = f"<@{pilot_data['discordid']}>" if pilot_data and pilot_data.get('discordid') else f"**{pilot_callsign}**"
 
         is_phase1 = arrival_icao == "OTHH"
         is_phase2 = departure_icao == "OTHH" and arrival_icao in target_airports
         is_phase3 = departure_icao != "OTHH" and arrival_icao in target_airports
 
-        log_message = (
-            f"✈️ **HajjOps PIREP Processed:**\n"
-            f"• Pilot: {pilot_callsign} (ID: {pilot_id})\n"
-            f"• PIREP ID: #{pirep_id}\n"
-            f"• Flight: {departure_icao} → {arrival_icao}\n"
-            f"• Reported Pilgrims: {pilgrim_count:,}\n"
-        )
-
         if is_phase1:
             continent_code = self.bot.flightdata.get_continent_from_icao(departure_icao)
             if not continent_code:
-                log_message += f"• **Error:** Could not determine continent for {departure_icao}. Skipping.\n"
                 if staff_log_channel:
-                    await staff_log_channel.send(log_message)
+                    await staff_log_channel.send(
+                        f"☪️ **Hajj Flight Error**\n"
+                        f"{pilot_mention} ({pilot_callsign}) filed PIREP #{pirep_id} but continent for {departure_icao} could not be determined. Skipping."
+                    )
                 return False
             await self.hajj_event_model.add_transaction(
                 pilot_id, -pilgrim_count, f"HajjOps: Pilgrims from {continent_code} (PIREP #{pirep_id})"
@@ -281,7 +293,13 @@ class HajjOperationsCog(commands.Cog):
             await self.hajj_event_model.add_transaction(
                 pilot_id, pilgrim_count, f"HajjOps: Pilgrims to OTHH (PIREP #{pirep_id})"
             )
-            log_message += f"• **Phase 1:** {pilgrim_count:,} pilgrims from {continent_code} → OTHH Transit Pool.\n"
+            continent_name = CONTINENT_NAME.get(continent_code, continent_code)
+            log_message = (
+                f"☪️ **Sacred Journey Completed**\n\n"
+                f"{pilot_mention} ({pilot_callsign}) has safely transported **{pilgrim_count:,} pilgrims** "
+                f"from {continent_name} to Doha (OTHH), one step closer to their destination.\n\n"
+                f"PIREP #{pirep_id}"
+            )
 
         elif is_phase2:
             await self.hajj_event_model.add_transaction(
@@ -290,14 +308,22 @@ class HajjOperationsCog(commands.Cog):
             await self.hajj_event_model.add_transaction(
                 pilot_id, pilgrim_count, f"HajjOps: Pilgrims to {arrival_icao} (PIREP #{pirep_id})"
             )
-            log_message += f"• **Phase 2:** {pilgrim_count:,} pilgrims from OTHH → {arrival_icao}.\n"
+            dest_name = "Makkah" if arrival_icao == "OEMA" else "Jeddah"
+            log_message = (
+                f"☪️ **Pilgrims Arrive at the Holy Land**\n\n"
+                f"{pilot_mention} ({pilot_callsign}) has delivered **{pilgrim_count:,} pilgrims** "
+                f"from Doha to {dest_name} ({arrival_icao}).\n\n"
+                f"PIREP #{pirep_id}"
+            )
 
         elif is_phase3:
             continent_code = self.bot.flightdata.get_continent_from_icao(departure_icao)
             if not continent_code:
-                log_message += f"• **Error:** Could not determine continent for {departure_icao}. Skipping.\n"
                 if staff_log_channel:
-                    await staff_log_channel.send(log_message)
+                    await staff_log_channel.send(
+                        f"☪️ **Hajj Flight Error**\n"
+                        f"{pilot_mention} ({pilot_callsign}) filed PIREP #{pirep_id} but continent for {departure_icao} could not be determined. Skipping."
+                    )
                 return False
             await self.hajj_event_model.add_transaction(
                 pilot_id, -pilgrim_count, f"HajjOps: Pilgrims from {continent_code} (PIREP #{pirep_id})"
@@ -305,14 +331,21 @@ class HajjOperationsCog(commands.Cog):
             await self.hajj_event_model.add_transaction(
                 pilot_id, pilgrim_count, f"HajjOps: Pilgrims to {arrival_icao} (PIREP #{pirep_id})"
             )
-            log_message += f"• **Phase 3 (Direct):** {pilgrim_count:,} pilgrims from {continent_code} → {arrival_icao}.\n"
+            continent_name = CONTINENT_NAME.get(continent_code, continent_code)
+            dest_name = "Makkah" if arrival_icao == "OEMA" else "Jeddah"
+            log_message = (
+                f"☪️ **Direct Flight to the Holy Land**\n\n"
+                f"{pilot_mention} ({pilot_callsign}) has carried **{pilgrim_count:,} pilgrims** "
+                f"directly from {continent_name} to {dest_name} ({arrival_icao}).\n\n"
+                f"PIREP #{pirep_id}"
+            )
 
         else:
             return False
 
         if staff_log_channel:
             await staff_log_channel.send(log_message)
-        logging.info(log_message.replace("\n", " "))
+        logging.info(f"HajjOps PIREP #{pirep_id} processed for {pilot_callsign}.")
         return True
 
     @app_commands.command(name="hajj_dashboard_update", description="Manually update the Hajj Operations dashboard.")
