@@ -21,15 +21,15 @@ BRAND_COLOR_RGB = (100, 0, 49)  # maroon #640031
 
 # --- TEST DATA ---
 ALL_QUESTIONS = [
-    {"id": 1, "text": "Match the following:", "options": {'A': 'A->1, B->4, C->3, D->2', 'B': 'A->2, B->4, C->3, D->1', 'C': 'A->3, B->4, C->1, D->2', 'D': 'A->3, B->1, C->4, D->2'}, "correct": "D", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402560900484956160/image.png?ex=68945c20&is=68930aa0&hm=53638a6112de9f391db364d3d529fb05a46f3a3b4c0f3d27b173a1a549fa7fc&"},
+    {"id": 1, "text": "Match the following:", "options": {'A': 'A->1, B->4, C->3, D->2', 'B': 'A->2, B->4, C->3, D->1', 'C': 'A->3, B->4, C->1, D->2', 'D': 'A->3, B->1, C->4, D->2'}, "correct": "D", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1150347101205696562/1505539376292171796/unnamed_1.png?ex=6a0afe4e&is=6a09acce&hm=d345ded0c03e3a576b9c98061e52233179021fb18dcaaa325c444a414f9715c9"},
     {"id": 2, "text": "What are the maximum **preferred speeds** during taxi according to the User Guide?", "options": {'A': 'Straight line -> 15 knots, Turns -> 15 knots', 'B': 'Straight line -> 35 knots, Turns -> 5 knots', 'C': 'Straight line -> 25 knots, Turns -> 10 knots', 'D': 'Straight line -> 25 knots, Turns -> 5 knots'}, "correct": "C", "timeout": 180, "image": None},
     {"id": 3, "text": "You are Qatari 005CR, you are departing west from OTHH to OERK from runway 34R, what will be your take off announcement?", "options": {'A': 'Qatari 005CR, taking off runway 34R, departing east', 'B': 'Qatari 005CR, taking off runway 34L, departing west', 'C': 'Qatari 005CR, taking off runway 34R, Remaining in pattern', 'D': 'Qatari 005CR, taking off runway 34R, departing west'}, "correct": "D", "timeout": 180, "image": None},
     {"id": 4, "text": "If an airport's elevation is 1,500 feet, what would typically be the pattern work altitude for jet aircraft and propeller aircraft (props) in MSL?", "options": {'A': 'Jet: 2,500 ft | Prop: 2,000 ft', 'B': 'Jet: 2,000 ft | Prop: 1,500 ft', 'C': 'Jet: 3,000 ft | Prop: 2,500 ft', 'D': 'Jet: 2,000 ft | Prop: 2,000 ft'}, "correct": "C", "timeout": 300, "image": None},
     {"id": 5, "text": "You are flying eastbound (heading between 000° and 179°) under IFR rules. According to standard semicircular rules for cruising altitudes, which of the following is the correct flight level?", "options": {'A': 'FL320', 'B': 'FL335', 'C': 'FL330', 'D': 'FL340'}, "correct": "C", "timeout": 180, "image": None},
-    {"id": 6, "text": "Match the aircrafts with the correct Cruise speeds:", "options": {'A': 'A->1, B->2, C->3, D->3', 'B': 'A->3, B->1, C->2, D->1', 'C': 'A->3, B->1, C->1, D->2', 'D': 'A->2, B->3, C->1, D->1'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402584441423007815/image.png?ex=6894720d&is=6893208d&hm=a66941af60509a03451c3014139304b08eead24ad3500ed3a8fceb8b069614b9&"},
-    {"id": 7, "text": "You are approaching OERK runway 33R as shown in the figure and ATC is not present there. What will be the order of your UNICOM announcements according to the figure?", "options": {'A': 'Inbound -> right base -> Right downwind -> final', 'B': 'Inbound -> left base -> left downwind -> final', 'C': 'Inbound -> right Downwind -> Right base -> final', 'D': 'right downwind -> right base -> Inbound -> final'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402591034558517248/IMG_20250806_152120.jpg?ex=68947831&is=689326b1&hm=806f1988cba4b4085e5dc99f2931189df980267d5bc9a71caedbcfaecc60738b&"},
+    {"id": 6, "text": "Match the aircrafts with the correct Cruise speeds:", "options": {'A': 'A->1, B->2, C->3, D->3', 'B': 'A->3, B->1, C->2, D->1', 'C': 'A->3, B->1, C->1, D->2', 'D': 'A->2, B->3, C->1, D->1'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1150347101205696562/1505538668511887441/unnamed.png?ex=6a0afda6&is=6a09ac26&hm=a7c71d6be19f02fa7798b8af4e960479330fb9e5a50ba3d5e0d0f2dd1bcaa3ba"},
+    {"id": 7, "text": "You are approaching OERK runway 33R as shown in the figure and ATC is not present there. What will be the order of your UNICOM announcements according to the figure?", "options": {'A': 'Inbound -> right base -> Right downwind -> final', 'B': 'Inbound -> left base -> left downwind -> final', 'C': 'Inbound -> right Downwind -> Right base -> final', 'D': 'right downwind -> right base -> Inbound -> final'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1150347101205696562/1505536879888437269/unnamed.jpg?ex=6a0afbfb&is=6a09aa7b&hm=9428822a95f92cd49e958f4b1221435563bbac57ee62ac8516cec7b1cbd57552"},
     {"id": 8, "text": "To ensure safe and realistic operation in Infinite Flight, at what ground speed should you typically disengage reverse thrust?", "options": {'A': '30 knots', 'B': '45 knots', 'C': '50 knots', 'D': '60 knots'}, "correct": "D", "timeout": 180, "image": None},
-    {"id": 9, "text": "Based on the diagram, choose the option that correctly identifies the numbered positions of the traffic pattern.", "options": {'A': '1-Downwind, 2-Base, 3-Upwind, 4-Final', 'B': '1-Upwind, 2-Downwind, 3-Crosswind, 5-Base', 'C': '1-Upwind, 2-Crosswind, 3-Downwind, 4-Base', 'D': '2-Final, 3-Base, 4-Downwind, 5-Crosswind'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1326629089121144832/1402637387200335952/atc-traffic-pattern-1.jpg?ex=6894a35c&is=689351dc&hm=6d0596e3675292f64869f721d4a4a6d84c62d0301bfab954547d8329f6a66ae4&"},
+    {"id": 9, "text": "Based on the diagram, choose the option that correctly identifies the numbered positions of the traffic pattern.", "options": {'A': '1-Downwind, 2-Base, 3-Upwind, 4-Final', 'B': '1-Upwind, 2-Downwind, 3-Crosswind, 5-Base', 'C': '1-Upwind, 2-Crosswind, 3-Downwind, 4-Base', 'D': '2-Final, 3-Base, 4-Downwind, 5-Crosswind'}, "correct": "C", "timeout": 300, "image": "https://cdn.discordapp.com/attachments/1150347101205696562/1505538984359624774/unnamed_1.jpg?ex=6a0afdf1&is=6a09ac71&hm=f07a30690d9ba0eea2e62fcdd1af1f655fe936938a6c9bc0ccb8c0d61a49526a"},
     {"id": 10, "text": 'The "Check In" command should only be used for which of the following frequencies?', "options": {'A': 'Center, Approach', 'B': 'Approach, Tower', 'C': 'Tower, Departure', 'D': 'Center, Departure'}, "correct": "D", "timeout": 180, "image": None},
     {"id": 11, "text": "When approaching an airport with an Approach frequency open, which one is the right procedure assuming flying IFR? (Without prior Center hand-off)", "options": {'A': 'When at or below 18000 ft and within 50 nm to destination, tune into approach...', 'B': 'When at or below 10000 ft and within 40 nm to destination, tune into approach...', 'C': 'When at or below 15000 ft and within 60 nm to destination, tune into approach...', 'D': 'When at or below 12000 ft and within 40 nm to destination, tune into approach...'}, "correct": "A", "timeout": 180, "image": None},
     {"id": 12, "text": "You are approaching OTHH to land. Active frequencies are Tower and Ground, but no active Approach. What will be your first request to Tower?", "options": {'A': 'Inbound on the Visual runway', 'B': 'Requesting Transition', 'C': 'Inbound on the ILS runway', 'D': 'Inbound for landing'}, "correct": "D", "timeout": 180, "image": None},
@@ -151,7 +151,7 @@ class InitialVerificationView(View):
 
 class StartTestView(View):
     def __init__(self, cog: "TrainingCogV2", author_id: int):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.cog = cog
         self.author_id = author_id
 
@@ -209,7 +209,7 @@ class AuthorizeRetestView(View):
 
 class TakeRetestView(View):
     def __init__(self, cog: "TrainingCogV2", author_id: int):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.cog = cog
         self.author_id = author_id
 
@@ -230,6 +230,9 @@ class TrainingCogV2(commands.Cog, name="Training V2"):
         self.active_tests = {}
         # Register persistent views that must be available while bot runs
         self.bot.add_view(InitialVerificationView(self))
+        self.bot.add_view(StartTestView(self, author_id=0))
+        self.bot.add_view(AuthorizeRetestView(self, trainee_id=0))
+        self.bot.add_view(TakeRetestView(self, author_id=0))
 
     @app_commands.command(name="forcetest", description="Manually start the training flow for a user.")
     async def forcetest(self, interaction: discord.Interaction, user: discord.Member):
