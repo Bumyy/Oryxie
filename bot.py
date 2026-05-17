@@ -175,6 +175,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.monthly_stats')
             await self.load_extension('cogs.fleet_pirep_cog')
             await self.load_extension('cogs.ascaris_cog')
+            await self.load_extension('cogs.hajj_operations')
             
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
