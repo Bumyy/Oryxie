@@ -35,10 +35,10 @@ def _progress_bar(pct: float, length: int = 10) -> str:
 
 def _embed_color(overall_pct: float) -> int:
     if overall_pct >= 66:
-        return 0x2ECC71  # green
+        return 0x2ECC71
     elif overall_pct >= 33:
-        return 0xF1C40F  # yellow
-    return 0xE74C3C      # red
+        return 0xF1C40F
+    return 0xE74C3C
 
 
 class HajjOperationsCog(commands.Cog):
@@ -193,7 +193,6 @@ class HajjOperationsCog(commands.Cog):
 
     @tasks.loop(hours=1)
     async def update_dashboard(self):
-        """Hourly task: process new Hajj PIREPs then update the dashboard embed."""
         await self.bot.wait_until_ready()
         if not self.dashboard_channel_id:
             return
@@ -202,7 +201,6 @@ class HajjOperationsCog(commands.Cog):
             logging.warning(f"Hajj dashboard channel {self.dashboard_channel_id} not found.")
             return
 
-        # --- Process PIREPs first ---
         staff_log_channel = self.bot.get_channel(self.staff_log_channel_id) if self.staff_log_channel_id else None
         try:
             all_pireps = await self.bot.pireps_model.get_accepted_pireps()
@@ -215,11 +213,9 @@ class HajjOperationsCog(commands.Cog):
         except Exception as e:
             logging.error(f"Error processing Hajj PIREPs: {e}")
 
-        # --- Resolve pinned dashboard message ---
         if not self.dashboard_message:
             self.dashboard_message = await self._find_pinned_dashboard(dashboard_channel)
 
-        # --- Build and send/edit embed ---
         current_state = await self._get_current_hajj_state()
         embed = self._build_embed(current_state)
 
@@ -236,7 +232,6 @@ class HajjOperationsCog(commands.Cog):
             await self.dashboard_message.pin()
 
     async def _find_pinned_dashboard(self, channel: discord.TextChannel):
-        """Scans pinned messages for an existing bot-owned Hajj dashboard embed."""
         try:
             pins = await channel.pins()
             for msg in pins:
@@ -297,7 +292,7 @@ class HajjOperationsCog(commands.Cog):
             log_message = (
                 f"☪️ **Sacred Journey Completed**\n\n"
                 f"{pilot_mention} ({pilot_callsign}) has safely transported **{pilgrim_count:,} pilgrims** "
-                f"from {continent_name} to Doha (OTHH), one step closer to their destination.\n\n"
+                f"from the skies of {departure_icao} ({continent_name}), landing them at Doha (OTHH) — one step closer to their destination.\n\n"
                 f"PIREP #{pirep_id}"
             )
 
@@ -312,7 +307,7 @@ class HajjOperationsCog(commands.Cog):
             log_message = (
                 f"☪️ **Pilgrims Arrive at the Holy Land**\n\n"
                 f"{pilot_mention} ({pilot_callsign}) has delivered **{pilgrim_count:,} pilgrims** "
-                f"from Doha to {dest_name} ({arrival_icao}).\n\n"
+                f"from Doha (OTHH) to {dest_name} ({arrival_icao}).\n\n"
                 f"PIREP #{pirep_id}"
             )
 
@@ -336,7 +331,7 @@ class HajjOperationsCog(commands.Cog):
             log_message = (
                 f"☪️ **Direct Flight to the Holy Land**\n\n"
                 f"{pilot_mention} ({pilot_callsign}) has carried **{pilgrim_count:,} pilgrims** "
-                f"directly from {continent_name} to {dest_name} ({arrival_icao}).\n\n"
+                f"directly from the skies of {departure_icao} ({continent_name}) to {dest_name} ({arrival_icao}).\n\n"
                 f"PIREP #{pirep_id}"
             )
 
