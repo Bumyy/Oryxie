@@ -10,7 +10,7 @@ class ChecklistCog(commands.Cog):
         self.bot = bot
         # Load aircraft list from JSON
         aircraft_db_path = os.path.join('assets', 'aircrafts.json')
-        with open(aircraft_db_path, 'r') as f:
+        with open(aircraft_db_path, 'r', encoding='utf-8') as f:
             aircraft_db = json.load(f)
         self.aircraft_choices = [
             app_commands.Choice(name=f"{code} - {data['properties']['full_name']}", value=code)
