@@ -45,6 +45,29 @@ ALL_QUESTIONS = [
 
 # --- SELF-CONTAINED UI CLASSES ---
 
+async def resolve_trainee(interaction: discord.Interaction) -> discord.Member:
+    """Helper to dynamically resolve the trainee from the thread context."""
+    if isinstance(interaction.channel, discord.Thread):
+        thread = interaction.channel
+        try:
+            # The starter message of a thread has the same ID as the thread
+            starter_message = await thread.parent.fetch_message(thread.id)
+            match = re.search(r"<@!?(\d+)>", starter_message.content)
+            if match:
+                trainee_id = int(match.group(1))
+                return interaction.guild.get_member(trainee_id) or await interaction.guild.fetch_member(trainee_id)
+        except Exception as e:
+            print(f"Error fetching starter message: {e}")
+            
+        # Fallback to parsing display name from thread title: "Training for display_name"
+        match = re.match(r"Training for (.+)", thread.name)
+        if match:
+            display_name = match.group(1).strip()
+            for m in interaction.guild.members:
+                if m.display_name == display_name or m.name == display_name:
+                    return m
+    return None
+
 class QuestionView(View):
     def __init__(self, author_id: int, timeout: int, options: dict):
         super().__init__(timeout=float(timeout))
@@ -160,7 +183,12 @@ class StartTestView(View):
         await self.cog.handle_start_test(interaction)
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
+        author_id = self.author_id
+        if author_id == 0:
+            trainee = await resolve_trainee(interaction)
+            if trainee:
+                author_id = trainee.id
+        if interaction.user.id != author_id:
             await interaction.response.send_message("This is not your test button.", ephemeral=True)
             return False
         return True
@@ -178,7 +206,13 @@ class AuthorizeRetestView(View):
         if not recruiter_role or recruiter_role not in interaction.user.roles:
             await interaction.followup.send("Only recruiters can authorize a retest.", ephemeral=True)
             return
-        trainee = interaction.guild.get_member(self.trainee_id)
+        
+        trainee_id = self.trainee_id
+        if trainee_id == 0:
+            trainee = await resolve_trainee(interaction)
+        else:
+            trainee = interaction.guild.get_member(trainee_id) or await interaction.guild.fetch_member(trainee_id)
+
         if not trainee:
             await interaction.followup.send("Could not find the original trainee.", ephemeral=True)
             return
@@ -187,7 +221,7 @@ class AuthorizeRetestView(View):
         await interaction.edit_original_response(content=f"Retest authorized by {interaction.user.mention}.", view=None)
 
         # Create persistent TakeRetestView and register it so it stays active while bot runs
-        retest_view = TakeRetestView(cog=self.cog, author_id=self.trainee_id)
+        retest_view = TakeRetestView(cog=self.cog, author_id=trainee.id)
         try:
             # register the view so the button callback is available
             self.cog.bot.add_view(retest_view)
@@ -221,7 +255,15 @@ class TakeRetestView(View):
         asyncio.create_task(self.cog.run_test_session(interaction))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.author_id
+        author_id = self.author_id
+        if author_id == 0:
+            trainee = await resolve_trainee(interaction)
+            if trainee:
+                author_id = trainee.id
+        if interaction.user.id != author_id:
+            await interaction.response.send_message("This is not your retest button.", ephemeral=True)
+            return False
+        return True
 
 # --- THE MAIN COG ---
 class TrainingCogV2(commands.Cog, name="Training V2"):
