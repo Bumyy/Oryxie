@@ -42,6 +42,33 @@ def get_ticket_creator_id(channel) -> int | None:
         
     return None
 
+async def check_is_staff(user: discord.Member, guild: discord.Guild, client: discord.Client) -> bool:
+    """Checks if a user is considered staff based on callsign range QRV001-QRV019, with role fallback."""
+    if not user:
+        return False
+    
+    # 1. Check database for callsign range QRV001 - QRV019
+    try:
+        cog = client.get_cog('TicketSystem')
+        if cog and cog.pilots_model:
+            pilot_data = await cog.pilots_model.get_pilot_by_discord_id(str(user.id))
+            if pilot_data and pilot_data.get('callsign'):
+                callsign = pilot_data['callsign'].upper()
+                match = re.match(r'QRV(\d+)', callsign)
+                if match:
+                    number = int(match.group(1))
+                    if 1 <= number <= 19:
+                        return True
+    except Exception as e:
+        print(f"Error in check_is_staff callsign check: {e}")
+
+    # 2. Fallback to Discord role check
+    try:
+        staff_role = guild.get_role(STAFF_ROLE_ID)
+        return staff_role in user.roles if staff_role else False
+    except Exception:
+        return False
+
 class TicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -103,6 +130,25 @@ class ConfirmTicketView(discord.ui.View):
                 for member in staff_role.members:
                     overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
             
+            # Add callsign-based staff (QRV001 - QRV019) from database
+            try:
+                cog = interaction.client.get_cog('TicketSystem')
+                if cog and cog.pilots_model:
+                    query = "SELECT discordid, callsign FROM pilots WHERE status = 1 AND discordid IS NOT NULL AND discordid != ''"
+                    records = await cog.pilots_model.db.fetch_all(query)
+                    for record in records:
+                        callsign = record['callsign']
+                        if callsign:
+                            match = re.match(r'QRV(\d+)', callsign.upper())
+                            if match:
+                                number = int(match.group(1))
+                                if 1 <= number <= 19:
+                                    member = interaction.guild.get_member(int(record['discordid']))
+                                    if member:
+                                        overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+            except Exception as e:
+                print(f"Error adding database staff to ticket channel: {e}")
+            
             ticket_channel = await interaction.guild.create_text_channel(
                 name=f'{self.ticket_type.lower().replace(" ", "-")}-{interaction.user.display_name}',
                 category=category,
@@ -134,18 +180,13 @@ class TicketControlView(discord.ui.View):
         super().__init__(timeout=None)
         self.ticket_creator_id = ticket_creator_id
 
-    def is_staff(self, user, guild):
-        # Check for staff role using STAFF_ROLE_ID
-        try:
-            staff_role = guild.get_role(STAFF_ROLE_ID)
-            return staff_role in user.roles if staff_role else False
-        except Exception:
-            return False
+    async def is_staff(self, user, guild, client):
+        return await check_is_staff(user, guild, client)
 
     @discord.ui.button(label='Add User', style=discord.ButtonStyle.secondary, emoji='➕', custom_id='add_user')
     async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            if not self.is_staff(interaction.user, interaction.guild):
+            if not await self.is_staff(interaction.user, interaction.guild, interaction.client):
                 return await interaction.response.send_message("Only staff can use this button.", ephemeral=True)
             
             view = AddUserModal()
@@ -156,17 +197,16 @@ class TicketControlView(discord.ui.View):
     @discord.ui.button(label='Remove User', style=discord.ButtonStyle.secondary, emoji='➖', custom_id='remove_user')
     async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            if not self.is_staff(interaction.user, interaction.guild):
+            if not await self.is_staff(interaction.user, interaction.guild, interaction.client):
                 return await interaction.response.send_message("Only staff can use this button.", ephemeral=True)
             
             channel = interaction.channel
-            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
             non_staff = []
             
             for target, overwrite in channel.overwrites.items():
                 if isinstance(target, discord.Member):
-                    is_staff = staff_role in target.roles if staff_role else False
-                    if not is_staff and overwrite.read_messages:
+                    is_member_staff = await self.is_staff(target, interaction.guild, interaction.client)
+                    if not is_member_staff and overwrite.read_messages:
                         non_staff.append(target)
             
             if len(non_staff) < 2:
@@ -187,7 +227,7 @@ class TicketControlView(discord.ui.View):
             creator_id = self.ticket_creator_id or get_ticket_creator_id(channel)
             
             # Allow staff OR ticket creator to close
-            is_staff = self.is_staff(interaction.user, interaction.guild)
+            is_staff = await self.is_staff(interaction.user, interaction.guild, interaction.client)
             is_creator = creator_id is not None and interaction.user.id == creator_id
             
             if not is_staff and not is_creator:
@@ -205,12 +245,11 @@ class TicketControlView(discord.ui.View):
                     print(f"Error updating channel topic on close: {e}")
             
             # Remove ALL non-staff members from channel overwrites
-            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
             removed_members = []
             
             for target, overwrite in list(channel.overwrites.items()):
                 if isinstance(target, discord.Member):
-                    is_member_staff = staff_role in target.roles if staff_role else False
+                    is_member_staff = await self.is_staff(target, interaction.guild, interaction.client)
                     if not is_member_staff:
                         await channel.set_permissions(target, overwrite=None)
                         removed_members.append(target)
@@ -344,6 +383,25 @@ class UserConfirmView(discord.ui.View):
             for member in staff_role.members:
                 overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
         
+        # Add callsign-based staff (QRV001 - QRV019) from database
+        try:
+            cog = interaction.client.get_cog('TicketSystem')
+            if cog and cog.pilots_model:
+                query = "SELECT discordid, callsign FROM pilots WHERE status = 1 AND discordid IS NOT NULL AND discordid != ''"
+                records = await cog.pilots_model.db.fetch_all(query)
+                for record in records:
+                    callsign = record['callsign']
+                    if callsign:
+                        match = re.match(r'QRV(\d+)', callsign.upper())
+                        if match:
+                            number = int(match.group(1))
+                            if 1 <= number <= 19:
+                                member = interaction.guild.get_member(int(record['discordid']))
+                                if member:
+                                    overwrites[member] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+        except Exception as e:
+            print(f"Error adding database staff to ticket channel: {e}")
+        
         if self.user:
             overwrites[self.user] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
         
@@ -403,9 +461,7 @@ class ClosedTicketView(discord.ui.View):
     @discord.ui.button(label='Re-add User', style=discord.ButtonStyle.success, emoji='➕', custom_id='readd_user')
     async def readd_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
-            is_staff = staff_role in interaction.user.roles if staff_role else False
-            
+            is_staff = await check_is_staff(interaction.user, interaction.guild, interaction.client)
             if not is_staff:
                 return await interaction.response.send_message("Only staff can re-add users.", ephemeral=True)
             
@@ -426,9 +482,7 @@ class ClosedTicketView(discord.ui.View):
     @discord.ui.button(label='Delete Channel', style=discord.ButtonStyle.danger, emoji='🗑️', custom_id='delete_channel')
     async def delete_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
-            is_staff = staff_role in interaction.user.roles if staff_role else False
-            
+            is_staff = await check_is_staff(interaction.user, interaction.guild, interaction.client)
             if not is_staff:
                 return await interaction.response.send_message("Only staff can delete tickets.", ephemeral=True)
             
