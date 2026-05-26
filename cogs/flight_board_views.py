@@ -174,12 +174,19 @@ class StatusSelectView(discord.ui.View):
 
         # Get attachments and preserve embed image references
         attachments_to_keep = []
-        if getattr(self, "original_message", None) and self.original_message.attachments:
-            attachments_to_keep = list(self.original_message.attachments)
-            # Keep using attachment:// format for embed references
-            for attachment in self.original_message.attachments:
-                if "route_map" in attachment.filename.lower():
-                    embed.set_image(url=f"attachment://{attachment.filename}")
+        if getattr(self, "original_message", None):
+            if self.original_message.attachments:
+                attachments_to_keep = list(self.original_message.attachments)
+            
+            # Reconstruct attachment:// URLs by extracting filenames from the original embed's CDN URLs
+            if self.original_message.embeds:
+                orig_embed = self.original_message.embeds[0]
+                if orig_embed.image and orig_embed.image.url:
+                    filename = orig_embed.image.url.split('/')[-1].split('?')[0]
+                    embed.set_image(url=f"attachment://{filename}")
+                if orig_embed.thumbnail and orig_embed.thumbnail.url:
+                    filename = orig_embed.thumbnail.url.split('/')[-1].split('?')[0]
+                    embed.set_thumbnail(url=f"attachment://{filename}")
 
         view = FlightBoardView(self.flight_data)
 
@@ -386,12 +393,19 @@ class FlightEditModal(discord.ui.Modal):
 
         # Get attachments and preserve embed image references
         attachments_to_keep = []
-        if getattr(self, "message", None) and self.message.attachments:
-            attachments_to_keep = list(self.message.attachments)
-            # Keep using attachment:// format for embed references
-            for attachment in self.message.attachments:
-                if "route_map" in attachment.filename.lower():
-                    embed.set_image(url=f"attachment://{attachment.filename}")
+        if getattr(self, "message", None):
+            if self.message.attachments:
+                attachments_to_keep = list(self.message.attachments)
+            
+            # Reconstruct attachment:// URLs by extracting filenames from the original embed's CDN URLs
+            if self.message.embeds:
+                orig_embed = self.message.embeds[0]
+                if orig_embed.image and orig_embed.image.url:
+                    filename = orig_embed.image.url.split('/')[-1].split('?')[0]
+                    embed.set_image(url=f"attachment://{filename}")
+                if orig_embed.thumbnail and orig_embed.thumbnail.url:
+                    filename = orig_embed.thumbnail.url.split('/')[-1].split('?')[0]
+                    embed.set_thumbnail(url=f"attachment://{filename}")
 
         try:
             # Pass attachments to prevent Discord from detaching them
