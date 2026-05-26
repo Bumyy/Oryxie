@@ -3,9 +3,44 @@ from discord.ext import commands
 from discord import app_commands
 import asyncio
 import os
+import re
 from database.pilots_model import PilotsModel
 
 STAFF_ROLE_ID = 1090752933433450516
+
+def get_ticket_creator_id(channel) -> int | None:
+    """Helper to retrieve the ticket creator's Discord ID in a reboot-safe way."""
+    if not channel:
+        return None
+    
+    # 1. Try parsing from the channel topic
+    if channel.topic:
+        match = re.search(r"Ticket Creator:\s*(\d+)", channel.topic)
+        if match:
+            return int(match.group(1))
+            
+    # 2. Fallback: Search channel overwrites for non-staff members
+    try:
+        staff_role = channel.guild.get_role(STAFF_ROLE_ID)
+        non_staff_members = []
+        for target, overwrite in channel.overwrites.items():
+            if isinstance(target, discord.Member):
+                is_staff = staff_role in target.roles if staff_role else False
+                if not is_staff:
+                    non_staff_members.append(target)
+        
+        # Match channel name suffix
+        for member in non_staff_members:
+            if member.display_name.lower().replace(" ", "-") in channel.name.lower() or member.name.lower() in channel.name.lower():
+                return member.id
+                
+        # Fallback to the first non-staff member found
+        if non_staff_members:
+            return non_staff_members[0].id
+    except Exception as e:
+        print(f"Error in get_ticket_creator_id fallback: {e}")
+        
+    return None
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -71,7 +106,8 @@ class ConfirmTicketView(discord.ui.View):
             ticket_channel = await interaction.guild.create_text_channel(
                 name=f'{self.ticket_type.lower().replace(" ", "-")}-{interaction.user.display_name}',
                 category=category,
-                overwrites=overwrites
+                overwrites=overwrites,
+                topic=f"Ticket Creator: {interaction.user.id} | Type: {self.ticket_type}"
             )
             
             embed = discord.Embed(
@@ -146,26 +182,49 @@ class TicketControlView(discord.ui.View):
         try:
             await interaction.response.defer(ephemeral=True)
             
+            # Determine creator ID (with fallback helper)
+            channel = interaction.channel
+            creator_id = self.ticket_creator_id or get_ticket_creator_id(channel)
+            
             # Allow staff OR ticket creator to close
             is_staff = self.is_staff(interaction.user, interaction.guild)
-            is_creator = interaction.user.id == self.ticket_creator_id
+            is_creator = creator_id is not None and interaction.user.id == creator_id
             
             if not is_staff and not is_creator:
                 return await interaction.followup.send("Only staff or ticket creator can close this ticket.", ephemeral=True)
             
-            # Remove ticket creator from channel
-            channel = interaction.channel
+            # If the channel doesn't have a topic set yet, set it now so it persists!
+            if creator_id and (not channel.topic or "Ticket Creator:" not in channel.topic):
+                try:
+                    current_topic = channel.topic or ""
+                    new_topic = f"Ticket Creator: {creator_id}"
+                    if current_topic:
+                        new_topic = f"{new_topic} | {current_topic}"
+                    await channel.edit(topic=new_topic)
+                except Exception as e:
+                    print(f"Error updating channel topic on close: {e}")
             
-            if self.ticket_creator_id:
-                ticket_creator = interaction.guild.get_member(self.ticket_creator_id)
-                if ticket_creator:
-                    await channel.set_permissions(ticket_creator, overwrite=None)
+            # Remove ALL non-staff members from channel overwrites
+            staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+            removed_members = []
+            
+            for target, overwrite in list(channel.overwrites.items()):
+                if isinstance(target, discord.Member):
+                    is_member_staff = staff_role in target.roles if staff_role else False
+                    if not is_member_staff:
+                        await channel.set_permissions(target, overwrite=None)
+                        removed_members.append(target)
             
             # Update view to show re-add and delete buttons
-            view = ClosedTicketView(self.ticket_creator_id)
+            view = ClosedTicketView(creator_id)
+            
+            description = "This ticket has been closed. Non-staff members have been removed from the channel."
+            if removed_members:
+                description += f"\n**Removed members:** {', '.join(m.mention for m in removed_members)}"
+                
             embed = discord.Embed(
                 title="🔒 Ticket Closed",
-                description="This ticket has been closed. The ticket creator has been removed from the channel.",
+                description=description,
                 color=0x800000
             )
             
@@ -291,10 +350,14 @@ class UserConfirmView(discord.ui.View):
         ticket_type = f"{enquiry_type}-enquiry"
         # Use target user's name if available, otherwise use callsign
         channel_suffix = self.user.display_name if self.user else f"qrv{callsign}"
+        
+        target_user_id = self.user.id if self.user else interaction.user.id
+        
         ticket_channel = await interaction.guild.create_text_channel(
             name=f'{ticket_type}-{channel_suffix}',
             category=category,
-            overwrites=overwrites
+            overwrites=overwrites,
+            topic=f"Ticket Creator: {target_user_id} | Type: {ticket_type}"
         )
         
         embed = discord.Embed(
@@ -303,7 +366,7 @@ class UserConfirmView(discord.ui.View):
             color=0x800000
         )
         
-        view = TicketControlView(interaction.user.id)
+        view = TicketControlView(target_user_id)
         await ticket_channel.send(embed=embed, view=view)
         
         await interaction.edit_original_response(
@@ -333,7 +396,7 @@ class RemoveUserSelect(discord.ui.Select):
             await interaction.response.send_message(f"Removed {user.mention} from ticket.", ephemeral=True)
 
 class ClosedTicketView(discord.ui.View):
-    def __init__(self, ticket_creator_id):
+    def __init__(self, ticket_creator_id=None):
         super().__init__(timeout=None)
         self.ticket_creator_id = ticket_creator_id
 
@@ -347,8 +410,9 @@ class ClosedTicketView(discord.ui.View):
                 return await interaction.response.send_message("Only staff can re-add users.", ephemeral=True)
             
             # Re-add ticket creator to channel
-            if self.ticket_creator_id:
-                ticket_creator = interaction.guild.get_member(self.ticket_creator_id)
+            creator_id = self.ticket_creator_id or get_ticket_creator_id(interaction.channel)
+            if creator_id:
+                ticket_creator = interaction.guild.get_member(creator_id)
                 if ticket_creator:
                     await interaction.channel.set_permissions(ticket_creator, read_messages=True, send_messages=True)
                     await interaction.response.send_message(f"Re-added {ticket_creator.mention} to the ticket.", ephemeral=True)
