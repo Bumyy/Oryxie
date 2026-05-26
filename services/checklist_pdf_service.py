@@ -66,9 +66,9 @@ class ChecklistPDFService:
     def __init__(self):
         self.template_path = os.path.join('assets', 'checklist_template.json')
         self.aircraft_db_path = os.path.join('assets', 'aircrafts.json')
-        with open(self.template_path, 'r') as f:
+        with open(self.template_path, 'r', encoding='utf-8') as f:
             self.template = json.load(f)
-        with open(self.aircraft_db_path, 'r') as f:
+        with open(self.aircraft_db_path, 'r', encoding='utf-8') as f:
             self.aircraft_db = json.load(f)
 
     def _get_performance_data(self, aircraft_data, load):
@@ -230,10 +230,20 @@ class ChecklistPDFService:
                     
                     if 'flap_retraction_schedule' in aircraft_info:
                         flap_schedule = aircraft_info.get('flap_retraction_schedule', [])
-                        for flap_step in flap_schedule:
+                        
+                        # Find the index of the takeoff flap in the schedule to filter out prior/dirtier steps
+                        takeoff_idx = -1
+                        if not has_multiple_flaps:
+                            schedule_settings = [step['setting'] for step in flap_schedule]
+                            if takeoff_flaps_value in schedule_settings:
+                                takeoff_idx = schedule_settings.index(takeoff_flaps_value)
+                                
+                        for step_idx, flap_step in enumerate(flap_schedule):
                             if flap_step['speed'] <= speed_threshold:
-                                # Skip if this flap setting matches the takeoff flap (for single flap aircraft)
-                                if not has_multiple_flaps and flap_step['setting'] == takeoff_flaps_value:
+                                # Skip any flap settings that are at or before the selected takeoff flap index
+                                if not has_multiple_flaps and takeoff_idx != -1 and step_idx <= takeoff_idx:
+                                    continue
+                                if not has_multiple_flaps and takeoff_idx == -1 and flap_step['setting'] == takeoff_flaps_value:
                                     continue
                                 
                                 condition = flap_step.get('condition', '')
@@ -283,8 +293,24 @@ class ChecklistPDFService:
                     # Check if aircraft has flap_retraction_schedule, use it; otherwise use dynamic logic
                     if 'flap_retraction_schedule' in aircraft_info:
                         flap_schedule = aircraft_info.get('flap_retraction_schedule', [])
-                        for flap_step in flap_schedule:
+                        
+                        # Find the index of the takeoff flap in the schedule to filter out prior/dirtier steps
+                        takeoff_flaps_value = perf.get('takeoff_flaps', '')
+                        has_multiple_flaps = '/' in takeoff_flaps_value
+                        takeoff_idx = -1
+                        if not has_multiple_flaps:
+                            schedule_settings = [step['setting'] for step in flap_schedule]
+                            if takeoff_flaps_value in schedule_settings:
+                                takeoff_idx = schedule_settings.index(takeoff_flaps_value)
+                                
+                        for step_idx, flap_step in enumerate(flap_schedule):
                             if flap_step['speed'] > speed_threshold:
+                                # Skip any flap settings that are at or before the selected takeoff flap index
+                                if not has_multiple_flaps and takeoff_idx != -1 and step_idx <= takeoff_idx:
+                                    continue
+                                if not has_multiple_flaps and takeoff_idx == -1 and flap_step['setting'] == takeoff_flaps_value:
+                                    continue
+                                    
                                 pdf.checklist_item(f"AS SPEED INCREASES, AT {flap_step['speed']} KTS", f"SET FLAPS {flap_step['setting']}", is_dynamic=True)
                     else:
                         # Dynamic logic for aircraft without flap_retraction_schedule
@@ -307,7 +333,10 @@ class ChecklistPDFService:
                     sorted_flaps = sorted(flap_speeds.items(), key=lambda x: x[1], reverse=True)
                     for flap_setting, speed in sorted_flaps:
                         if speed > speed_threshold:
-                            pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", f"SET FLAPS {flap_setting}", is_dynamic=True)
+                            value = f"SET FLAPS {flap_setting}"
+                            if flap_setting == "40" and aircraft_type == "B38M":
+                                value += " (Short Runway Only)"
+                            pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", value, is_dynamic=True)
                 
                 elif section['special_section'] == 'flap_deploy_below_10k':
                     # Get speed threshold for above/below 10k separation, default to 250
@@ -317,7 +346,10 @@ class ChecklistPDFService:
                     sorted_flaps = sorted(flap_speeds.items(), key=lambda x: x[1], reverse=True)
                     for flap_setting, speed in sorted_flaps:
                         if speed <= speed_threshold:
-                            pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", f"SET FLAPS {flap_setting}", is_dynamic=True)
+                            value = f"SET FLAPS {flap_setting}"
+                            if flap_setting == "40" and aircraft_type == "B38M":
+                                value += " (Short Runway Only)"
+                            pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", value, is_dynamic=True)
                 
                 # Skip descent_speed_profile here since it's handled after text_section
             
@@ -352,7 +384,10 @@ class ChecklistPDFService:
                     sorted_flaps = sorted(flap_speeds.items(), key=lambda x: x[1], reverse=True)
                     for flap_setting, speed in sorted_flaps:
                         if speed > speed_threshold:
-                            pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", f"SET FLAPS {flap_setting}", is_dynamic=True)
+                            value = f"SET FLAPS {flap_setting}"
+                            if flap_setting == "40" and aircraft_type == "B38M":
+                                value += " (Short Runway Only)"
+                            pdf.checklist_item(f"AS SPEED DECREASES, AT {speed} KTS", value, is_dynamic=True)
                 
                 elif section['special_section_2'] == 'landing_data_table':
                     # Get landing data for loads at or below takeoff load
@@ -374,42 +409,6 @@ class ChecklistPDFService:
                         pdf.set_font('Arial', '', 8)
                         # Table data - smaller font and row height
                         for ld in filtered_data:
-                            if aircraft_type == "B38M":
-                                # Load Range
-                                pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
-                                
-                                # Flaps 30/40 (Multi-color)
-                                x = pdf.get_x()
-                                pdf.cell(20, 5, "", 1, 0)
-                                pdf.set_x(x)
-                                pdf.set_text_color(0, 0, 0)
-                                pdf.cell(10, 5, "30", 0, 0, 'R')
-                                pdf.set_text_color(200, 0, 0) # Red for Flaps 40
-                                pdf.cell(10, 5, "/40", 0, 0, 'L')
-                                
-                                # Vapp (Multi-color)
-                                v30 = ld['vapp']
-                                v40 = v30 - 5
-                                x = pdf.get_x()
-                                pdf.cell(20, 5, "", 1, 0)
-                                pdf.set_x(x)
-                                pdf.set_text_color(0, 0, 0)
-                                pdf.cell(10, 5, str(v30), 0, 0, 'R')
-                                pdf.set_text_color(200, 0, 0)
-                                pdf.cell(10, 5, f"({v40})", 0, 0, 'L')
-                                
-                                # Vflare (Multi-color)
-                                vf30 = ld['vflare']
-                                vf40 = vf30 - 5
-                                x = pdf.get_x()
-                                pdf.cell(20, 5, "", 1, 1)
-                                pdf.set_xy(x, pdf.get_y() - 5)
-                                pdf.set_text_color(0, 0, 0)
-                                pdf.cell(10, 5, str(vf30), 0, 0, 'R')
-                                pdf.set_text_color(200, 0, 0)
-                                pdf.cell(10, 5, f"({vf40})", 0, 0, 'L')
-                                pdf.set_text_color(0, 0, 0) # Reset color
-                            else:
                                 pdf.cell(35, 5, f"{ld['load_range'][0]}-{ld['load_range'][1]}%", 1, 0, 'C')
                                 pdf.cell(20, 5, ld['flaps'], 1, 0, 'C')
                                 pdf.cell(20, 5, str(ld['vapp']), 1, 0, 'C')
