@@ -141,7 +141,7 @@ class FlightBoardCog(commands.Cog):
                            departure: str,
                            arrival: str,
                            etd: str = None, status: str = "Scheduled", note: str = None):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         
         try:
             # 1. Search CC routes first
@@ -166,7 +166,11 @@ class FlightBoardCog(commands.Cog):
 
             # 3. If still no routes found after all checks, send error
             if not all_flight_numbers:
-                await interaction.followup.send(f"❌ No routes found for {departure.upper()} to {arrival.upper()}.", ephemeral=True)
+                await interaction.channel.send(f"❌ No routes found for {departure.upper()} to {arrival.upper()}.")
+                try:
+                    await interaction.delete_original_response()
+                except Exception:
+                    pass
                 return
 
             # 4. Process based on the number of results found
