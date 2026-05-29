@@ -56,17 +56,19 @@ class Roster(commands.Cog):
                 member_id_str = str(member.id)
                 
                 # Step 1: Check for active pilot (status = 1)
-                active_pilot = await self.bot.pilots_model.get_pilot_by_callsign(callsign)
+                active_pilot = await self.bot.pilots_model.get_pilot_full_data(callsign)
                 
                 if active_pilot:
                     # Found active pilot, check Discord ID
                     current_discord_id = active_pilot.get('discordid')
+                    discord_updated = False
                     
                     if not current_discord_id:
                         # No Discord ID present, add it
                         await self.bot.pilots_model.update_discord_id(callsign, member_id_str)
                         updated_count += 1
                         added_info.append(f"{member.mention} : active : discord id added")
+                        discord_updated = True
                     elif current_discord_id == member_id_str:
                         # Discord ID matches
                         already_synced_count += 1
@@ -75,6 +77,33 @@ class Roster(commands.Cog):
                         await self.bot.pilots_model.update_discord_id(callsign, member_id_str)
                         updated_count += 1
                         updated_info.append(f"{member.mention} : active : discord id updated")
+                        discord_updated = True
+
+                    # Try to resolve and sync missing ifuserid as well
+                    ifuserid = active_pilot.get('ifuserid')
+                    ifc_url = active_pilot.get('ifc')
+                    if (not ifuserid or ifuserid == '') and ifc_url:
+                        username_match = re.search(r'/u/([^/]+)', ifc_url)
+                        if username_match:
+                            ifc_username = username_match.group(1)
+                            try:
+                                user_data = await self.bot.if_api_manager.get_user_by_ifc_username(ifc_username)
+                                if user_data and user_data.get('result'):
+                                    resolved_id = user_data['result'].get('userId')
+                                    if resolved_id:
+                                        await self.bot.pilots_model.update_ifuserid_by_ifc_username(ifc_username, resolved_id)
+                                        if discord_updated:
+                                            # If discord ID was added/updated in the same run, append to message
+                                            if added_info and added_info[-1].startswith(member.mention):
+                                                added_info[-1] += " & ifuserid resolved"
+                                            elif updated_info and updated_info[-1].startswith(member.mention):
+                                                updated_info[-1] += " & ifuserid resolved"
+                                        else:
+                                            # Discord ID was already correct, but ifuserid is resolved now
+                                            updated_count += 1
+                                            updated_info.append(f"{member.mention} : active : ifuserid resolved via IFC")
+                            except Exception as e:
+                                print(f"Error resolving ifuserid for {ifc_username} in roster sync: {e}")
                 else:
                     # Step 2: Check other statuses
                     any_pilot = await self.bot.pilots_model.get_pilot_by_callsign_any_status(callsign)

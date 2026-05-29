@@ -431,8 +431,29 @@ class PirepFilingService:
         ifuserid = pilot_data.get('ifuserid')
         if not ifuserid:
             self.logger.warning(f"[ASCARIS] No IF user ID linked for pilot_id={pilot_data.get('id')}")
-            result['error'] = "No Infinite Flight account linked. Please link your IF account first."
-            return result
+            # Try to resolve it using the IFC username from pilot_data
+            ifc_url = pilot_data.get('ifc')
+            if ifc_url:
+                import re
+                username_match = re.search(r'/u/([^/]+)', ifc_url)
+                if username_match:
+                    ifc_username = username_match.group(1)
+                    self.logger.info(f"[ASCARIS] Missing ifuserid. Attempting to resolve via IFC username: {ifc_username}")
+                    try:
+                        user_data = await self.bot.if_api_manager.get_user_by_ifc_username(ifc_username)
+                        if user_data and user_data.get('result'):
+                            resolved_id = user_data['result'].get('userId')
+                            if resolved_id:
+                                self.logger.info(f"[ASCARIS] Successfully resolved ifuserid ({resolved_id}) for {ifc_username}. Updating DB.")
+                                await self.bot.pilots_model.update_ifuserid_by_ifc_username(ifc_username, resolved_id)
+                                ifuserid = resolved_id
+                                pilot_data['ifuserid'] = resolved_id  # Update local dict too
+                    except Exception as e:
+                        self.logger.error(f"[ASCARIS] Error resolving ifuserid from IFC username: {e}")
+            
+            if not ifuserid:
+                result['error'] = "No Infinite Flight account linked. Please link your IF account first."
+                return result
         
         self.logger.info(f"[ASCARIS] IF user ID found: {ifuserid}")
         
