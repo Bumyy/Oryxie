@@ -96,7 +96,8 @@ class DatabaseAuditCog(commands.Cog):
         app_commands.Choice(name="First Accepted PIREPs QRV001-019", value="first_accepted_pireps"),
         app_commands.Choice(name="OWD Route Lookup", value="owd_route_lookup"),
         app_commands.Choice(name="ROS Mission Progress", value="ros_mission_progress"),
-        app_commands.Choice(name="Test AI-PDF Flow", value="test_ai_pdf_flow")
+        app_commands.Choice(name="Test AI-PDF Flow", value="test_ai_pdf_flow"),
+        app_commands.Choice(name="Sync Discord Status", value="sync_discord_status")
     ])
     @app_commands.checks.has_permissions(administrator=True)
     async def audit(self, interaction: discord.Interaction, action: str):
@@ -116,6 +117,8 @@ class DatabaseAuditCog(commands.Cog):
             await self._ros_mission_progress(interaction)
         elif action == "test_ai_pdf_flow":
             await self._test_ai_pdf_flow(interaction)
+        elif action == "sync_discord_status":
+            await self._sync_discord_status(interaction)
 
     async def _check_ifc_usernames_validity(self, interaction: discord.Interaction):
         """Check all active pilots' IFC usernames by fetching user stats from API."""
@@ -813,6 +816,122 @@ class DatabaseAuditCog(commands.Cog):
             print(f"[AUDIT-PDF-TEST] ❌ CRITICAL ERROR during test: {e}")
             print(error_trace)
             await interaction.followup.send(f"❌ A critical error occurred during the test: `{e}`\n```\n{error_trace[:1500]}\n```", ephemeral=True)
+
+    async def _sync_discord_status(self, interaction: discord.Interaction):
+        """
+        Syncs pilot status between Database and Discord:
+        - Checks each pilot's Discord presence one by one.
+        - If not in Discord and database status is 1 (Active) -> sets database status to 2.
+        - If in Discord and database status is not 1 -> sets database status to 1.
+        - If not in Discord and database status is other than 1 -> leaves as it is.
+        """
+        await interaction.response.defer(ephemeral=False)
+        
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("❌ This command must be run inside a Discord server.", ephemeral=False)
+            return
+
+        try:
+            # Ensure member cache is updated
+            if not guild.chunked:
+                await guild.chunk()
+        except Exception as e:
+            print(f"[SYNC DEBUG] Failed to chunk guild: {e}")
+
+        # Get set of all user IDs in the guild
+        member_ids = {m.id for m in guild.members}
+        
+        try:
+            # Fetch all pilots
+            pilots = await self.bot.pilots_model.get_all_pilots_for_status_check()
+            
+            to_status_2 = []  # Active -> Inactive (left Discord)
+            to_status_1 = []  # Inactive -> Active (in Discord)
+            no_change = 0
+            
+            for pilot in pilots:
+                pilot_id = pilot['id']
+                callsign = pilot.get('callsign') or 'N/A'
+                name = pilot.get('name') or 'Unknown'
+                discord_id_str = pilot.get('discordid')
+                status = pilot.get('status')
+                
+                # Check Discord presence
+                in_server = False
+                if discord_id_str and discord_id_str.strip():
+                    try:
+                        discord_id_int = int(discord_id_str.strip())
+                        in_server = discord_id_int in member_ids
+                    except ValueError:
+                        pass
+                
+                if in_server:
+                    if status != 1:
+                        # Found in server but status is not 1, update to 1
+                        await self.bot.pilots_model.update_pilot_status(pilot_id, 1)
+                        to_status_1.append({
+                            'id': pilot_id,
+                            'callsign': callsign,
+                            'name': name,
+                            'discord_id': discord_id_str,
+                            'old_status': status
+                        })
+                    else:
+                        no_change += 1
+                else:
+                    if status == 1:
+                        # Active (1) but not in server, update to 2
+                        await self.bot.pilots_model.update_pilot_status(pilot_id, 2)
+                        to_status_2.append({
+                            'id': pilot_id,
+                            'callsign': callsign,
+                            'name': name,
+                            'discord_id': discord_id_str,
+                            'old_status': status
+                        })
+                    else:
+                        # Other status and not in server, leave as it is
+                        no_change += 1
+                        
+            # Format report
+            report_msg = "**🔄 DISCORD-DATABASE STATUS SYNC REPORT**\n\n"
+            report_msg += f"📊 **Stats:**\n"
+            report_msg += f"• Total checked: {len(pilots)}\n"
+            report_msg += f"• Marked Inactive (Status 2 - left Discord): {len(to_status_2)}\n"
+            report_msg += f"• Marked Active (Status 1 - in Discord): {len(to_status_1)}\n"
+            report_msg += f"• Unchanged: {no_change}\n\n"
+            
+            if to_status_2:
+                report_msg += "🔴 **Marked Inactive (Status 1 ➡️ 2):**\n"
+                for p in to_status_2:
+                    d_mention = f"<@{p['discord_id']}>" if p['discord_id'] else "No Discord ID"
+                    report_msg += f"• **{p['callsign']}** - {p['name']} ({d_mention})\n"
+                report_msg += "\n"
+                
+            if to_status_1:
+                report_msg += "🟢 **Marked Active (Status ➡️ 1):**\n"
+                for p in to_status_1:
+                    d_mention = f"<@{p['discord_id']}>" if p['discord_id'] else "No Discord ID"
+                    report_msg += f"• **{p['callsign']}** - {p['name']} ({d_mention}) [Old Status: {p['old_status']}]\n"
+                report_msg += "\n"
+                
+            if not to_status_2 and not to_status_1:
+                report_msg += "✨ **No database updates were necessary. Everything is in sync!**"
+            
+            # Send report (splitting if it exceeds limit)
+            if len(report_msg) > 2000:
+                parts = [report_msg[i:i+1900] for i in range(0, len(report_msg), 1900)]
+                for part in parts:
+                    await interaction.followup.send(part, ephemeral=False)
+            else:
+                await interaction.followup.send(report_msg, ephemeral=False)
+                
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"[SYNC ERROR] Sync failed: {e}\n{error_trace}")
+            await interaction.followup.send(f"❌ **Error during Discord status sync:** {str(e)}", ephemeral=False)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):

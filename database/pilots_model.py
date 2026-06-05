@@ -347,6 +347,32 @@ class PilotsModel:
         number = int(match.group(1))
         return 1 <= number <= 7
 
+    async def get_all_pilots_for_status_check(self) -> list:
+        """
+        Retrieves id, callsign, name, discordid, and status for all pilots.
+        """
+        query = "SELECT id, callsign, name, discordid, status FROM pilots"
+        return await self.db.fetch_all(query)
+
+    async def update_pilot_status(self, pilot_id: int, status: int) -> int:
+        """
+        Updates the status for a pilot with a given ID.
+
+        Args:
+            pilot_id: The pilot's database ID.
+            status: The new status value.
+
+        Returns:
+            The number of rows affected.
+        """
+        query = """
+            UPDATE pilots
+            SET status = %s
+            WHERE id = %s
+        """
+        args = (status, pilot_id)
+        return await self.db.execute(query, args)
+
     def get_html_template(self):
         """Returns HTML template for pilot documentation"""
         import os
