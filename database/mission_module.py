@@ -21,9 +21,9 @@ class MissionDB:
 
     async def get_mission_titles(self, search: str = "") -> List[str]:
         if search:
-            results = await self.db.fetch_all("SELECT title FROM scheduled_events WHERE title LIKE %s ORDER BY created_at DESC LIMIT 25", (f"%{search}%",))
+            results = await self.db.fetch_all("SELECT title FROM scheduled_events WHERE title LIKE %s ORDER BY created_at DESC LIMIT 5", (f"%{search}%",))
         else:
-            results = await self.db.fetch_all("SELECT title FROM scheduled_events ORDER BY created_at DESC LIMIT 25")
+            results = await self.db.fetch_all("SELECT title FROM scheduled_events ORDER BY created_at DESC LIMIT 5")
         return [row['title'] for row in results]
 
     async def create_mission(self, mission_data: Dict[str, Any]) -> None:
