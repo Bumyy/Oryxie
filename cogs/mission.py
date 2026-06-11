@@ -146,8 +146,8 @@ class Mission(commands.Cog):
         missions = await self.mission_db.get_pending_missions()
         
         for mission in missions:
-            await self._post_mission(mission)
-            await self.mission_db.mark_mission_posted(mission['id'])
+            if await self._post_mission(mission):
+                await self.mission_db.mark_mission_posted(mission['id'])
         
         await self._adjust_polling_interval()
     
@@ -205,18 +205,24 @@ class Mission(commands.Cog):
         
         return discord.Color.gold()
 
-    async def _post_mission(self, mission_data):
+    async def _post_mission(self, mission_data) -> bool:
         try:
-            channel = self.bot.get_channel(mission_data['channel_id'])
+            channel_id = int(mission_data['channel_id'])
+            channel = self.bot.get_channel(channel_id)
             if not channel:
-                print(f"Mission posting failed: Channel {mission_data['channel_id']} not found")
-                return
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except Exception as fetch_err:
+                    print(f"Mission posting failed: Channel {channel_id} could not be fetched: {fetch_err}")
+                    return False
             
             embed = await self._create_mission_embed(mission_data)
             await channel.send(content="@everyone", embed=embed)
             print(f"Mission '{mission_data['title']}' posted successfully to {channel.name}")
+            return True
         except Exception as e:
             print(f"Error posting mission '{mission_data.get('title', 'Unknown')}': {e}")
+            return False
     
     async def _create_mission_embed(self, mission_data):
         embed = discord.Embed(
@@ -330,9 +336,12 @@ class Mission(commands.Cog):
             await interaction.followup.send(f"❌ Mission '{title}' not found.", ephemeral=True)
             return
 
-        await self._post_mission(mission)
-        await self.mission_db.mark_mission_posted(mission['id'])
-        await interaction.followup.send(f"✅ Mission '{title}' posted immediately!", ephemeral=True)
+        success = await self._post_mission(mission)
+        if success:
+            await self.mission_db.mark_mission_posted(mission['id'])
+            await interaction.followup.send(f"✅ Mission '{title}' posted immediately!", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Failed to post mission '{title}'. Check console logs.", ephemeral=True)
 
 
 
