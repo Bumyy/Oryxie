@@ -711,6 +711,39 @@ class PirepsModel:
             'total_flights': len(pireps)
         }
 
+    async def get_approved_pireps_by_route_and_date_range(self, departure: str, arrival: str, hours: int = 48) -> list[dict]:
+        """
+        Retrieves all approved PIREPs (status=1) for a specific route within the last X hours.
+        """
+        days = max(1, hours // 24)
+        query = """
+            SELECT 
+                p.id AS pirep_id,
+                p.flightnum,
+                p.departure,
+                p.arrival,
+                p.pilotid,
+                p.date,
+                p.multi,
+                pi.name AS pilot_name,
+                pi.callsign,
+                pi.ifuserid,
+                pi.ifc
+            FROM 
+                pireps AS p
+            INNER JOIN 
+                pilots AS pi ON p.pilotid = pi.id
+            WHERE 
+                p.departure = %s
+                AND p.arrival = %s
+                AND p.status = 1
+                AND p.date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            ORDER BY 
+                p.date DESC
+        """
+        args = (departure, arrival, days)
+        return await self.db.fetch_all(query, args)
+
 '''
 === DATABASE STRUCTURE: pireps ===
 

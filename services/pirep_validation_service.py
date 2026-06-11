@@ -83,6 +83,137 @@ class PirepValidationService:
     def __init__(self, bot: 'MyBot'):
         self.bot = bot
 
+    def calculate_landing_score(self, landing_data: dict) -> dict:
+        """
+        Calculates scores (1-5) and rating for a single landing's touchdown metrics.
+        """
+        g_force = landing_data.get("maxGForce")
+        centerline = landing_data.get("centerlineDistance")
+        dist_1k = landing_data.get("distanceFrom1kftMarker")
+        roll = landing_data.get("groundRollDistance")
+        v_speed = landing_data.get("verticalSpeed")
+
+        # 1. G-Force
+        if g_force is None:
+            g_score = None
+        else:
+            g_val = float(g_force)
+            if g_val <= 1.20:
+                g_score = 5
+            elif g_val <= 1.35:
+                g_score = 4
+            elif g_val <= 1.50:
+                g_score = 3
+            elif g_val <= 1.75:
+                g_score = 2
+            else:
+                g_score = 1
+
+        # 2. Centerline Distance
+        if centerline is None:
+            c_score = None
+        else:
+            c_val = abs(float(centerline))
+            if c_val <= 2.0:
+                c_score = 5
+            elif c_val <= 5.0:
+                c_score = 4
+            elif c_val <= 10.0:
+                c_score = 3
+            elif c_val <= 20.0:
+                c_score = 2
+            else:
+                c_score = 1
+
+        # 3. Distance from 1000 ft marker
+        if dist_1k is None:
+            d_score = None
+        else:
+            d_val = abs(float(dist_1k))
+            if d_val <= 100.0:
+                d_score = 5
+            elif d_val <= 200.0:
+                d_score = 4
+            elif d_val <= 400.0:
+                d_score = 3
+            elif d_val <= 700.0:
+                d_score = 2
+            else:
+                d_score = 1
+
+        # 4. Ground roll distance
+        if roll is None:
+            r_score = None
+        else:
+            r_val = abs(float(roll))
+            if r_val <= 800.0:
+                r_score = 5
+            elif r_val <= 1200.0:
+                r_score = 4
+            elif r_val <= 1800.0:
+                r_score = 3
+            elif r_val <= 2500.0:
+                r_score = 2
+            else:
+                r_score = 1
+
+        # 5. Landing FPM (Vertical Speed)
+        if v_speed is None:
+            v_score = None
+            v_speed_fpm = None
+        else:
+            v_speed_fpm = abs(round(float(v_speed) * 196.85))
+            if v_speed_fpm <= 150:
+                v_score = 5
+            elif v_speed_fpm <= 250:
+                v_score = 4
+            elif v_speed_fpm <= 400:
+                v_score = 3
+            elif v_speed_fpm <= 600:
+                v_score = 2
+            else:
+                v_score = 1
+
+        # Calculate average
+        valid_scores = [s for s in [g_score, c_score, d_score, r_score, v_score] if s is not None]
+        if not valid_scores:
+            return {}
+
+        average = sum(valid_scores) / len(valid_scores)
+        
+        # Determine rating stars and text label
+        if average >= 4.75:
+            stars = "⭐⭐⭐⭐⭐"
+            rating_text = "Exceptional"
+        elif average >= 4.25:
+            stars = "⭐⭐⭐⭐☆"
+            rating_text = "Excellent"
+        elif average >= 3.50:
+            stars = "⭐⭐⭐☆☆"
+            rating_text = "Good"
+        elif average >= 2.50:
+            stars = "⭐⭐☆☆☆"
+            rating_text = "Acceptable"
+        else:
+            stars = "⭐☆☆☆☆"
+            rating_text = "Needs Improvement"
+
+        return {
+            "g_force": g_force,
+            "g_score": g_score,
+            "centerline": centerline,
+            "c_score": c_score,
+            "dist_1k": dist_1k,
+            "d_score": d_score,
+            "roll": roll,
+            "r_score": r_score,
+            "vspeed_fpm": v_speed_fpm,
+            "v_score": v_score,
+            "average": average,
+            "stars": stars,
+            "rating_text": rating_text
+        }
+
     async def find_pirep_by_callsign_flight_and_route(self, callsign: str, flight_number: str, departure: str, arrival: str) -> Optional[Dict]:
         """Find PIREP by callsign, flight number, and route with validation."""
         logger.info(f"[DEBUG] Searching PIREP (Route): Call={callsign}, Flt={flight_number}, Dep={departure}, Arr={arrival}")
@@ -429,6 +560,47 @@ class PirepValidationService:
         embed.add_field(
             name="📊 Flight Performance",
             value=f"🛬 **Landings:** {landings}\n⚠️ **Violations:** {len(matching_flight.get('violations', []))}\n🌍 **Server:** {matching_flight.get('server', 'Unknown')}\n📅 **Date:** {date_str}\n🎨 **Livery:** {livery_name}",
+            inline=False
+        )
+        
+        # Add landing stats details
+        landing_stats = matching_flight.get('landingStats', [])
+        landing_details = []
+        for idx, landing in enumerate(landing_stats, 1):
+            score_data = self.calculate_landing_score(landing)
+            if not score_data:
+                continue
+            
+            g_str = f"{score_data['g_force']:.2f} G" if score_data['g_force'] is not None else "N/A"
+            g_score_str = f"{score_data['g_score']}/5" if score_data['g_score'] is not None else "N/A"
+            
+            c_str = f"{score_data['centerline']:.1f} m" if score_data['centerline'] is not None else "N/A"
+            c_score_str = f"{score_data['c_score']}/5" if score_data['c_score'] is not None else "N/A"
+            
+            d_str = f"{score_data['dist_1k']:.1f} m" if score_data['dist_1k'] is not None else "N/A"
+            d_score_str = f"{score_data['d_score']}/5" if score_data['d_score'] is not None else "N/A"
+            
+            r_str = f"{score_data['roll']:.1f} m" if score_data['roll'] is not None else "N/A"
+            r_score_str = f"{score_data['r_score']}/5" if score_data['r_score'] is not None else "N/A"
+            
+            v_str = f"-{score_data['vspeed_fpm']} FPM" if score_data['vspeed_fpm'] is not None else "N/A"
+            v_score_str = f"{score_data['v_score']}/5" if score_data['v_score'] is not None else "N/A"
+            
+            landing_details.append(
+                f"**Touchdown {idx}: {score_data['stars']} ({score_data['average']:.2f}/5.00 - {score_data['rating_text']})**\n"
+                f"• **G-Force:** {g_str} ({g_score_str}) • **Centerline:** {c_str} ({c_score_str})\n"
+                f"• **Touchdown Zone:** {d_str} ({d_score_str}) • **Ground Roll:** {r_str} ({r_score_str})\n"
+                f"• **Vertical Speed:** {v_str} ({v_score_str})"
+            )
+            
+        if not landing_details:
+            landing_details_str = "Detailed landing statistics are unavailable for this flight log."
+        else:
+            landing_details_str = "\n\n".join(landing_details)
+            
+        embed.add_field(
+            name="🛬 Touchdown Performance Analysis",
+            value=landing_details_str,
             inline=False
         )
         

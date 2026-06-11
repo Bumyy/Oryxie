@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+import asyncio
 from discord import app_commands
 from typing import TYPE_CHECKING
 import os
@@ -461,6 +462,174 @@ class PirepValidator(commands.Cog):
         except Exception as e:
             logger.error(f"SLASH ERROR: {e}")
             await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
+    @app_commands.command(name="landing_challenge", description="Show the landing challenge leaderboard for a specific route.")
+    @app_commands.describe(
+        departure="Departure airport ICAO code (e.g., OTHH)",
+        arrival="Arrival airport ICAO code (e.g., OMDB)",
+        timeframe_hours="Number of hours to look back (default: 48)"
+    )
+    async def landing_challenge(self, interaction: discord.Interaction, departure: str, arrival: str, timeframe_hours: int = 48):
+        """Host a landing challenge leaderboard based on approved PIREPs on a route."""
+        if not any("staff" in role.name.lower() for role in interaction.user.roles):
+            return await interaction.response.send_message("You must have a role containing 'staff' to use this command.", ephemeral=True)
+            
+        departure = departure.strip().upper()
+        arrival = arrival.strip().upper()
+        
+        await interaction.response.defer(ephemeral=False)
+        
+        try:
+            # 1. Fetch approved PIREPs on the route
+            matched_pireps = await self.bot.pireps_model.get_approved_pireps_by_route_and_date_range(departure, arrival, timeframe_hours)
+            
+            if not matched_pireps:
+                await interaction.followup.send(f"❌ No approved PIREPs found for route **{departure} ➔ {arrival}** in the last {timeframe_hours} hours.")
+                return
+                
+            # 2. Group by pilot
+            pilot_records = {}
+            for p in matched_pireps:
+                pilot_id = p['pilotid']
+                if pilot_id not in pilot_records:
+                    pilot_records[pilot_id] = {
+                        "name": p['pilot_name'],
+                        "callsign": p['callsign'],
+                        "ifuserid": p['ifuserid'],
+                        "ifc": p['ifc'],
+                        "pireps": []
+                    }
+                pilot_records[pilot_id]["pireps"].append(p)
+                
+            status_msg = await interaction.followup.send(f"🔍 Found {len(pilot_records)} unique pilots who participated. Fetching Infinite Flight landing statistics...")
+            
+            leaderboard_data = []
+            
+            for pilot_id, record in pilot_records.items():
+                ifuserid = record["ifuserid"]
+                
+                # Resolve ifuserid if missing
+                if not ifuserid:
+                    dummy_pirep = {"ifuserid": None, "ifc": record["ifc"]}
+                    ifuserid = await self.validation_service.resolve_ifuserid(dummy_pirep)
+                    await asyncio.sleep(2.1)  # Rate limit safety sleep after resolve
+                    
+                if not ifuserid:
+                    logger.warning(f"Could not resolve IF User ID for pilot {record['name']} ({record['callsign']})")
+                    continue
+                    
+                # Fetch recent flights
+                try:
+                    user_flights_data = await self.bot.if_api_manager.get_user_flights(ifuserid, hours=72)
+                    await asyncio.sleep(2.1)  # Rate limit safety sleep after flight fetch
+                except Exception as e:
+                    logger.error(f"API error getting flights for pilot {record['callsign']}: {e}")
+                    continue
+                    
+                if not user_flights_data or not user_flights_data.get('result'):
+                    continue
+                    
+                result_data = user_flights_data['result']
+                user_flights = result_data.get('data', []) if isinstance(result_data, dict) else result_data
+                
+                pilot_landing_scores = []
+                
+                for flight in user_flights:
+                    if not isinstance(flight, dict):
+                        continue
+                    # Match route
+                    if flight.get('originAirport') == departure and flight.get('destinationAirport') == arrival:
+                        landing_stats = flight.get('landingStats', [])
+                        if landing_stats:
+                            # Use the final landing (last in chronological order)
+                            final_landing = landing_stats[-1]
+                            score_data = self.validation_service.calculate_landing_score(final_landing)
+                            if score_data:
+                                pilot_landing_scores.append(score_data)
+                                
+                if pilot_landing_scores:
+                    # Average touchdown statistics and scores
+                    avg_score = sum(s['average'] for s in pilot_landing_scores) / len(pilot_landing_scores)
+                    avg_g = sum(s['g_force'] for s in pilot_landing_scores if s['g_force'] is not None) / len(pilot_landing_scores)
+                    avg_c = sum(s['centerline'] for s in pilot_landing_scores if s['centerline'] is not None) / len(pilot_landing_scores)
+                    avg_d = sum(s['dist_1k'] for s in pilot_landing_scores if s['dist_1k'] is not None) / len(pilot_landing_scores)
+                    avg_v = sum(s['vspeed_fpm'] for s in pilot_landing_scores if s['vspeed_fpm'] is not None) / len(pilot_landing_scores)
+                    
+                    # Generate stars and text label for average score
+                    if avg_score >= 4.75:
+                        stars = "⭐⭐⭐⭐⭐"
+                        rating_text = "Exceptional"
+                    elif avg_score >= 4.25:
+                        stars = "⭐⭐⭐⭐☆"
+                        rating_text = "Excellent"
+                    elif avg_score >= 3.50:
+                        stars = "⭐⭐⭐☆☆"
+                        rating_text = "Good"
+                    elif avg_score >= 2.50:
+                        stars = "⭐⭐☆☆☆"
+                        rating_text = "Acceptable"
+                    else:
+                        stars = "⭐☆☆☆☆"
+                        rating_text = "Needs Improvement"
+                        
+                    leaderboard_data.append({
+                        "name": record["name"],
+                        "callsign": record["callsign"],
+                        "average_score": avg_score,
+                        "stars": stars,
+                        "rating_text": rating_text,
+                        "g_force": avg_g,
+                        "centerline": avg_c,
+                        "dist_1k": avg_d,
+                        "vspeed_fpm": avg_v
+                    })
+                    
+            if not leaderboard_data:
+                await status_msg.edit(content=f"⚠️ No detailed landing statistics were found in Infinite Flight for any of the {len(pilot_records)} participating pilots.")
+                return
+                
+            # Sort leaderboard: score desc, vspeed asc (softer is better), g_force asc
+            leaderboard_data.sort(key=lambda x: (-x["average_score"], x["vspeed_fpm"], x["g_force"]))
+            
+            # Build embed
+            embed = discord.Embed(
+                title=f"🏆 Landing Challenge Leaderboard: {departure} ➔ {arrival}",
+                description=f"Standings for the event flown in the last {timeframe_hours} hours.\nRated on: G-Force, Centerline, Touchdown Zone, Ground Roll, and Landing FPM.",
+                color=discord.Color.from_rgb(100, 0, 49) # Qatari Maroon
+            )
+            
+            medals = ["🥇", "🥈", "🥉"]
+            
+            leaderboard_lines = []
+            for rank, entry in enumerate(leaderboard_data, 1):
+                medal = medals[rank - 1] if rank <= 3 else f"`#{rank:02d}`"
+                
+                line = (
+                    f"{medal} **{entry['name']} ({entry['callsign']})**\n"
+                    f"⭐ **Score:** {entry['stars']} ({entry['average_score']:.2f}/5.00 - {entry['rating_text']})\n"
+                    f"• **FPM:** -{round(entry['vspeed_fpm'])} FPM | **G-Force:** {entry['g_force']:.2f} G | **Centerline:** {entry['centerline']:.1f} m\n"
+                )
+                leaderboard_lines.append(line)
+                
+            # Embed content limits
+            chunk_size = 5
+            for i in range(0, len(leaderboard_lines), chunk_size):
+                chunk = leaderboard_lines[i:i+chunk_size]
+                embed.add_field(
+                    name=f"Standings (Cont.)" if i > 0 else "📊 Standings",
+                    value="\n".join(chunk),
+                    inline=False
+                )
+                
+            embed.set_footer(text=f"Total Participants: {len(leaderboard_data)} | Qatari Virtual Bot")
+            embed.timestamp = discord.utils.utcnow()
+            
+            await status_msg.delete()
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in landing_challenge command: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ An error occurred while generating the leaderboard: {str(e)}", ephemeral=True)
 
 async def setup(bot: 'MyBot'):
     await bot.add_cog(PirepValidator(bot))
