@@ -618,6 +618,28 @@ class PirepsModel:
         
         return await self.db.fetch_all(query, tuple(valid_flight_nums))
 
+    async def get_flight_number_leaderboard(self, flight_number: str) -> list[dict]:
+        """
+        Fetches the leaderboard based on the number of approved flights (status=1)
+        matching the specified flight number (case-insensitive).
+        """
+        query = """
+            SELECT 
+                p.pilotid,
+                pi.name AS pilot_name,
+                pi.callsign,
+                pi.discordid,
+                COUNT(p.id) AS flight_count,
+                MAX(p.id) AS last_pirep_id
+            FROM pireps p
+            INNER JOIN pilots pi ON p.pilotid = pi.id
+            WHERE p.status = 1 
+              AND LOWER(p.flightnum) = LOWER(%s)
+            GROUP BY p.pilotid, pi.name, pi.callsign, pi.discordid
+            ORDER BY flight_count DESC, last_pirep_id ASC
+        """
+        return await self.db.fetch_all(query, (flight_number,))
+
     async def get_top_days_pireps_over_10_min(self, limit: int = 3) -> list[dict]:
         """
         Gets the top days with the highest number of accepted PIREPs where flight time > 10 minutes.
