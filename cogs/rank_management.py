@@ -355,7 +355,12 @@ class RankManagement(commands.Cog):
     #     await interaction.response.send_message("\n".join(role_status), ephemeral=True)
 
     async def _check_executive_or_staff(self, interaction: discord.Interaction) -> bool:
-        """Custom check: Returns True if user is Executive (QRV001-QRV004) or Staff (QRV005-QRV019)"""
+        """Custom check: Returns True if user is Executive (QRV001-QRV004), Staff (QRV005-QRV019), or has the authorized role"""
+        if isinstance(interaction.user, discord.Member):
+            has_role = any(role.id == 1090752933433450516 for role in interaction.user.roles)
+            if has_role:
+                return True
+
         discord_id = str(interaction.user.id)
         is_executive = await self.bot.pilots_model.is_executive(discord_id)
         is_staff = await self.bot.pilots_model.is_staff(discord_id)
@@ -365,10 +370,10 @@ class RankManagement(commands.Cog):
     @app_commands.describe(callsign_digits="The 3 or 4 digits of the callsign (e.g., 101 for QRV101)")
     async def promocheck(self, interaction: discord.Interaction, callsign_digits: str):
         """Allows manual rank checking and updating with confirmation."""
-        # Check if user is Executive or Staff
+        # Check if user is Executive, Staff, or has the authorized role
         if not await self._check_executive_or_staff(interaction):
             await interaction.response.send_message(
-                "❌ You must be an Executive (QRV001-QRV004) or Staff (QRV005-QRV019) to use this command.",
+                "❌ You do not have the required permissions or roles to use this command.",
                 ephemeral=True
             )
             return
