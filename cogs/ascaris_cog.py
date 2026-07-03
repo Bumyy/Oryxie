@@ -214,13 +214,19 @@ class RouteSelectionDropdownView(ui.View):
         self.routes_list = routes_list
         self.original_user_id = original_user_id
         
+        seen_route_ids = set()
         select_options = []
         for r in routes_list[:25]:
+            r_id = r.get('route_id')
+            if not r_id or r_id in seen_route_ids:
+                continue
+            seen_route_ids.add(r_id)
+            
             label = str(r.get('fltnum', 'Unknown Route'))
             if len(label) > 100:
                 label = label[:97] + "..."
                 
-            select_options.append(discord.SelectOption(label=label, value=str(r['route_id']), description="Select this flight number"))
+            select_options.append(discord.SelectOption(label=label, value=str(r_id), description="Select this flight number"))
             
         select = ui.Select(placeholder="Select a route...", options=select_options, custom_id="acars_route_select")
         select.callback = self.route_select_callback
@@ -279,12 +285,18 @@ class AircraftDropdownView(ui.View):
         self.aircraft_options = aircraft_options
         self.original_user_id = original_user_id
         
+        seen_ids = set()
         select_options = []
         for ac in aircraft_options:
-            label = f"{ac['name']} ({ac['livery']})"
+            ac_id = ac.get('id')
+            if not ac_id or ac_id in seen_ids:
+                continue
+            seen_ids.add(ac_id)
+            
+            label = f"{ac.get('name', '')} ({ac.get('livery', '')})"
             if len(label) > 100:
                 label = label[:97] + "..."
-            value = str(ac['id'])
+            value = str(ac_id)
             select_options.append(discord.SelectOption(label=label, value=value))
         select_options.append(discord.SelectOption(label="📝 ROTW (or Events)", value="manual"))
         

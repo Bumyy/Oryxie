@@ -42,7 +42,9 @@ class RoutesModel:
             if rid not in routes_dict:
                 routes_dict[rid] = {"route_id": rid, "fltnum": row["fltnum"], "duration": row["duration"], "aircraft": []}
             if row["aircraft_icao"] is not None and row["aircraft_name"] is not None:
-                routes_dict[rid]["aircraft"].append({"icao": row["aircraft_icao"], "name": row["aircraft_name"]})
+                aircraft_info = {"icao": row["aircraft_icao"], "name": row["aircraft_name"]}
+                if aircraft_info not in routes_dict[rid]["aircraft"]:
+                    routes_dict[rid]["aircraft"].append(aircraft_info)
                 
         return list(routes_dict.values())
 
@@ -82,7 +84,9 @@ class RoutesModel:
             if rid not in routes_dict:
                 routes_dict[rid] = {"route_id": rid, "fltnum": row["fltnum"], "duration": row["duration"], "aircraft": []}
             if row["aircraft_id"] is not None:
-                routes_dict[rid]["aircraft"].append({"id": row["aircraft_id"], "icao": row["aircraft_icao"], "name": row["aircraft_name"], "livery": row["aircraft_livery"] or "Standard"})
+                aircraft_info = {"id": row["aircraft_id"], "icao": row["aircraft_icao"], "name": row["aircraft_name"], "livery": row["aircraft_livery"] or "Standard"}
+                if not any(ac["id"] == aircraft_info["id"] for ac in routes_dict[rid]["aircraft"]):
+                    routes_dict[rid]["aircraft"].append(aircraft_info)
                 
         return list(routes_dict.values())
 
@@ -120,7 +124,9 @@ class RoutesModel:
             if rid not in routes_dict:
                 routes_dict[rid] = {"route_id": rid, "fltnum": row["fltnum"], "duration": row["duration"], "aircraft": []}
             if row["aircraft_id"] is not None:
-                routes_dict[rid]["aircraft"].append({"id": row["aircraft_id"], "icao": row["aircraft_icao"], "name": row["aircraft_name"], "livery": row.get("aircraft_livery") or "Standard"})
+                aircraft_info = {"id": row["aircraft_id"], "icao": row["aircraft_icao"], "name": row["aircraft_name"], "livery": row.get("aircraft_livery") or "Standard"}
+                if not any(ac["id"] == aircraft_info["id"] for ac in routes_dict[rid]["aircraft"]):
+                    routes_dict[rid]["aircraft"].append(aircraft_info)
                 
         return list(routes_dict.values())
 
@@ -178,10 +184,12 @@ class RoutesModel:
             # Check if aircraft details are present (they could be None if the route
             # exists but has no associated aircraft due to the LEFT JOIN)
             if row["aircraft_icao"] is not None and row["aircraft_name"] is not None:
-                route_data["aircraft"].append({
+                aircraft_info = {
                     "icao": row["aircraft_icao"],
                     "name": row["aircraft_name"]
-                })
+                }
+                if aircraft_info not in route_data["aircraft"]:
+                    route_data["aircraft"].append(aircraft_info)
         
         return route_data
 
