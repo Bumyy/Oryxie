@@ -235,7 +235,7 @@ class MissionDispatcherCog(commands.Cog):
         raw_routes = await self._get_routes_from_dep(dep_input, arr_icao)
         
         if not raw_routes:
-            await interaction.followup.send(f"❌ No routes found from **{dep_input}** to **{arr_icao}** in the database.", ephemeral=True)
+            await interaction.edit_original_response(content=f"❌ No routes found from **{dep_input}** to **{arr_icao}** in the database.")
             return
 
         # Group raw database rows by route_id
@@ -266,10 +266,9 @@ class MissionDispatcherCog(commands.Cog):
             await self.handle_route_selection(interaction, mode, route)
         else:
             view = MissionRouteSelectView(self, mode, dep_input, routes)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Selected departure: **{dep_input}**. Choose a specific route/flight:", 
-                view=view,
-                ephemeral=True
+                view=view
             )
 
     async def handle_route_selection(self, interaction: discord.Interaction, mode: str, route: dict):
@@ -395,10 +394,22 @@ class MissionDispatcherCog(commands.Cog):
             color=MISSION_CONFIG["EMBED_COLOR"]
         )
         embed.set_footer(text=MISSION_CONFIG["FOOTER_TEXT"])
-        embed.set_image(url=MISSION_CONFIG["IMAGE_URL"])
         
         view = MissionDispatcherView(self)
-        await interaction.channel.send(embed=embed, view=view)
+        
+        logo_path = MISSION_CONFIG.get("LOGO_PATH", "assets/WorldCupQRV.png")
+        print(f"[DEBUG] Checking logo path for mission panel: {logo_path}")
+        print(f"[DEBUG] Absolute path: {os.path.abspath(logo_path)}")
+        
+        if os.path.exists(logo_path):
+            print("[DEBUG] Logo file found. Attaching to embed.")
+            file = discord.File(logo_path, filename="logo.png")
+            embed.set_thumbnail(url="attachment://logo.png")
+            await interaction.channel.send(embed=embed, view=view, file=file)
+        else:
+            print(f"[DEBUG] Logo file NOT found at {logo_path}. Sending embed without thumbnail.")
+            await interaction.channel.send(embed=embed, view=view)
+            
         await interaction.followup.send("✅ Mission panel posted.", ephemeral=True)
 
 
