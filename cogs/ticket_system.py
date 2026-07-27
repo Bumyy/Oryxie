@@ -106,6 +106,17 @@ class TicketView(discord.ui.View):
         except Exception as e:
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
 
+    @discord.ui.button(label='Live Fleet Support', style=discord.ButtonStyle.secondary, emoji='🌐', custom_id='live_fleet_support')
+    async def live_fleet_support(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            view = ConfirmTicketView('Live Fleet Support')
+            await interaction.response.send_message(
+                "You are going to open a **Live Fleet Support** ticket. Please tap confirm button to open.",
+                view=view, ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
+
 class ConfirmTicketView(discord.ui.View):
     def __init__(self, ticket_type):
         super().__init__(timeout=60)
@@ -541,7 +552,7 @@ class TicketSystem(commands.Cog):
             
             embed.add_field(
                 name="Ticket Types:",
-                value="🛠️ **General Support** - General help and questions\n✈️ **Pirep Support** - Flight report issues\n📋 **LOA** - Leave of Absence requests",
+                value="🛠️ **General Support** - General help and questions\n✈️ **Pirep Support** - Flight report issues\n📋 **LOA** - Leave of Absence requests\n🌐 **Live Fleet Support** - Live fleet flight support and issues",
                 inline=False
             )
             embed.add_field(
