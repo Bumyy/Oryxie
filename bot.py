@@ -178,6 +178,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.ascaris_cog')
             await self.load_extension('cogs.leaderboard')
           #  await self.load_extension('cogs.hajj_operations')
+            await self.load_extension('cogs.notification_cog')
             
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
