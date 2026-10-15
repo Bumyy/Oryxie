@@ -20,6 +20,8 @@ from database.mission_module import MissionDB
 from database.va_data_model import RankModel, AircraftModel, MultiplierModel
 from api.manager import InfiniteFlightAPIManager
 from api.crewcenter_manager import CrewCenterAPIManager
+from api.if_live_manager import IFLiveManager
+from database.if_live_tokens_model import IFLiveTokensModel
 try:
     from services.ai_service import AIService
 except ImportError:
@@ -61,6 +63,8 @@ class MyBot(commands.Bot):
         self.multiplier_model: MultiplierModel = None
         self.if_api_manager: InfiniteFlightAPIManager = None
         self.cc_api_manager: CrewCenterAPIManager = None
+        self.if_live_manager: IFLiveManager = None
+        self.if_live_tokens_model: IFLiveTokensModel = None
         self.aircraft_name_map = {}
         self.livery_name_map = {}
         self.livery_cache = {}
@@ -124,11 +128,17 @@ class MyBot(commands.Bot):
             await self.cc_api_manager.connect()
             print("Crew Center API Manager initialized.")
 
+            self.if_live_tokens_model = IFLiveTokensModel(self.db_manager)
+            self.if_live_manager = IFLiveManager(self)
+            print("IF Live Manager initialized.")
+
             aircraft_data = await self.if_api_manager.get_aircraft()
         except Exception as e:
             print(f"[IF API ERROR] {e}")
             self.if_api_manager = None
             self.cc_api_manager = None
+            self.if_live_manager = None
+            self.if_live_tokens_model = None
             aircraft_data = None
 
         if aircraft_data and aircraft_data.get('result'):
@@ -226,6 +236,9 @@ class MyBot(commands.Bot):
 
         if self.cc_api_manager:
             await self.cc_api_manager.close()
+
+        if self.if_live_manager:
+            await self.if_live_manager.close()
 
 async def start_bot():
     """
