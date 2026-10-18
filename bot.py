@@ -189,7 +189,9 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.leaderboard')
           #  await self.load_extension('cogs.hajj_operations')
             await self.load_extension('cogs.notification_cog')
-            
+          # Infinite Flight Live flight requests
+            await self.load_extension('cogs.request_flight_cog')
+            await self.load_extension('cogs.available_aircraft_cog')
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
            # await self.load_extension('cogs.ayush')
@@ -218,6 +220,7 @@ class MyBot(commands.Bot):
             synced = await self.tree.sync()
             print(f"Synced {len(synced)} slash command(s) globally.")
             logging.info(f"Synced {len(synced)} slash command(s) globally.")
+            print("Registered commands:", [cmd.name for cmd in self.tree.get_commands()])
         except Exception as e:
             print(f"Failed to sync slash commands globally: {e}")
             logging.error(f"Failed to sync slash commands globally: {e}")

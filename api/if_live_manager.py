@@ -604,38 +604,73 @@ class IFLiveManager:
         )
         return token_data
 
+        
     async def get_client(self, pilot_id: int) -> IFLiveClient:
-        token_row = await self.bot.if_live_tokens_model.get_by_pilot_id(pilot_id)
+        token_row = await self.bot.if_live_tokens_model.get_by_pilot_id(1)
+
         if token_row is None or not token_row.get("refresh_token"):
             raise IFLiveAuthError(401, 0, "No stored token for this pilot")
 
         expires_at = token_row.get("expires_at")
         if expires_at:
             if isinstance(expires_at, str):
-                expires_at = datetime.fromisoformat(str(expires_at))
+                expires_at = datetime.fromisoformat(expires_at)
+
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            if expires_at < now + timedelta(seconds=60):
-                await self._refresh_token(token_row)
-                token_row = await self.bot.if_live_tokens_model.get_by_pilot_id(pilot_id)
 
-        return IFLiveClient(token_row["access_token"], base_url=self.api_base_url)
+            if expires_at < datetime.now(timezone.utc) + timedelta(seconds=60):
+                await self._refresh_token(token_row)
+                token_row = await self.bot.if_live_tokens_model.get_by_pilot_id(1)
+
+                if token_row is None or not token_row.get("access_token"):
+                    raise IFLiveAuthError(401, 0, "Token refresh failed")
+
+        return IFLiveClient(
+            token_row["access_token"],
+            base_url=self.api_base_url,
+        )
+
 
     async def _refresh_token(self, token_row: dict) -> None:
         refresh_token = token_row.get("refresh_token", "")
         if not refresh_token:
-            raise IFLiveAuthError(401, 0, "No refresh token")
-        token_data = await self.refresh_access_token(refresh_token)
+            raise IFLiveAuthError(
+                401, 0,
+                "No refresh token; re-authorization is required."
+            )
+
+        try:
+            token_data = await self.refresh_access_token(refresh_token)
+        except IFLiveAuthError as exc:
+            detail = str(exc).lower()
+            if any(term in detail for term in (
+                "invalid_grant",
+                "refresh token",
+                "no longer valid",
+                "revoked",
+            )):
+                raise IFLiveAuthError(
+                    401, 0,
+                    "Refresh token was rejected. Re-authorization is required "
+                    "unless Infinite Flight supports an access-token recovery flow."
+                ) from exc
+            raise
+
         expires_in = token_data.get("expires_in", 1800)
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=int(expires_in)
+        )
+
         await self.bot.if_live_tokens_model.update_token(
             pilot_id=token_row["pilot_id"],
             access_token=token_data["access_token"],
-            refresh_token=token_data.get("refresh_token", refresh_token),
+            refresh_token=token_data.get("refresh_token") or refresh_token,
             expires_at=expires_at,
-            scope=token_data.get("scope", ""),
+            scope=token_data.get("scope", token_row.get("scope", "")),
         )
 
     async def revoke(self, pilot_id: int) -> None:
         await self.bot.if_live_tokens_model.delete_token(pilot_id)
+
+
