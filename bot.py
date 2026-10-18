@@ -192,6 +192,7 @@ class MyBot(commands.Bot):
           # Infinite Flight Live flight requests
             await self.load_extension('cogs.request_flight_cog')
             await self.load_extension('cogs.available_aircraft_cog')
+            await self.load_extension("cogs.remove_assignment_cog")
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
            # await self.load_extension('cogs.ayush')

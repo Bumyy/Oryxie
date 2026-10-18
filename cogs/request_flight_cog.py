@@ -1,4 +1,4 @@
-"""Discord command for requesting scheduled routes on Qatari Virtual aircraft."""
+﻿"""Discord command for requesting scheduled routes on Qatari Virtual aircraft."""
 
 import asyncio
 import logging
