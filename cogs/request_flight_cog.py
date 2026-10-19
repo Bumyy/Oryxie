@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 TOKEN_OWNER_ID = 1
 FLEET_CACHE_SECONDS = 300
-HUB_ICAO = "OTHH"
+DEFAULT_HUB_ICAO = "OTHH"
 
 AIRCRAFT_MODELS = {
     "A7-ANN": "A350-1000",
@@ -58,6 +58,31 @@ AIRCRAFT_MODELS = {
     "IF-KSKI": "787-9",
 }
 
+# Aircraft registration -> airline name.
+# Registrations not listed here default to Qatar Airways.
+AIRCRAFT_AIRLINES = {
+    "B-LRO": "Cathay Pacific",
+    "EC-ORE": "Iberia",
+    "IF-KSKI": "British Airways",
+    "IF-MPSK": "LATAM",
+    "IF-FXQK": "JAL",
+    "VH-ZNF": "Qantas",
+    "N762AN": "American Airlines",
+    "N302NY": "American Airlines",
+}
+
+# Airline name -> home hub ICAO.
+AIRLINE_HUBS = {
+    "Qatar Airways": "OTHH",
+    "Cathay Pacific": "VHHH",
+    "Iberia": "LEMD",
+    "British Airways": "EGLL",
+    "LATAM": "SCEL",
+    "JAL": "RJTT",
+    "Qantas": "YSSY",
+    "American Airlines": "KDFW",
+}
+
 RULES = (
     "**Qatari Virtual flight rules**\n"
     "• If an aircraft is stopped in the air, you have 24 hours to land.\n"
@@ -71,6 +96,12 @@ def _get(obj, key, default=None):
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _registration(aircraft):
+    return str(
+        _get(aircraft, "registration", "") or ""
+    ).strip().upper()
 
 
 def _crew_user_id(member):
@@ -95,11 +126,19 @@ def _aircraft_model(aircraft):
         if value and str(value).strip():
             return str(value).strip()
 
-    registration = str(
-        _get(aircraft, "registration", "") or ""
-    ).strip().upper()
+    return AIRCRAFT_MODELS.get(_registration(aircraft), "")
 
-    return AIRCRAFT_MODELS.get(registration, "")
+
+def _airline_name(aircraft):
+    """Return the configured airline for an aircraft registration."""
+    registration = _registration(aircraft)
+    return AIRCRAFT_AIRLINES.get(registration, "Qatar Airways")
+
+
+def _aircraft_hub(aircraft):
+    """Return the configured home hub for the aircraft's airline."""
+    airline = _airline_name(aircraft)
+    return AIRLINE_HUBS.get(airline, DEFAULT_HUB_ICAO)
 
 
 def _aircraft_category(aircraft):
@@ -117,7 +156,10 @@ def _aircraft_category(aircraft):
 
 
 def _model_label(aircraft):
-    return _aircraft_model(aircraft) or "Model unknown"
+    """Display airline and model together under the registration."""
+    airline = _airline_name(aircraft)
+    model = _aircraft_model(aircraft) or "Model unknown"
+    return f"{airline} {model}"
 
 
 def _state_label(position):
@@ -234,12 +276,13 @@ def _connected_routes(first, second):
     )
 
 
-def _build_connected_route_chain(schedules, start_index):
+def _build_connected_route_chain(schedules, start_index, hub_icao):
     """
     Build the connected, unassigned route chain.
 
-    The chain ends immediately after including a route whose destination
-    is OTHH. It never continues with the next departure from OTHH.
+    The chain ends immediately after including a route that returns to the
+    selected airline's hub. It does not continue with the next departure
+    from that hub.
     """
     if start_index < 0 or start_index >= len(schedules):
         return []
@@ -248,6 +291,8 @@ def _build_connected_route_chain(schedules, start_index):
 
     if _is_unavailable_status(first) or (_get(first, "crew", []) or []):
         return []
+
+    hub_icao = str(hub_icao or DEFAULT_HUB_ICAO).strip().upper()
 
     routes = []
     previous = None
@@ -277,8 +322,8 @@ def _build_connected_route_chain(schedules, start_index):
 
         routes.append(candidate)
 
-        # Include the return-to-hub route, then stop.
-        if destination == HUB_ICAO:
+        # Include the route returning to this airline's hub, then stop.
+        if destination == hub_icao:
             break
 
         previous = candidate
@@ -337,7 +382,7 @@ class AircraftCategorySelect(discord.ui.Select):
         await interaction.response.edit_message(
             content=(
                 f"**{category} aircraft** — choose a registration. "
-                "The model is shown in each option."
+                "The airline and model are shown in each option."
             ),
             view=AircraftListView(
                 self.cog, self.pilot, selected, category, 0
@@ -570,6 +615,8 @@ class ClaimRouteView(discord.ui.View):
         registration = str(
             _get(self.aircraft, "registration", "Aircraft")
         )
+        hub_icao = _aircraft_hub(self.aircraft)
+        airline = _airline_name(self.aircraft)
 
         try:
             manager = getattr(self.cog.bot, "if_live_manager", None)
@@ -628,6 +675,7 @@ class ClaimRouteView(discord.ui.View):
                 current_routes = _build_connected_route_chain(
                     schedules,
                     claim_index,
+                    hub_icao,
                 )
 
                 if _route_ids(current_routes) != preview_ids:
@@ -696,10 +744,10 @@ class ClaimRouteView(discord.ui.View):
                     if assigned and not _connected_routes(assigned[-1], current):
                         break
 
-                    # Never assign a route after the return-to-hub route.
+                    # Never assign a route after returning to this airline's hub.
                     if assigned and str(
                         _get(assigned[-1], "destination_icao", "") or ""
-                    ).strip().upper() == HUB_ICAO:
+                    ).strip().upper() == hub_icao:
                         break
 
                     updated = await client.assign_crew(
@@ -742,10 +790,10 @@ class ClaimRouteView(discord.ui.View):
                     assigned.append(current)
                     failed_route = None
 
-                    # Include the route arriving at OTHH, then stop.
+                    # Include the route arriving at the airline hub, then stop.
                     if str(
                         _get(current, "destination_icao", "") or ""
-                    ).strip().upper() == HUB_ICAO:
+                    ).strip().upper() == hub_icao:
                         break
 
             if not assigned:
@@ -793,6 +841,7 @@ class ClaimRouteView(discord.ui.View):
                 f"Pilot: **{pilot_name}**\n"
                 f"Aircraft: **{registration}** "
                 f"({_model_label(self.aircraft)})\n"
+                f"Airline hub: **{airline} · {hub_icao}**\n"
                 f"Route(s):\n{route_lines}{extra}\n\n"
                 f"{RULES}",
                 allowed_mentions=discord.AllowedMentions(
@@ -973,9 +1022,7 @@ class RequestFlightCog(commands.Cog):
 
             aircraft = [
                 item for item in aircraft
-                if str(
-                    _get(item, "registration", "")
-                ).strip().upper() not in retired_registrations
+                if _registration(item) not in retired_registrations
             ]
 
             if not aircraft:
@@ -1047,6 +1094,8 @@ class RequestFlightCog(commands.Cog):
             registration = _get(
                 aircraft, "registration", "Aircraft"
             )
+            airline = _airline_name(aircraft)
+            hub_icao = _aircraft_hub(aircraft)
 
             if not schedules:
                 await interaction.edit_original_response(
@@ -1078,6 +1127,7 @@ class RequestFlightCog(commands.Cog):
             routes_to_assign = _build_connected_route_chain(
                 schedules,
                 claim_index,
+                hub_icao,
             )
 
             if not routes_to_assign:
@@ -1114,6 +1164,7 @@ class RequestFlightCog(commands.Cog):
                 description=(
                     f"**Aircraft model:** {_model_label(aircraft)}\n"
                     f"**Registration:** {registration}\n"
+                    f"**Airline hub:** {airline} · {hub_icao}\n"
                     f"**Routes to be assigned:** {len(routes_to_assign)}\n\n"
                     f"**Proposed route chain**\n{route_lines}\n\n"
                     "Confirm only if you want every route listed above "
