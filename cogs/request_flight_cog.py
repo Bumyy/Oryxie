@@ -1,8 +1,9 @@
-﻿"""Discord command for requesting scheduled routes on Qatari Virtual aircraft."""
+"""Command to request an Infinite Flight flight assignment from the VA fleet and schedule."""
 
 import asyncio
 import logging
 import os
+import re
 import time
 
 import discord
@@ -13,8 +14,14 @@ log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 TOKEN_OWNER_ID = 1
+
 FLEET_CACHE_SECONDS = 300
+SCHEDULE_CACHE_SECONDS = 1800
+MAX_BOOKED_AIRCRAFT = 2
+SCHEDULES_PER_SCAN = 3
+VIEW_TIMEOUT_SECONDS = 180
 DEFAULT_HUB_ICAO = "OTHH"
+RETIRED_REGISTRATIONS = {"A7BFC", "A7BFA"}
 
 AIRCRAFT_MODELS = {
     "A7-ANN": "A350-1000",
@@ -58,8 +65,6 @@ AIRCRAFT_MODELS = {
     "IF-KSKI": "787-9",
 }
 
-# Aircraft registration -> airline name.
-# Registrations not listed here default to Qatar Airways.
 AIRCRAFT_AIRLINES = {
     "B-LRO": "Cathay Pacific",
     "EC-ORE": "Iberia",
@@ -71,7 +76,6 @@ AIRCRAFT_AIRLINES = {
     "N302NY": "American Airlines",
 }
 
-# Airline name -> home hub ICAO.
 AIRLINE_HUBS = {
     "Qatar Airways": "OTHH",
     "Cathay Pacific": "VHHH",
@@ -88,27 +92,25 @@ RULES = (
     "• If an aircraft is stopped in the air, you have 24 hours to land.\n"
     "• If parked at a hub airport, you have 6 hours from assignment to take off.\n"
     "• If parked at a non-hub airport, you have 12 hours from assignment to take off.\n"
-    "• If overdue, an admin may take over the flight or make the assignment available to other pilots."
+    "• If overdue, an admin may take over the flight or make it available to other pilots.\n\n"
+    "⚠️ Each pilot may be assigned to a maximum of **2 distinct aircraft**. "
+    "If you are accidentally assigned to 3 aircraft, contact a Live Admin immediately."
 )
 
 
 def _get(obj, key, default=None):
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
+    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
 
 def _registration(aircraft):
-    return str(
-        _get(aircraft, "registration", "") or ""
-    ).strip().upper()
+    return str(_get(aircraft, "registration", "") or "").strip().upper()
 
 
 def _crew_user_id(member):
     for key in ("userId", "user_id", "ifuserid", "id"):
         value = _get(member, key)
         if value not in (None, ""):
-            return str(value)
+            return str(value).strip()
     return ""
 
 
@@ -130,15 +132,11 @@ def _aircraft_model(aircraft):
 
 
 def _airline_name(aircraft):
-    """Return the configured airline for an aircraft registration."""
-    registration = _registration(aircraft)
-    return AIRCRAFT_AIRLINES.get(registration, "Qatar Airways")
+    return AIRCRAFT_AIRLINES.get(_registration(aircraft), "Qatar Airways")
 
 
 def _aircraft_hub(aircraft):
-    """Return the configured home hub for the aircraft's airline."""
-    airline = _airline_name(aircraft)
-    return AIRLINE_HUBS.get(airline, DEFAULT_HUB_ICAO)
+    return AIRLINE_HUBS.get(_airline_name(aircraft), DEFAULT_HUB_ICAO)
 
 
 def _aircraft_category(aircraft):
@@ -156,10 +154,7 @@ def _aircraft_category(aircraft):
 
 
 def _model_label(aircraft):
-    """Display airline and model together under the registration."""
-    airline = _airline_name(aircraft)
-    model = _aircraft_model(aircraft) or "Model unknown"
-    return f"{airline} {model}"
+    return f"{_airline_name(aircraft)} {_aircraft_model(aircraft) or 'Model unknown'}"
 
 
 def _state_label(position):
@@ -172,7 +167,7 @@ def _state_label(position):
         5: "Maintenance",
     }
 
-    raw = _get(position, "state", None)
+    raw = _get(position, "state")
 
     try:
         return labels.get(int(raw), f"Unknown ({raw})")
@@ -180,43 +175,33 @@ def _state_label(position):
         return str(raw if raw is not None else "Unknown")
 
 
-def _route_text(schedule):
-    callsign = _get(schedule, "callsign") or "Callsign unavailable from API"
-    origin = _get(schedule, "origin_icao") or "???"
-    destination = _get(schedule, "destination_icao") or "???"
-
+def _route_text(route):
+    callsign = _get(route, "callsign") or "Callsign unavailable from API"
+    origin = _get(route, "origin_icao") or "???"
+    destination = _get(route, "destination_icao") or "???"
     return f"**{callsign}** — {origin} → {destination}"
 
 
-def _sequence(schedule):
+def _sequence(route):
     try:
-        return int(_get(schedule, "sequence", 0))
+        return int(_get(route, "sequence", 0))
     except (TypeError, ValueError):
         return 0
 
 
-def _sorted_schedules(schedules):
-    return sorted(schedules or [], key=_sequence)
-
-
-def _route_status_number(schedule):
+def _is_unavailable_status(route):
     try:
-        return int(_get(schedule, "status", None))
+        return int(_get(route, "status")) in {9, 11}
     except (TypeError, ValueError):
-        return None
-
-
-def _is_unavailable_status(schedule):
-    # Status values used by this cog: CANCELLED=9, ARRIVED=11.
-    return _route_status_number(schedule) in {9, 11}
+        return False
 
 
 def _active_schedules(schedules):
-    """Deduplicate schedule IDs and remove cancelled/arrived history rows."""
+    """Deduplicate schedules and remove cancelled or completed routes."""
     by_id = {}
     no_id = []
 
-    for route in _sorted_schedules(schedules):
+    for route in sorted(schedules or [], key=_sequence):
         route_id = _get(route, "id")
 
         if route_id in (None, ""):
@@ -224,35 +209,24 @@ def _active_schedules(schedules):
             continue
 
         key = str(route_id)
-        previous = by_id.get(key)
+        old = by_id.get(key)
 
-        if previous is None:
+        if old is None:
             by_id[key] = route
-            continue
-
-        prev_terminal = _is_unavailable_status(previous)
-        this_terminal = _is_unavailable_status(route)
-
-        if this_terminal and not prev_terminal:
+        elif _is_unavailable_status(route) and not _is_unavailable_status(old):
             by_id[key] = route
-        elif this_terminal == prev_terminal:
-            if (
-                not (_get(previous, "crew", []) or [])
-                and (_get(route, "crew", []) or [])
-            ):
+        elif _is_unavailable_status(route) == _is_unavailable_status(old):
+            if not (_get(old, "crew", []) or []) and (_get(route, "crew", []) or []):
                 by_id[key] = route
-
-    unique = list(by_id.values()) + no_id
 
     return [
         route
-        for route in _sorted_schedules(unique)
+        for route in sorted(list(by_id.values()) + no_id, key=_sequence)
         if not _is_unavailable_status(route)
     ]
 
 
 def _next_claimable_index(schedules):
-    """Find the first unassigned route in schedule order."""
     for index, route in enumerate(schedules):
         if not (_get(route, "crew", []) or []):
             return index
@@ -260,79 +234,105 @@ def _next_claimable_index(schedules):
 
 
 def _connected_routes(first, second):
-    """True when the second route starts at the first route's destination."""
-    first_destination = str(
+    destination = str(
         _get(first, "destination_icao", "") or ""
     ).strip().upper()
-
-    second_origin = str(
+    origin = str(
         _get(second, "origin_icao", "") or ""
     ).strip().upper()
 
-    return bool(
-        first_destination
-        and second_origin
-        and first_destination == second_origin
-    )
+    return bool(destination and origin and destination == origin)
 
 
 def _build_connected_route_chain(schedules, start_index, hub_icao):
     """
-    Build the connected, unassigned route chain.
+    Build a consecutive chain of unassigned routes that ends at the airline hub.
 
-    The chain ends immediately after including a route that returns to the
-    selected airline's hub. It does not continue with the next departure
-    from that hub.
+    The chain is rejected if a route is assigned, completed, cancelled, missing
+    airport codes, disconnected from the previous route, or fails to return
+    to the hub.
     """
     if start_index < 0 or start_index >= len(schedules):
         return []
 
-    first = schedules[start_index]
-
-    if _is_unavailable_status(first) or (_get(first, "crew", []) or []):
-        return []
-
-    hub_icao = str(hub_icao or DEFAULT_HUB_ICAO).strip().upper()
-
+    hub = str(hub_icao or DEFAULT_HUB_ICAO).strip().upper()
     routes = []
     previous = None
 
-    for candidate in schedules[start_index:]:
-        if _is_unavailable_status(candidate):
-            break
-
-        if _get(candidate, "crew", []) or []:
-            break
+    for route in schedules[start_index:]:
+        if _is_unavailable_status(route) or (_get(route, "crew", []) or []):
+            return []
 
         origin = str(
-            _get(candidate, "origin_icao", "") or ""
+            _get(route, "origin_icao", "") or ""
         ).strip().upper()
-
         destination = str(
-            _get(candidate, "destination_icao", "") or ""
+            _get(route, "destination_icao", "") or ""
         ).strip().upper()
 
-        # An incomplete route cannot safely be chained.
         if not origin or not destination:
-            break
+            return []
 
-        # Every route after the first must connect to the previous route.
-        if previous is not None and not _connected_routes(previous, candidate):
-            break
+        if previous is not None and not _connected_routes(previous, route):
+            return []
 
-        routes.append(candidate)
+        routes.append(route)
 
-        # Include the route returning to this airline's hub, then stop.
-        if destination == hub_icao:
-            break
+        if destination == hub:
+            return routes
 
-        previous = candidate
+        previous = route
 
-    return routes
+    return []
 
 
 def _route_ids(routes):
     return [str(_get(route, "id")) for route in routes]
+
+
+def _route_option_label(routes):
+    callsigns = list(dict.fromkeys(
+        str(_get(route, "callsign", "") or "").strip()
+        for route in routes
+        if _get(route, "callsign")
+    ))
+    if not callsigns:
+        callsign_label = "Scheduled route"
+    elif len(callsigns) == 1:
+        callsign_label = callsigns[0]
+    else:
+        parts = [re.fullmatch(r"(.*?)(\d+)", callsign) for callsign in callsigns]
+        if all(parts) and len({part.group(1) for part in parts if part}) == 1:
+            callsign_label = (
+                f"{callsigns[0]} (and "
+                f"{', '.join(part.group(2) for part in parts[1:])})"
+            )
+        else:
+            callsign_label = f"{callsigns[0]} (and {', '.join(callsigns[1:])})"
+
+    airports = [
+        str(_get(routes[0], "origin_icao", "") or "???").strip().upper()
+    ]
+    airports.extend(
+        str(_get(route, "destination_icao", "") or "???").strip().upper()
+        for route in routes
+    )
+    return f"{callsign_label} - {'-'.join(airports)}"[:100]
+
+
+def _route_start_key(route):
+    return (
+        str(_get(route, "callsign", "") or "").strip().casefold(),
+        str(_get(route, "origin_icao", "") or "").strip().upper(),
+        str(_get(route, "destination_icao", "") or "").strip().upper(),
+    )
+
+
+def _route_chain_description(routes):
+    return " → ".join(
+        str(_get(route, "destination_icao", "") or "???").upper()
+        for route in routes
+    )
 
 
 class AircraftCategorySelect(discord.ui.Select):
@@ -344,15 +344,14 @@ class AircraftCategorySelect(discord.ui.Select):
         categories = [
             name
             for name in ("Airbus", "Boeing", "Other")
-            if any(_aircraft_category(item) == name for item in aircraft)
+            if any(_aircraft_category(a) == name for a in aircraft)
         ]
 
         options = [
             discord.SelectOption(
                 label=name,
                 description=(
-                    f"{sum(_aircraft_category(item) == name for item in aircraft)} "
-                    "aircraft"
+                    f"{sum(_aircraft_category(a) == name for a in aircraft)} aircraft"
                 ),
             )
             for name in categories
@@ -365,79 +364,71 @@ class AircraftCategorySelect(discord.ui.Select):
             options=options,
         )
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction):
         if str(interaction.user.id) != str(self.pilot.get("discordid")):
             await interaction.response.send_message(
-                "Only the pilot who requested this list can use it.",
+                "Only the requesting pilot can use this menu.",
                 ephemeral=True,
             )
             return
 
         category = self.values[0]
         selected = [
-            item for item in self.aircraft
-            if _aircraft_category(item) == category
+            aircraft
+            for aircraft in self.aircraft
+            if _aircraft_category(aircraft) == category
         ]
 
         await interaction.response.edit_message(
             content=(
                 f"**{category} aircraft** — choose a registration. "
-                "The airline and model are shown in each option."
+                "Airline and model are shown."
             ),
-            view=AircraftListView(
-                self.cog, self.pilot, selected, category, 0
-            ),
+            view=AircraftListView(self.cog, self.pilot, selected, category),
         )
 
 
 class AircraftListSelect(discord.ui.Select):
-    def __init__(self, cog, pilot, aircraft, category, page):
+    def __init__(self, cog, pilot, aircraft, category, page=0):
         self.cog = cog
         self.pilot = pilot
         self.aircraft = aircraft
         self.category = category
         self.page = page
 
-        start = page * 25
-        page_aircraft = aircraft[start:start + 25]
-        options = []
-
-        for item in page_aircraft:
-            registration = str(
-                _get(item, "registration") or "Unknown registration"
+        page_items = aircraft[page * 25:(page + 1) * 25]
+        options = [
+            discord.SelectOption(
+                label=(_registration(item) or "Unknown")[:100],
+                description=_model_label(item)[:100],
+                value=str(_get(item, "id")),
             )
-
-            options.append(
-                discord.SelectOption(
-                    label=registration[:100],
-                    description=_model_label(item)[:100],
-                    value=str(_get(item, "id")),
-                )
-            )
-
-        pages = max(1, (len(aircraft) + 24) // 25)
+            for item in page_items
+            if _get(item, "id") not in (None, "")
+        ]
 
         super().__init__(
             placeholder=(
                 f"Choose {category} registration "
-                f"(page {page + 1}/{pages})…"
+                f"(page {page + 1}/{max(1, (len(aircraft) + 24) // 25)})…"
             ),
             min_values=1,
             max_values=1,
             options=options,
         )
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction):
         if str(interaction.user.id) != str(self.pilot.get("discordid")):
             await interaction.response.send_message(
-                "Only the pilot who requested this list can use it.",
+                "Only the requesting pilot can use this menu.",
                 ephemeral=True,
             )
             return
 
         aircraft = next(
             (
-                item for item in self.aircraft
+                item
+                for item in self.aircraft
                 if str(_get(item, "id")) == self.values[0]
             ),
             None,
@@ -445,21 +436,17 @@ class AircraftListSelect(discord.ui.Select):
 
         if aircraft is None:
             await interaction.response.send_message(
-                "I couldn't find that aircraft. Run `/request-flight` again.",
+                "Aircraft not found. Run `/request-flight` again.",
                 ephemeral=True,
             )
             return
 
-        await self.cog.show_aircraft_route(
-            interaction,
-            self.pilot,
-            aircraft,
-        )
+        await self.cog.show_aircraft_route(interaction, self.pilot, aircraft)
 
 
 class AircraftListView(discord.ui.View):
     def __init__(self, cog, pilot, aircraft, category, page=0):
-        super().__init__(timeout=180)
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
 
         self.add_item(
             AircraftListSelect(cog, pilot, aircraft, category, page)
@@ -515,29 +502,24 @@ class AircraftPageButton(discord.ui.Button):
         self.page = page
         self.back = back
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction):
         if str(interaction.user.id) != str(self.pilot.get("discordid")):
             await interaction.response.send_message(
-                "Only the pilot who requested this list can use it.",
+                "Only the requesting pilot can use this menu.",
                 ephemeral=True,
             )
             return
 
         if self.back:
+            aircraft = self.cog._aircraft_cache or self.aircraft
+
             await interaction.response.edit_message(
                 content="Choose an aircraft category:",
-                view=AircraftSelectView(
-                    self.cog,
-                    self.pilot,
-                    self.cog._aircraft_cache or self.aircraft,
-                ),
+                view=AircraftSelectView(self.cog, self.pilot, aircraft),
             )
         else:
             await interaction.response.edit_message(
-                content=(
-                    f"**{self.category} aircraft** — "
-                    "choose a registration:"
-                ),
+                content=f"**{self.category} aircraft** — choose a registration:",
                 view=AircraftListView(
                     self.cog,
                     self.pilot,
@@ -550,8 +532,271 @@ class AircraftPageButton(discord.ui.Button):
 
 class AircraftSelectView(discord.ui.View):
     def __init__(self, cog, pilot, aircraft):
-        super().__init__(timeout=180)
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
         self.add_item(AircraftCategorySelect(cog, pilot, aircraft))
+
+
+class RouteStartSelect(discord.ui.Select):
+    """Let the pilot choose which valid scheduled route chain to request."""
+
+    def __init__(self, cog, pilot, aircraft, schedules, choices, page=0):
+        self.cog = cog
+        self.pilot = pilot
+        self.aircraft = aircraft
+        self.schedules = schedules
+        self.choices = choices
+        self.page = page
+
+        page_items = choices[page * 25:(page + 1) * 25]
+        options = []
+
+        for start_index, routes in page_items:
+            options.append(
+                discord.SelectOption(
+                    label=_route_option_label(routes),
+                    description=(
+                        f"{len(routes)} route(s) · "
+                        f"Returns to {_aircraft_hub(aircraft)} · "
+                        f"{_route_chain_description(routes)}"
+                    )[:100],
+                    value=str(start_index),
+                )
+            )
+
+        super().__init__(
+            placeholder=(
+                f"Choose your starting route "
+                f"(page {page + 1}/{max(1, (len(choices) + 24) // 25)})…"
+            ),
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction):
+        if str(interaction.user.id) != str(self.pilot.get("discordid")):
+            await interaction.response.send_message(
+                "Only the requesting pilot can use this menu.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            start_index = int(self.values[0])
+        except (TypeError, ValueError):
+            await interaction.response.send_message(
+                "Invalid route selection. Run `/request-flight` again.",
+                ephemeral=True,
+            )
+            return
+
+        selected_routes = next(
+            (
+                routes
+                for index, routes in self.choices
+                if index == start_index
+            ),
+            None,
+        )
+
+        if not selected_routes:
+            await interaction.response.send_message(
+                "That route option is no longer available. Run `/request-flight` again.",
+                ephemeral=True,
+            )
+            return
+
+        await self.cog.show_route_confirmation(
+            interaction,
+            self.pilot,
+            self.aircraft,
+            self.schedules,
+            start_index,
+            selected_routes,
+        )
+
+
+class RouteStartView(discord.ui.View):
+    def __init__(
+        self,
+        cog,
+        pilot,
+        aircraft,
+        schedules,
+        choices,
+        page=0,
+    ):
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+
+        self.cog = cog
+        self.pilot = pilot
+        self.aircraft = aircraft
+        self.schedules = schedules
+        self.choices = choices
+        self.page = page
+
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+
+        self.add_item(
+            RouteStartSelect(
+                self.cog,
+                self.pilot,
+                self.aircraft,
+                self.schedules,
+                self.choices,
+                self.page,
+            )
+        )
+
+        if self.page > 0:
+            previous = discord.ui.Button(
+                label="Previous",
+                style=discord.ButtonStyle.secondary,
+                row=1,
+            )
+            previous.callback = self.previous_page
+            self.add_item(previous)
+
+        if (self.page + 1) * 25 < len(self.choices):
+            next_button = discord.ui.Button(
+                label="Next",
+                style=discord.ButtonStyle.secondary,
+                row=1,
+            )
+            next_button.callback = self.next_page
+            self.add_item(next_button)
+
+    async def previous_page(self, interaction):
+        if str(interaction.user.id) != str(self.pilot.get("discordid")):
+            await interaction.response.send_message(
+                "Only the requesting pilot can use this menu.",
+                ephemeral=True,
+            )
+            return
+
+        self.page = max(0, self.page - 1)
+        self._rebuild()
+        await interaction.response.edit_message(view=self)
+
+    async def next_page(self, interaction):
+        if str(interaction.user.id) != str(self.pilot.get("discordid")):
+            await interaction.response.send_message(
+                "Only the requesting pilot can use this menu.",
+                ephemeral=True,
+            )
+            return
+
+        max_page = max(0, (len(self.choices) - 1) // 25)
+        self.page = min(max_page, self.page + 1)
+        self._rebuild()
+        await interaction.response.edit_message(view=self)
+
+
+class CopilotCallsignModal(discord.ui.Modal, title="Set Co-pilot"):
+    callsign = discord.ui.TextInput(
+        label="Co-pilot callsign",
+        placeholder="Enter a VA callsign, e.g. QRV133 or 133",
+        required=True,
+        max_length=50,
+    )
+
+    def __init__(self, parent_view):
+        super().__init__(timeout=120)
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction):
+        view = self.parent_view
+
+        if view.claimed:
+            await interaction.response.send_message(
+                "This request has already been processed.",
+                ephemeral=True,
+            )
+            return
+
+        value = str(self.callsign.value).strip().upper()
+
+        if not value:
+            await interaction.response.send_message(
+                "Enter a valid pilot callsign.",
+                ephemeral=True,
+            )
+            return
+
+        callsign = f"QRV{value.zfill(3)}" if value.isdigit() else value
+        model = getattr(view.cog.bot, "pilots_model", None)
+
+        if model is None:
+            await interaction.response.send_message(
+                "Pilot database unavailable. Contact staff.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            copilot = await model.get_pilot_by_callsign(callsign)
+        except Exception:
+            log.exception("Co-pilot lookup failed for %s", callsign)
+            await interaction.response.send_message(
+                "Could not look up that callsign. Try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if not copilot:
+            await interaction.response.send_message(
+                f"No active pilot profile found for `{callsign}`.",
+                ephemeral=True,
+            )
+            return
+
+        copilot_id = str(copilot.get("ifuserid") or "").strip()
+
+        if not copilot_id:
+            await interaction.response.send_message(
+                f"`{callsign}` has no Infinite Flight user ID in the database.",
+                ephemeral=True,
+            )
+            return
+
+        if copilot_id == view.pilot_if_user_id:
+            await interaction.response.send_message(
+                "You cannot select yourself as co-pilot.",
+                ephemeral=True,
+            )
+            return
+
+        view.copilot = copilot
+        view.copilot_if_user_id = copilot_id
+        view.copilot_callsign = str(copilot.get("callsign") or callsign)
+
+        if view.message and view.confirmation_embed:
+            embed = view.confirmation_embed.copy()
+
+            for index, field in enumerate(embed.fields):
+                if field.name == "Co-pilot":
+                    embed.set_field_at(
+                        index,
+                        name="Co-pilot",
+                        value=view.copilot_callsign,
+                        inline=False,
+                    )
+                    break
+
+            view.confirmation_embed = embed
+
+            try:
+                await view.message.edit(embed=embed, view=view)
+            except Exception:
+                log.exception("Could not update confirmation embed")
+
+        await interaction.response.send_message(
+            f"Co-pilot set to **{view.copilot_callsign}**. Confirm to continue.",
+            ephemeral=True,
+        )
 
 
 class ClaimRouteView(discord.ui.View):
@@ -572,29 +817,45 @@ class ClaimRouteView(discord.ui.View):
         self.schedule = schedule
         self.pilot_if_user_id = str(pilot_if_user_id)
         self.routes_to_assign = list(routes_to_assign)
-        self.claimed = False
 
-    async def interaction_check(
-        self,
-        interaction: discord.Interaction,
-    ) -> bool:
+        self.claimed = False
+        self.copilot = None
+        self.copilot_if_user_id = None
+        self.copilot_callsign = None
+        self.message = None
+        self.confirmation_embed = None
+
+    async def interaction_check(self, interaction):
         if str(interaction.user.id) != str(self.pilot.get("discordid")):
             await interaction.response.send_message(
-                "Only the pilot who requested this flight can confirm it.",
+                "Only the requesting pilot can confirm this flight.",
                 ephemeral=True,
             )
             return False
+
         return True
 
     @discord.ui.button(
-        label="Confirm & Assign All Listed Routes",
-        style=discord.ButtonStyle.success,
+        label="Set Co-pilot",
+        style=discord.ButtonStyle.primary,
+        row=1,
     )
-    async def confirm(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
+    async def set_copilot(self, interaction, button):
+        if self.claimed:
+            await interaction.response.send_message(
+                "This request has already been processed.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(CopilotCallsignModal(self))
+
+    @discord.ui.button(
+        label="Confirm & Assign Listed Routes",
+        style=discord.ButtonStyle.success,
+        row=0,
+    )
+    async def confirm(self, interaction, button):
         if self.claimed:
             await interaction.response.send_message(
                 "This request has already been processed.",
@@ -607,15 +868,12 @@ class ClaimRouteView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
-        # Acknowledge the click before making API calls.
         await interaction.response.edit_message(view=self)
 
         assigned = []
         failed_route = None
-        registration = str(
-            _get(self.aircraft, "registration", "Aircraft")
-        )
-        hub_icao = _aircraft_hub(self.aircraft)
+        registration = _registration(self.aircraft)
+        hub = _aircraft_hub(self.aircraft)
         airline = _airline_name(self.aircraft)
 
         try:
@@ -629,125 +887,145 @@ class ClaimRouteView(discord.ui.View):
             async with await manager.get_client(TOKEN_OWNER_ID) as client:
                 aircraft_id = str(_get(self.aircraft, "id"))
 
+                pilot_bookings, pilot_ready = await self.cog.booked_aircraft_ids(
+                    client,
+                    self.pilot_if_user_id,
+                )
+
+                if len(pilot_bookings - {aircraft_id}) >= MAX_BOOKED_AIRCRAFT:
+                    await interaction.edit_original_response(
+                        content=(
+                            "⛔ **Aircraft booking limit reached.** You already have "
+                            "2 other distinct aircraft assigned, so you cannot book "
+                            "a third. Contact a Live Admin if you believe this is incorrect."
+                        ),
+                        embed=None,
+                        view=None,
+                    )
+                    return
+
+                if not pilot_ready:
+                    log.warning(
+                        "Booking check for pilot %s is incomplete; continuing with "
+                        "known cached assignments. Global booking limit is not guaranteed.",
+                        self.pilot_if_user_id,
+                    )
+
+                if self.copilot_if_user_id:
+                    copilot_bookings, copilot_ready = (
+                        await self.cog.booked_aircraft_ids(
+                            client,
+                            self.copilot_if_user_id,
+                        )
+                    )
+
+                    if len(copilot_bookings - {aircraft_id}) >= MAX_BOOKED_AIRCRAFT:
+                        await interaction.edit_original_response(
+                            content=(
+                                "⛔ **Co-pilot aircraft booking limit reached.** "
+                                f"{self.copilot_callsign} already has 2 other aircraft "
+                                "assigned. Choose another co-pilot or contact a Live Admin."
+                            ),
+                            embed=None,
+                            view=None,
+                        )
+                        return
+
+                    if not copilot_ready:
+                        log.warning(
+                            "Booking check for co-pilot %s is incomplete; continuing "
+                            "with known cached assignments.",
+                            self.copilot_if_user_id,
+                        )
+
                 schedules = _active_schedules(
-                    await client.list_aircraft_schedules(aircraft_id)
+                    await self.cog.get_schedules(
+                        client,
+                        aircraft_id,
+                        force=True,
+                    )
                 )
 
                 if not schedules:
                     await interaction.edit_original_response(
                         content=(
-                            f"{registration} does not have any active "
-                            "scheduled routes. Please contact a live admin."
+                            f"{registration} has no active scheduled routes. "
+                            "Contact a Live Admin."
                         ),
                         embed=None,
                         view=None,
                     )
                     return
 
-                claim_index = _next_claimable_index(schedules)
-
-                if claim_index is None:
-                    await interaction.edit_original_response(
-                        content=(
-                            f"{registration} has no unassigned active routes. "
-                            "Please check again later or contact a live admin."
-                        ),
-                        embed=None,
-                        view=None,
-                    )
-                    return
-
-                top = schedules[claim_index]
-
-                if str(_get(top, "id")) != str(_get(self.schedule, "id")):
-                    await interaction.edit_original_response(
-                        content=(
-                            "The next available route changed. Nothing was "
-                            "assigned; run `/request-flight` again to review "
-                            "the current route chain."
-                        ),
-                        embed=None,
-                        view=None,
-                    )
-                    return
-
-                preview_ids = _route_ids(self.routes_to_assign)
-                current_routes = _build_connected_route_chain(
-                    schedules,
-                    claim_index,
-                    hub_icao,
+                current_first = next(
+                    (
+                        route
+                        for route in schedules
+                        if str(_get(route, "id")) == str(_get(self.schedule, "id"))
+                    ),
+                    None,
                 )
 
-                if _route_ids(current_routes) != preview_ids:
-                    await interaction.edit_original_response(
-                        content=(
-                            "⚠️ The available route chain changed since you "
-                            "opened this confirmation. Nothing was assigned. "
-                            "Run `/request-flight` again to review the updated "
-                            "routes."
-                        ),
-                        embed=None,
-                        view=None,
-                    )
-                    return
-
-                top_crew = _get(top, "crew", []) or []
-
-                if any(
-                    _crew_user_id(member) == self.pilot_if_user_id
-                    for member in top_crew
+                if (
+                    current_first is None
+                    or _is_unavailable_status(current_first)
+                    or (_get(current_first, "crew", []) or [])
                 ):
                     await interaction.edit_original_response(
                         content=(
-                            "You are already assigned to this route. "
-                            "Nothing was changed."
+                            "The route you selected is no longer available. "
+                            "Nothing was assigned; run `/request-flight` again."
                         ),
                         embed=None,
                         view=None,
                     )
                     return
 
-                if top_crew:
+                start_index = next(
+                    (
+                        index
+                        for index, route in enumerate(schedules)
+                        if str(_get(route, "id")) == str(_get(self.schedule, "id"))
+                    ),
+                    -1,
+                )
+
+                current_routes = _build_connected_route_chain(
+                    schedules,
+                    start_index,
+                    hub,
+                )
+
+                if (
+                    not current_routes
+                    or _route_ids(current_routes) != _route_ids(self.routes_to_assign)
+                ):
                     await interaction.edit_original_response(
                         content=(
-                            "The first route has already been assigned. "
-                            "Nothing was changed."
+                            "The selected route chain changed or no longer returns "
+                            f"to the airline hub ({hub}). Nothing was assigned; "
+                            "run `/request-flight` again."
                         ),
                         embed=None,
                         view=None,
                     )
                     return
 
-                for route in current_routes:
-                    failed_route = route
+                for current in current_routes:
+                    failed_route = current
 
-                    # Refresh before each assignment to detect changes.
-                    refreshed = _active_schedules(
-                        await client.list_aircraft_schedules(aircraft_id)
-                    )
-
-                    current = next(
-                        (
-                            item for item in refreshed
-                            if str(_get(item, "id"))
-                            == str(_get(route, "id"))
-                        ),
-                        None,
-                    )
-
-                    if current is None or _is_unavailable_status(current):
-                        break
-
-                    if _get(current, "crew", []) or []:
+                    if _is_unavailable_status(current) or (_get(current, "crew", []) or []):
                         break
 
                     if assigned and not _connected_routes(assigned[-1], current):
                         break
 
-                    # Never assign a route after returning to this airline's hub.
-                    if assigned and str(
-                        _get(assigned[-1], "destination_icao", "") or ""
-                    ).strip().upper() == hub_icao:
+                    if (
+                        assigned
+                        and str(
+                            _get(assigned[-1], "destination_icao", "") or ""
+                        ).strip().upper() == hub
+                    ):
                         break
 
                     updated = await client.assign_crew(
@@ -756,94 +1034,161 @@ class ClaimRouteView(discord.ui.View):
                         0,
                     )
 
-                    updated_crew = _get(updated, "crew", []) or []
+                    crew = _get(updated, "crew", []) or []
 
                     if not any(
                         _crew_user_id(member) == self.pilot_if_user_id
-                        for member in updated_crew
+                        for member in crew
                     ):
-                        refreshed_after = _active_schedules(
-                            await client.list_aircraft_schedules(aircraft_id)
-                        )
+                        try:
+                            refreshed = _active_schedules(
+                                await self.cog.get_schedules(
+                                    client,
+                                    aircraft_id,
+                                    force=True,
+                                )
+                            )
+                        except Exception:
+                            log.exception(
+                                "Could not verify pilot assignment for route %s",
+                                _get(current, "id"),
+                            )
+                            break
 
                         match = next(
                             (
-                                item for item in refreshed_after
-                                if str(_get(item, "id"))
-                                == str(_get(current, "id"))
+                                item
+                                for item in refreshed
+                                if str(_get(item, "id")) == str(_get(current, "id"))
                             ),
                             None,
                         )
 
-                        updated_crew = (
-                            _get(match, "crew", []) or []
-                            if match is not None
-                            else []
+                        crew = _get(match, "crew", []) or [] if match else []
+
+                    pilot_assigned = any(
+                        _crew_user_id(member) == self.pilot_if_user_id
+                        for member in crew
+                    )
+
+                    if not pilot_assigned:
+                        break
+
+                    if self.copilot_if_user_id:
+                        updated = await client.assign_crew(
+                            str(_get(current, "id")),
+                            self.copilot_if_user_id,
+                            1,
                         )
 
-                    if not any(
-                        _crew_user_id(member) == self.pilot_if_user_id
-                        for member in updated_crew
-                    ):
-                        break
+                        crew = _get(updated, "crew", []) or []
+
+                        if not any(
+                            _crew_user_id(member) == self.copilot_if_user_id
+                            for member in crew
+                        ):
+                            try:
+                                refreshed = _active_schedules(
+                                    await self.cog.get_schedules(
+                                        client,
+                                        aircraft_id,
+                                        force=True,
+                                    )
+                                )
+                            except Exception:
+                                log.exception(
+                                    "Could not verify co-pilot assignment for route %s",
+                                    _get(current, "id"),
+                                )
+                                break
+
+                            match = next(
+                                (
+                                    item
+                                    for item in refreshed
+                                    if str(_get(item, "id")) == str(_get(current, "id"))
+                                ),
+                                None,
+                            )
+
+                            crew = _get(match, "crew", []) or [] if match else []
+
+                        if not (
+                            any(
+                                _crew_user_id(member) == self.pilot_if_user_id
+                                for member in crew
+                            )
+                            and any(
+                                _crew_user_id(member) == self.copilot_if_user_id
+                                for member in crew
+                            )
+                        ):
+                            log.error(
+                                "Could not verify both pilots on route %s",
+                                _get(current, "id"),
+                            )
+                            break
 
                     assigned.append(current)
                     failed_route = None
 
-                    # Include the route arriving at the airline hub, then stop.
-                    if str(
-                        _get(current, "destination_icao", "") or ""
-                    ).strip().upper() == hub_icao:
+                    if (
+                        str(
+                            _get(current, "destination_icao", "") or ""
+                        ).strip().upper() == hub
+                    ):
                         break
 
             if not assigned:
                 await interaction.edit_original_response(
                     content=(
-                        "I couldn't verify any route assignments. "
-                        "Please contact staff before trying again."
+                        "I couldn't verify any route assignments. Contact a Live Admin "
+                        "before retrying, especially if a pilot may have been partially assigned."
                     ),
                     embed=None,
                     view=None,
                 )
                 return
 
-            route_lines = "\n".join(
-                _route_text(route) for route in assigned
-            )
-
-            extra = (
-                f"\n🔁 **{len(assigned)} connected routes assigned.**"
-                if len(assigned) > 1
-                else ""
-            )
-
-            public_channel = interaction.channel
-
-            if public_channel is None:
-                await interaction.edit_original_response(
-                    content=(
-                        f"{len(assigned)} assignment(s) were verified, but "
-                        "I couldn't access this channel to post the "
-                        "confirmation. Please contact staff."
-                    ),
-                    embed=None,
-                    view=None,
-                )
-                return
-
+            route_lines = "\n".join(_route_text(route) for route in assigned)
             pilot_name = self.pilot.get(
                 "callsign",
                 interaction.user.display_name,
             )
+            copilot_line = ""
 
-            await public_channel.send(
-                f"✅ **Flight assigned to you, <@{interaction.user.id}>!**\n"
+            if self.copilot:
+                discord_id = (
+                    self.copilot.get("discordid")
+                    or self.copilot.get("discord_id")
+                )
+                mention = (
+                    f"<@{discord_id}>"
+                    if discord_id
+                    else f"**{self.copilot_callsign}**"
+                )
+                copilot_line = (
+                    f"Co-pilot: {mention} · **{self.copilot_callsign}**\n"
+                )
+
+            if interaction.channel is None:
+                await interaction.edit_original_response(
+                    content=(
+                        "Routes were assigned, but I couldn't access this channel "
+                        "to post confirmation. Contact staff."
+                    ),
+                    embed=None,
+                    view=None,
+                )
+                return
+
+            await interaction.channel.send(
+                f"✅ **Flight assigned to <@{interaction.user.id}>!**\n"
                 f"Pilot: **{pilot_name}**\n"
-                f"Aircraft: **{registration}** "
-                f"({_model_label(self.aircraft)})\n"
-                f"Airline hub: **{airline} · {hub_icao}**\n"
-                f"Route(s):\n{route_lines}{extra}\n\n"
-                f"{RULES}",
+                f"{copilot_line}"
+                f"Aircraft: **{registration}** ({_model_label(self.aircraft)})\n"
+                f"Airline hub: **{airline} · {hub}**\n"
+                f"Route(s):\n{route_lines}\n\n{RULES}",
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,
@@ -852,61 +1197,49 @@ class ClaimRouteView(discord.ui.View):
             )
 
             if failed_route is not None:
-                result_text = (
-                    f"⚠️ {len(assigned)} route(s) were assigned and "
-                    "verified, but the next route could not be confirmed. "
-                    "Check the public message and contact staff before "
-                    "retrying."
+                result = (
+                    f"⚠️ {len(assigned)} route(s) were assigned, but the next route "
+                    "couldn't be confirmed. Contact staff before retrying."
                 )
             else:
-                result_text = (
-                    f"✅ All {len(assigned)} previewed route(s) were "
-                    "verified and the confirmation was posted."
+                result = (
+                    f"✅ All {len(assigned)} selected route(s) were verified and posted."
                 )
 
             await interaction.edit_original_response(
-                content=result_text,
+                content=result,
                 embed=None,
                 view=None,
             )
 
         except Exception:
-            log.exception(
-                "Failed to assign Infinite Flight schedule crew"
+            log.exception("Failed to assign Infinite Flight schedule crew")
+
+            message = (
+                f"⚠️ {len(assigned)} route(s) may have been assigned. Check the schedule "
+                "and contact a Live Admin before retrying."
+                if assigned
+                else (
+                    "There was an error while assigning the flight. "
+                    "Contact a Live Admin before retrying."
+                )
             )
 
             try:
-                if assigned:
-                    message = (
-                        f"⚠️ The API confirmed {len(assigned)} route(s), "
-                        "but an error occurred before the process finished. "
-                        "Check the schedule and contact staff before retrying."
-                    )
-                else:
-                    message = (
-                        "There was an error while assigning the flight. "
-                        "Please contact staff before retrying."
-                    )
-
                 await interaction.edit_original_response(
                     content=message,
                     embed=None,
                     view=None,
                 )
             except Exception:
-                log.exception(
-                    "Could not update the flight assignment response"
-                )
+                log.exception("Could not update assignment response")
 
     @discord.ui.button(
         label="Cancel",
         style=discord.ButtonStyle.secondary,
+        row=0,
     )
-    async def cancel(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
+    async def cancel(self, interaction, button):
         if self.claimed:
             await interaction.response.send_message(
                 "This request has already been processed.",
@@ -929,18 +1262,251 @@ class ClaimRouteView(discord.ui.View):
 class RequestFlightCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
         self._aircraft_cache = None
         self._aircraft_cache_at = 0.0
         self._aircraft_cache_lock = asyncio.Lock()
 
+        self._schedule_cache = {}
+        self._schedule_locks = {}
+        self._schedule_scan_cursor = 0
+        self._scan_lock = asyncio.Lock()
+        self._rate_limit_until = 0.0
+
+    async def _get_fleet(self, client, force=False):
+        now = time.monotonic()
+
+        if (
+            not force
+            and self._aircraft_cache is not None
+            and now - self._aircraft_cache_at < FLEET_CACHE_SECONDS
+        ):
+            return self._aircraft_cache
+
+        async with self._aircraft_cache_lock:
+            now = time.monotonic()
+
+            if (
+                not force
+                and self._aircraft_cache is not None
+                and now - self._aircraft_cache_at < FLEET_CACHE_SECONDS
+            ):
+                return self._aircraft_cache
+
+            fleet = await client.list_organization_aircraft(ORG_ID)
+
+            self._aircraft_cache = [
+                aircraft
+                for aircraft in (fleet or [])
+                if _registration(aircraft) not in RETIRED_REGISTRATIONS
+                and _get(aircraft, "id") not in (None, "")
+            ]
+
+            self._aircraft_cache_at = time.monotonic()
+            return self._aircraft_cache
+
+    async def get_schedules(self, client, aircraft_id, force=False):
+        """Get schedules with caching and a shared rate-limit cooldown."""
+        aircraft_id = str(aircraft_id)
+        now = time.monotonic()
+        cached = self._schedule_cache.get(aircraft_id)
+
+        if (
+            cached
+            and not force
+            and now - cached[0] < SCHEDULE_CACHE_SECONDS
+        ):
+            return cached[1]
+
+        if now < self._rate_limit_until:
+            if cached:
+                return cached[1]
+
+            remaining = max(1, int(self._rate_limit_until - now))
+            raise RuntimeError(
+                f"Infinite Flight API cooldown is active for about {remaining} more seconds, "
+                "and this aircraft has no cached schedule."
+            )
+
+        lock = self._schedule_locks.setdefault(
+            aircraft_id,
+            asyncio.Lock(),
+        )
+
+        async with lock:
+            now = time.monotonic()
+            cached = self._schedule_cache.get(aircraft_id)
+
+            if (
+                cached
+                and not force
+                and now - cached[0] < SCHEDULE_CACHE_SECONDS
+            ):
+                return cached[1]
+
+            if now < self._rate_limit_until:
+                if cached:
+                    return cached[1]
+
+                remaining = max(1, int(self._rate_limit_until - now))
+                raise RuntimeError(
+                    f"Infinite Flight API cooldown is active for about {remaining} more seconds."
+                )
+
+            try:
+                schedules = await client.list_aircraft_schedules(aircraft_id)
+
+            except Exception as exc:
+                error_name = type(exc).__name__.lower()
+                error_text = str(exc)
+
+                if "ratelimit" in error_name or "429" in error_text:
+                    match = re.search(
+                        r"try again in\s+(\d+)\s+second",
+                        error_text,
+                        re.IGNORECASE,
+                    )
+
+                    cooldown_seconds = int(match.group(1)) + 2 if match else 35
+
+                    self._rate_limit_until = max(
+                        self._rate_limit_until,
+                        time.monotonic() + cooldown_seconds,
+                    )
+
+                    log.warning(
+                        "Infinite Flight API rate limit reached; cooling down for %s seconds.",
+                        cooldown_seconds,
+                    )
+
+                    if cached:
+                        return cached[1]
+
+                raise
+
+            schedules = list(schedules or [])
+            self._schedule_cache[aircraft_id] = (
+                time.monotonic(),
+                schedules,
+            )
+
+            return schedules
+
+    async def booked_aircraft_ids(self, client, if_user_id):
+        """Return known assigned aircraft IDs and whether all snapshots are current."""
+        if not ORG_ID:
+            raise RuntimeError("IF_ORGANIZATION_ID is not configured")
+
+        fleet = await self._get_fleet(client)
+
+        aircraft_ids = [
+            str(_get(aircraft, "id"))
+            for aircraft in fleet
+            if _get(aircraft, "id") not in (None, "")
+        ]
+
+        if not aircraft_ids:
+            return set(), True
+
+        now = time.monotonic()
+
+        stale_ids = [
+            aircraft_id
+            for aircraft_id in aircraft_ids
+            if (
+                aircraft_id not in self._schedule_cache
+                or now - self._schedule_cache[aircraft_id][0]
+                >= SCHEDULE_CACHE_SECONDS
+            )
+        ]
+
+        if stale_ids and now >= self._rate_limit_until:
+            async with self._scan_lock:
+                now = time.monotonic()
+
+                stale_ids = [
+                    aircraft_id
+                    for aircraft_id in aircraft_ids
+                    if (
+                        aircraft_id not in self._schedule_cache
+                        or now - self._schedule_cache[aircraft_id][0]
+                        >= SCHEDULE_CACHE_SECONDS
+                    )
+                ]
+
+                if stale_ids and now >= self._rate_limit_until:
+                    count = min(SCHEDULES_PER_SCAN, len(stale_ids))
+                    start = self._schedule_scan_cursor % len(stale_ids)
+
+                    batch = [
+                        stale_ids[(start + offset) % len(stale_ids)]
+                        for offset in range(count)
+                    ]
+
+                    self._schedule_scan_cursor = (
+                        start + count
+                    ) % max(1, len(stale_ids))
+
+                    for aircraft_id in batch:
+                        try:
+                            await self.get_schedules(
+                                client,
+                                aircraft_id,
+                                force=False,
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "Could not refresh schedules for aircraft %s (%s)",
+                                aircraft_id,
+                                type(exc).__name__,
+                            )
+
+                            if time.monotonic() < self._rate_limit_until:
+                                break
+
+        target_id = str(if_user_id).strip()
+        booked = set()
+        missing_count = 0
+        stale_count = 0
+        now = time.monotonic()
+
+        for aircraft_id in aircraft_ids:
+            cached = self._schedule_cache.get(aircraft_id)
+
+            if not cached:
+                missing_count += 1
+                continue
+
+            if now - cached[0] >= SCHEDULE_CACHE_SECONDS:
+                stale_count += 1
+
+            schedules = _active_schedules(cached[1])
+
+            if any(
+                _crew_user_id(member) == target_id
+                for route in schedules
+                for member in (_get(route, "crew", []) or [])
+            ):
+                booked.add(aircraft_id)
+
+        cache_complete = missing_count == 0 and stale_count == 0
+
+        if not cache_complete:
+            log.info(
+                "Booking cache incomplete: %d aircraft missing snapshots, "
+                "%d aircraft with stale snapshots. Known bookings: %d.",
+                missing_count,
+                stale_count,
+                len(booked),
+            )
+
+        return booked, cache_complete
+
     @app_commands.command(
         name="request-flight",
-        description="Request assignment to an aircraft's scheduled route chain",
+        description="Choose an aircraft and a scheduled route chain to request",
     )
-    async def request_flight(
-        self,
-        interaction: discord.Interaction,
-    ):
+    async def request_flight(self, interaction: discord.Interaction):
         await interaction.response.defer(
             ephemeral=True,
             thinking=True,
@@ -948,7 +1514,7 @@ class RequestFlightCog(commands.Cog):
 
         if not ORG_ID:
             await interaction.followup.send(
-                "The bot is missing `IF_ORGANIZATION_ID` in its environment.",
+                "The bot is missing `IF_ORGANIZATION_ID`.",
                 ephemeral=True,
             )
             return
@@ -957,7 +1523,7 @@ class RequestFlightCog(commands.Cog):
 
         if pilots_model is None:
             await interaction.followup.send(
-                "Pilot database is not available right now. Please contact staff.",
+                "Pilot database unavailable. Contact staff.",
                 ephemeral=True,
             )
             return
@@ -969,14 +1535,14 @@ class RequestFlightCog(commands.Cog):
 
             if not pilot:
                 await interaction.followup.send(
-                    "I couldn't find an active pilot profile linked to your Discord account.",
+                    "No active pilot profile is linked to your Discord account.",
                     ephemeral=True,
                 )
                 return
 
             if not pilot.get("ifuserid"):
                 await interaction.followup.send(
-                    "Your pilot profile doesn't have an Infinite Flight user ID linked.",
+                    "Your pilot profile has no Infinite Flight user ID linked.",
                     ephemeral=True,
                 )
                 return
@@ -985,50 +1551,22 @@ class RequestFlightCog(commands.Cog):
 
             if manager is None:
                 await interaction.followup.send(
-                    "Infinite Flight Live isn't initialized. Please contact staff.",
+                    "Infinite Flight Live is not initialized. Contact staff.",
                     ephemeral=True,
                 )
                 return
 
-            now = time.monotonic()
-
-            if (
-                self._aircraft_cache is None
-                or now - self._aircraft_cache_at > FLEET_CACHE_SECONDS
-            ):
-                async with self._aircraft_cache_lock:
-                    now = time.monotonic()
-
-                    if (
-                        self._aircraft_cache is None
-                        or now - self._aircraft_cache_at > FLEET_CACHE_SECONDS
-                    ):
-                        async with await manager.get_client(
-                            TOKEN_OWNER_ID
-                        ) as client:
-                            fleet = await client.list_organization_aircraft(
-                                ORG_ID
-                            )
-
-                        self._aircraft_cache = list(fleet or [])
-                        self._aircraft_cache_at = time.monotonic()
-
-            aircraft = sorted(
-                self._aircraft_cache or [],
-                key=lambda item: str(_get(item, "registration", "")),
-            )
-
-            retired_registrations = {"A7BFC", "A7BFA"}
-
-            aircraft = [
-                item for item in aircraft
-                if _registration(item) not in retired_registrations
-            ]
+            # Do not scan every aircraft schedule here. The user must be able
+            # to choose an aircraft before any booking-cache scan is attempted.
+            async with await manager.get_client(TOKEN_OWNER_ID) as client:
+                aircraft = sorted(
+                    await self._get_fleet(client),
+                    key=_registration,
+                )
 
             if not aircraft:
                 await interaction.followup.send(
-                    "No aircraft were returned for Qatari Virtual. "
-                    "Check the API account's organization access.",
+                    "No aircraft were returned for Qatari Virtual.",
                     ephemeral=True,
                 )
                 return
@@ -1042,32 +1580,26 @@ class RequestFlightCog(commands.Cog):
             }
 
             await interaction.followup.send(
-                f"Choose an aircraft category "
-                f"({len(aircraft)} aircraft available): "
+                f"Choose an aircraft category ({len(aircraft)} aircraft available): "
                 f"Airbus {counts['Airbus']} · "
                 f"Boeing {counts['Boeing']} · "
-                f"Other {counts['Other']}.",
+                f"Other {counts['Other']}.\n\n"
+                f"⚠️ Maximum **{MAX_BOOKED_AIRCRAFT} distinct aircraft per pilot**. "
+                "Connected routes on the same aircraft count as one aircraft.",
                 view=AircraftSelectView(self, pilot, aircraft),
                 ephemeral=True,
             )
 
         except Exception:
-            log.exception(
-                "Could not load aircraft for /request-flight"
-            )
+            log.exception("Could not load aircraft for /request-flight")
 
             await interaction.followup.send(
-                "I couldn't load Qatari Virtual's aircraft from Infinite Flight. "
-                "Please contact staff; no assignment was made.",
+                "I couldn't load Qatari Virtual's aircraft. Please try again shortly.",
                 ephemeral=True,
             )
 
-    async def show_aircraft_route(
-        self,
-        interaction,
-        pilot,
-        aircraft,
-    ):
+    async def show_aircraft_route(self, interaction, pilot, aircraft):
+        """Load an aircraft schedule and let the pilot select a valid starting route."""
         await interaction.response.defer(
             ephemeral=True,
             thinking=False,
@@ -1081,67 +1613,74 @@ class RequestFlightCog(commands.Cog):
                     "Infinite Flight Live manager is not initialized"
                 )
 
+            aircraft_id = str(_get(aircraft, "id"))
+
             async with await manager.get_client(TOKEN_OWNER_ID) as client:
-                aircraft_id = str(_get(aircraft, "id"))
+                position = await client.get_aircraft_position(aircraft_id)
+                raw_schedules = await self.get_schedules(client, aircraft_id)
 
-                position, raw_schedules = await asyncio.gather(
-                    client.get_aircraft_position(aircraft_id),
-                    client.list_aircraft_schedules(aircraft_id),
-                )
-
-                schedules = _active_schedules(raw_schedules)
-
-            registration = _get(
-                aircraft, "registration", "Aircraft"
-            )
+            schedules = _active_schedules(raw_schedules)
+            registration = _registration(aircraft)
             airline = _airline_name(aircraft)
-            hub_icao = _aircraft_hub(aircraft)
+            hub = _aircraft_hub(aircraft)
 
             if not schedules:
                 await interaction.edit_original_response(
                     content=(
-                        f"{registration} does not have any active scheduled "
-                        "routes. Please ask a live admin to check the schedule."
+                        f"{registration} has no active scheduled routes. "
+                        "Contact a Live Admin."
                     ),
                     embed=None,
                     view=None,
                 )
                 return
 
-            claim_index = _next_claimable_index(schedules)
+            # Present each complete, connected chain that ends at the airline hub once.
+            choices = []
+            seen_start_routes = set()
+            included_route_ids = set()
 
-            if claim_index is None:
+            for index, route in enumerate(schedules):
+                if _is_unavailable_status(route) or (_get(route, "crew", []) or []):
+                    continue
+
+                route_key = _route_start_key(route)
+                if (
+                    route_key in seen_start_routes
+                    or str(_get(route, "id")) in included_route_ids
+                ):
+                    continue
+
+                chain = _build_connected_route_chain(
+                    schedules,
+                    index,
+                    hub,
+                )
+
+                if chain:
+                    choices.append((index, chain))
+                    seen_start_routes.add(route_key)
+                    included_route_ids.update(
+                        str(_get(chain_route, "id"))
+                        for chain_route in chain
+                        if _get(chain_route, "id") not in (None, "")
+                    )
+
+            if not choices:
                 await interaction.edit_original_response(
                     content=(
-                        f"{registration} has no unassigned active routes. "
-                        "Please check again later or contact a live admin."
+                        f"No available starting route for {registration} has a "
+                        f"complete connected chain returning to **{hub}**. "
+                        "The bot will not offer a route chain that fails to return "
+                        "to the airline hub. Contact a Live Admin if the schedule "
+                        "needs to be corrected."
                     ),
                     embed=None,
                     view=None,
                 )
                 return
 
-            top = schedules[claim_index]
-            assigned_before = schedules[:claim_index]
-
-            routes_to_assign = _build_connected_route_chain(
-                schedules,
-                claim_index,
-                hub_icao,
-            )
-
-            if not routes_to_assign:
-                await interaction.edit_original_response(
-                    content=(
-                        "I couldn't find a valid connected route chain. "
-                        "Please contact staff."
-                    ),
-                    embed=None,
-                    view=None,
-                )
-                return
-
-            ground = _get(position, "is_on_ground", None)
+            ground = _get(position, "is_on_ground")
 
             status = (
                 f"Aircraft state: **{_state_label(position)}** · "
@@ -1154,21 +1693,16 @@ class RequestFlightCog(commands.Cog):
                 )
             )
 
-            route_lines = "\n".join(
-                f"**{index}.** {_route_text(route)}"
-                for index, route in enumerate(routes_to_assign, start=1)
-            )
-
             embed = discord.Embed(
-                title=f"Confirm flight request · {registration}",
+                title=f"Choose your route · {registration}",
                 description=(
-                    f"**Aircraft model:** {_model_label(aircraft)}\n"
-                    f"**Registration:** {registration}\n"
-                    f"**Airline hub:** {airline} · {hub_icao}\n"
-                    f"**Routes to be assigned:** {len(routes_to_assign)}\n\n"
-                    f"**Proposed route chain**\n{route_lines}\n\n"
-                    "Confirm only if you want every route listed above "
-                    "assigned to you."
+                    f"**Aircraft:** {_model_label(aircraft)}\n"
+                    f"**Airline hub:** {airline} · **{hub}**\n\n"
+                    "Choose the starting route you want. Each option includes "
+                    "the connected scheduled routes that follow it and return "
+                    "to the airline hub.\n\n"
+                    "Only routes that are currently unassigned and have a "
+                    "complete connected chain back to the hub are listed."
                 ),
                 color=discord.Color.blue(),
             )
@@ -1176,6 +1710,147 @@ class RequestFlightCog(commands.Cog):
             embed.add_field(
                 name="Aircraft status",
                 value=status,
+                inline=False,
+            )
+
+            embed.add_field(
+                name="Valid route choices",
+                value=str(len(choices)),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Flight rules",
+                value=(
+                    "• 6 hours to take off from a hub\n"
+                    "• 12 hours to take off from a non-hub\n"
+                    "• 24 hours to land if stopped in the air"
+                ),
+                inline=False,
+            )
+
+            embed.add_field(
+                name="Aircraft booking limit",
+                value=(
+                    "Maximum **2 distinct aircraft per pilot**. Connected routes on "
+                    "the same aircraft count as one aircraft. If accidentally assigned "
+                    "to 3 aircraft, contact a Live Admin."
+                ),
+                inline=False,
+            )
+
+            view = RouteStartView(
+                self,
+                pilot,
+                aircraft,
+                schedules,
+                choices,
+            )
+
+            await interaction.edit_original_response(
+                content="Select the route chain you want to request:",
+                embed=embed,
+                view=view,
+            )
+
+        except Exception as exc:
+            log.exception(
+                "Could not inspect selected aircraft (registration=%s, aircraft_id=%s)",
+                _registration(aircraft),
+                _get(aircraft, "id"),
+            )
+
+            error_text = str(exc)
+
+            if "cooldown is active" in error_text.lower():
+                message = (
+                    "⏳ Infinite Flight is temporarily rate-limited, and this aircraft "
+                    "doesn't have a usable cached schedule yet. Please wait for the "
+                    "cooldown to expire, then select the aircraft again."
+                )
+            else:
+                message = (
+                    "I couldn't inspect that aircraft's schedule right now. "
+                    "Please try again shortly."
+                )
+
+            await interaction.edit_original_response(
+                content=f"{message}\nError type: `{type(exc).__name__}`",
+                embed=None,
+                view=None,
+            )
+
+    async def show_route_confirmation(
+        self,
+        interaction,
+        pilot,
+        aircraft,
+        schedules,
+        start_index,
+        routes,
+    ):
+        """Show confirmation for the route chain the pilot selected."""
+        try:
+            registration = _registration(aircraft)
+            airline = _airline_name(aircraft)
+            hub = _aircraft_hub(aircraft)
+
+            if start_index < 0 or start_index >= len(schedules):
+                await interaction.response.send_message(
+                    "That route selection is invalid. Please run `/request-flight` again.",
+                    ephemeral=True,
+                )
+                return
+
+            selected_route = schedules[start_index]
+            if (
+                _is_unavailable_status(selected_route)
+                or (_get(selected_route, "crew", []) or [])
+            ):
+                await interaction.response.send_message(
+                    "That route is no longer available. Please select another route.",
+                    ephemeral=True,
+                )
+                return
+
+            current_chain = _build_connected_route_chain(
+                schedules,
+                start_index,
+                hub,
+            )
+
+            if not current_chain or _route_ids(current_chain) != _route_ids(routes):
+                await interaction.response.send_message(
+                    "The selected route chain is no longer valid. Please choose a route again.",
+                    ephemeral=True,
+                )
+                return
+
+            route_lines = "\n".join(
+                f"**{index}.** {_route_text(route)}"
+                for index, route in enumerate(routes, 1)
+            )
+
+            position_state = "Not checked in this step"
+
+            embed = discord.Embed(
+                title=f"Confirm flight request · {registration}",
+                description=(
+                    f"**Aircraft model:** {_model_label(aircraft)}\n"
+                    f"**Registration:** {registration}\n"
+                    f"**Airline hub:** {airline} · {hub}\n"
+                    f"**Starting route:** {_route_text(selected_route)}\n"
+                    f"**Routes to be assigned:** {len(routes)}\n\n"
+                    f"**Your selected route chain**\n{route_lines}\n\n"
+                    f"**Return-to-base check:** The final route returns to **{hub}**.\n\n"
+                    "Confirm only if you want every listed route assigned to you."
+                ),
+                color=discord.Color.green(),
+            )
+
+            embed.add_field(
+                name="Aircraft status",
+                value=position_state,
                 inline=False,
             )
 
@@ -1189,69 +1864,37 @@ class RequestFlightCog(commands.Cog):
                 inline=False,
             )
 
-            if assigned_before:
-                embed.add_field(
-                    name="Earlier routes",
-                    value=(
-                        f"{len(assigned_before)} earlier route(s) are "
-                        "already assigned. The chain above starts at the "
-                        "first unassigned route."
-                    ),
-                    inline=False,
-                )
-
-            state = _get(position, "state", None)
-
-            try:
-                in_flight = int(state) == 2
-            except (TypeError, ValueError):
-                in_flight = str(state).lower() in {
-                    "in_flight",
-                    "in flight",
-                }
-
-            if in_flight:
-                embed.set_footer(
-                    text=(
-                        "This request assigns scheduled routes; it does "
-                        "not change the aircraft's current flight."
-                    )
-                )
-            else:
-                embed.set_footer(
-                    text=(
-                        "The route chain will be checked again when you confirm."
-                    )
-                )
+            embed.add_field(
+                name="Co-pilot",
+                value="Not selected (solo flight)",
+                inline=False,
+            )
 
             view = ClaimRouteView(
                 self,
                 pilot,
                 aircraft,
-                top,
+                selected_route,
                 pilot["ifuserid"],
-                routes_to_assign,
+                routes,
             )
+            view.confirmation_embed = embed
 
-            await interaction.edit_original_response(
-                content="Review the proposed route chain before confirming:",
+            await interaction.response.edit_message(
+                content="Review your selected route chain before confirming:",
                 embed=embed,
                 view=view,
             )
 
-        except Exception:
-            log.exception(
-                "Could not inspect selected aircraft schedule"
-            )
+            view.message = interaction.message
 
-            await interaction.edit_original_response(
-                content=(
-                    "I couldn't verify the aircraft or its route chain. "
-                    "Nothing was assigned; please contact staff."
-                ),
-                embed=None,
-                view=None,
-            )
+        except Exception:
+            log.exception("Could not display route confirmation")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "I couldn't prepare that route confirmation. Please try again.",
+                    ephemeral=True,
+                )
 
 
 async def setup(bot):
