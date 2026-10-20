@@ -81,7 +81,7 @@ AIRLINE_HUBS = {
     "Cathay Pacific": "VHHH",
     "Iberia": "LEMD",
     "British Airways": "EGLL",
-    "LATAM": "SCEL",
+    "LATAM": ("SCEL", "SBGR", "SPJC"),
     "JAL": "RJTT",
     "Qantas": "YSSY",
     "American Airlines": "KDFW",
@@ -135,8 +135,15 @@ def _airline_name(aircraft):
     return AIRCRAFT_AIRLINES.get(_registration(aircraft), "Qatar Airways")
 
 
+def _aircraft_hubs(aircraft):
+    hubs = AIRLINE_HUBS.get(_airline_name(aircraft), DEFAULT_HUB_ICAO)
+    if isinstance(hubs, str):
+        hubs = (hubs,)
+    return tuple(str(hub).strip().upper() for hub in hubs if hub)
+
+
 def _aircraft_hub(aircraft):
-    return AIRLINE_HUBS.get(_airline_name(aircraft), DEFAULT_HUB_ICAO)
+    return ", ".join(_aircraft_hubs(aircraft))
 
 
 def _aircraft_category(aircraft):
@@ -255,7 +262,14 @@ def _build_connected_route_chain(schedules, start_index, hub_icao):
     if start_index < 0 or start_index >= len(schedules):
         return []
 
-    hub = str(hub_icao or DEFAULT_HUB_ICAO).strip().upper()
+    if isinstance(hub_icao, str):
+        hubs = {hub_icao.strip().upper()}
+    else:
+        hubs = {
+            str(hub).strip().upper()
+            for hub in (hub_icao or (DEFAULT_HUB_ICAO,))
+            if hub
+        }
     routes = []
     previous = None
 
@@ -278,7 +292,7 @@ def _build_connected_route_chain(schedules, start_index, hub_icao):
 
         routes.append(route)
 
-        if destination == hub:
+        if destination in hubs:
             return routes
 
         previous = route
@@ -556,7 +570,7 @@ class RouteStartSelect(discord.ui.Select):
                     label=_route_option_label(routes),
                     description=(
                         f"{len(routes)} route(s) · "
-                        f"Returns to {_aircraft_hub(aircraft)} · "
+                        f"Returns to one of {_aircraft_hub(aircraft)} · "
                         f"{_route_chain_description(routes)}"
                     )[:100],
                     value=str(start_index),
@@ -874,6 +888,7 @@ class ClaimRouteView(discord.ui.View):
         failed_route = None
         registration = _registration(self.aircraft)
         hub = _aircraft_hub(self.aircraft)
+        hubs = _aircraft_hubs(self.aircraft)
         airline = _airline_name(self.aircraft)
 
         try:
@@ -993,7 +1008,7 @@ class ClaimRouteView(discord.ui.View):
                 current_routes = _build_connected_route_chain(
                     schedules,
                     start_index,
-                    hub,
+                    hubs,
                 )
 
                 if (
@@ -1024,7 +1039,7 @@ class ClaimRouteView(discord.ui.View):
                         assigned
                         and str(
                             _get(assigned[-1], "destination_icao", "") or ""
-                        ).strip().upper() == hub
+                        ).strip().upper() in hubs
                     ):
                         break
 
@@ -1135,7 +1150,7 @@ class ClaimRouteView(discord.ui.View):
                     if (
                         str(
                             _get(current, "destination_icao", "") or ""
-                        ).strip().upper() == hub
+                        ).strip().upper() in hubs
                     ):
                         break
 
@@ -1623,6 +1638,7 @@ class RequestFlightCog(commands.Cog):
             registration = _registration(aircraft)
             airline = _airline_name(aircraft)
             hub = _aircraft_hub(aircraft)
+            hubs = _aircraft_hubs(aircraft)
 
             if not schedules:
                 await interaction.edit_original_response(
@@ -1654,7 +1670,7 @@ class RequestFlightCog(commands.Cog):
                 chain = _build_connected_route_chain(
                     schedules,
                     index,
-                    hub,
+                    hubs,
                 )
 
                 if chain:
@@ -1669,11 +1685,12 @@ class RequestFlightCog(commands.Cog):
             if not choices:
                 await interaction.edit_original_response(
                     content=(
-                        f"No available starting route for {registration} has a "
-                        f"complete connected chain returning to **{hub}**. "
-                        "The bot will not offer a route chain that fails to return "
-                        "to the airline hub. Contact a Live Admin if the schedule "
-                        "needs to be corrected."
+                        f"**{registration} does not have a complete connected route "
+                        f"chain in its schedule that returns to a LATAM hub "
+                        f"({hub}).** A route may end at an airport such as SBPS "
+                        "without a following scheduled route back to a LATAM hub. "
+                        "Please ask a Live Admin to add the missing connecting "
+                        "routes to the schedule."
                     ),
                     embed=None,
                     view=None,
@@ -1697,7 +1714,7 @@ class RequestFlightCog(commands.Cog):
                 title=f"Choose your route · {registration}",
                 description=(
                     f"**Aircraft:** {_model_label(aircraft)}\n"
-                    f"**Airline hub:** {airline} · **{hub}**\n\n"
+                    f"**Airline hubs:** {airline} · **{hub}**\n\n"
                     "Choose the starting route you want. Each option includes "
                     "the connected scheduled routes that follow it and return "
                     "to the airline hub.\n\n"
@@ -1794,6 +1811,7 @@ class RequestFlightCog(commands.Cog):
             registration = _registration(aircraft)
             airline = _airline_name(aircraft)
             hub = _aircraft_hub(aircraft)
+            hubs = _aircraft_hubs(aircraft)
 
             if start_index < 0 or start_index >= len(schedules):
                 await interaction.response.send_message(
@@ -1816,7 +1834,7 @@ class RequestFlightCog(commands.Cog):
             current_chain = _build_connected_route_chain(
                 schedules,
                 start_index,
-                hub,
+                hubs,
             )
 
             if not current_chain or _route_ids(current_chain) != _route_ids(routes):
@@ -1830,6 +1848,9 @@ class RequestFlightCog(commands.Cog):
                 f"**{index}.** {_route_text(route)}"
                 for index, route in enumerate(routes, 1)
             )
+            final_hub = str(
+                _get(routes[-1], "destination_icao", "") or ""
+            ).strip().upper()
 
             position_state = "Not checked in this step"
 
@@ -1838,11 +1859,11 @@ class RequestFlightCog(commands.Cog):
                 description=(
                     f"**Aircraft model:** {_model_label(aircraft)}\n"
                     f"**Registration:** {registration}\n"
-                    f"**Airline hub:** {airline} · {hub}\n"
+                    f"**Airline hubs:** {airline} · {hub}\n"
                     f"**Starting route:** {_route_text(selected_route)}\n"
                     f"**Routes to be assigned:** {len(routes)}\n\n"
                     f"**Your selected route chain**\n{route_lines}\n\n"
-                    f"**Return-to-base check:** The final route returns to **{hub}**.\n\n"
+                    f"**Return-to-base check:** The final route returns to **{final_hub}**.\n\n"
                     "Confirm only if you want every listed route assigned to you."
                 ),
                 color=discord.Color.green(),
