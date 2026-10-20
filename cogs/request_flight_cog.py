@@ -1555,6 +1555,88 @@ class RequestFlightCog(commands.Cog):
                 )
                 return
 
+            ifc_url = str(pilot.get("ifc") or "").strip()
+            profile_match = re.search(
+                r"/u/([^/?#]+)",
+                ifc_url,
+                re.IGNORECASE,
+            )
+            if profile_match:
+                community_username = profile_match.group(1)
+                if_api_manager = getattr(self.bot, "if_api_manager", None)
+                if if_api_manager is None:
+                    await interaction.followup.send(
+                        "I couldn't verify your Infinite Flight profile from "
+                        "Crew Center right now. Please contact staff.",
+                        ephemeral=True,
+                    )
+                    return
+
+                try:
+                    profile_data = await if_api_manager.get_user_by_ifc_username(
+                        community_username
+                    )
+                except Exception:
+                    log.exception(
+                        "Could not resolve the Community profile for pilot %s",
+                        pilot.get("callsign", "unknown"),
+                    )
+                    await interaction.followup.send(
+                        "I couldn't verify your Infinite Flight profile from "
+                        "Crew Center right now. Please try again later.",
+                        ephemeral=True,
+                    )
+                    return
+
+                profile = (profile_data or {}).get("result") or {}
+                resolved_username = str(
+                    profile.get("discourseUsername") or ""
+                ).strip()
+                resolved_if_user_id = str(
+                    profile.get("userId") or ""
+                ).strip()
+                if (
+                    not resolved_if_user_id
+                    or resolved_username.casefold()
+                    != community_username.casefold()
+                ):
+                    log.warning(
+                        "Could not verify Community username %s for pilot %s",
+                        community_username,
+                        pilot.get("callsign", "unknown"),
+                    )
+                    await interaction.followup.send(
+                        "I couldn't match your Crew Center Community profile "
+                        "to an Infinite Flight user. Please contact staff to "
+                        "check the profile link.",
+                        ephemeral=True,
+                    )
+                    return
+
+                stored_if_user_id = str(pilot.get("ifuserid") or "").strip()
+                if stored_if_user_id != resolved_if_user_id:
+                    updated = await pilots_model.update_ifuserid_by_id(
+                        pilot["id"],
+                        resolved_if_user_id,
+                    )
+                    if updated != 1:
+                        log.error(
+                            "Could not update Infinite Flight user ID for pilot %s",
+                            pilot.get("callsign", "unknown"),
+                        )
+                        await interaction.followup.send(
+                            "I verified your Infinite Flight profile, but "
+                            "couldn't save the updated link. Please contact staff.",
+                            ephemeral=True,
+                        )
+                        return
+                    log.info(
+                        "Updated Infinite Flight profile link for pilot %s",
+                        pilot.get("callsign", "unknown"),
+                    )
+
+                pilot["ifuserid"] = resolved_if_user_id
+
             if not pilot.get("ifuserid"):
                 await interaction.followup.send(
                     "Your pilot profile has no Infinite Flight user ID linked.",
