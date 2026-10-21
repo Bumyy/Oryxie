@@ -33,7 +33,7 @@ TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
 STOPPED_POSITION_STATE = 4
 IN_FLIGHT_SCHEDULE_STATUS = 6
-FLIGHT_HISTORY_DAYS = 7
+FLIGHT_HISTORY_DAYS = 3
 DM_BATCH_SIZE = 5
 FLIGHT_HISTORY_PAGE_SIZE = 25
 MAX_FLIGHT_HISTORY_PAGES = 20
@@ -838,7 +838,7 @@ class StoppedFlightMonitor(commands.Cog):
         }
         candidates = []
         for member in role.members:
-            if member.bot or member.status != discord.Status.online:
+            if member.bot:
                 continue
             pilot = by_discord.get(str(member.id))
             if not pilot:
@@ -851,7 +851,7 @@ class StoppedFlightMonitor(commands.Cog):
                 flight_count = await self._recent_live_flight_count(if_user_id)
             except Exception:
                 log.exception(
-                    "Could not check seven-day Live flight history for %s",
+                    "Could not check three-day Live flight history for %s",
                     pilot.get("callsign", if_user_id),
                 )
                 continue
