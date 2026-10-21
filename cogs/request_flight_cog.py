@@ -1494,15 +1494,27 @@ class CopilotConfirmationView(discord.ui.View):
         style=discord.ButtonStyle.success,
     )
     async def confirm(self, interaction, button):
+        if self.claim_view.claimed:
+            await interaction.response.send_message(
+                "This request has already been processed.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer()
-        await self.claim_view.confirm(interaction, button)
+        await self.claim_view.confirm.callback(interaction)
 
     @discord.ui.button(
         label="Cancel",
         style=discord.ButtonStyle.secondary,
     )
     async def cancel(self, interaction, button):
-        await self.claim_view.cancel(interaction, button)
+        if self.claim_view.claimed:
+            await interaction.response.send_message(
+                "This request has already been processed.",
+                ephemeral=True,
+            )
+            return
+        await self.claim_view.cancel.callback(interaction)
 
 
 class RequestFlightCog(commands.Cog):
