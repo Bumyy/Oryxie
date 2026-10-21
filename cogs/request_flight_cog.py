@@ -771,7 +771,7 @@ class CopilotCallsignModal(discord.ui.Modal, title="Set Co-pilot"):
     )
 
     def __init__(self, parent_view):
-        super().__init__(timeout=120)
+        super().__init__(timeout=300)
         self.parent_view = parent_view
 
     async def on_submit(self, interaction):
@@ -860,11 +860,13 @@ class CopilotCallsignModal(discord.ui.Modal, title="Set Co-pilot"):
             except Exception:
                 log.exception("Could not update confirmation embed")
 
+        confirmation_view = CopilotConfirmationView(view)
         await interaction.response.send_message(
             f"Co-pilot set to **{view.copilot_callsign}**. Confirm to continue.",
             ephemeral=True,
-            view=CopilotConfirmationView(view),
+            view=confirmation_view,
         )
+        confirmation_view.message = await interaction.original_response()
 
 
 class ClaimRouteView(discord.ui.View):
@@ -877,7 +879,7 @@ class ClaimRouteView(discord.ui.View):
         pilot_if_user_id,
         routes_to_assign,
     ):
-        super().__init__(timeout=120)
+        super().__init__(timeout=300)
 
         self.cog = cog
         self.pilot = pilot
@@ -892,6 +894,19 @@ class ClaimRouteView(discord.ui.View):
         self.copilot_callsign = None
         self.message = None
         self.confirmation_embed = None
+
+    async def on_timeout(self):
+        if self.claimed or self.message is None:
+            return
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.message.edit(
+                content="This flight request expired. Run `/request-flight` again.",
+                view=self,
+            )
+        except discord.HTTPException:
+            log.exception("Could not disable expired route confirmation")
 
     async def interaction_check(self, interaction):
         if str(interaction.user.id) != str(self.pilot.get("discordid")):
@@ -936,7 +951,10 @@ class ClaimRouteView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
-        await interaction.response.edit_message(view=self)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=None)
+        else:
+            await interaction.response.edit_message(view=self)
         if (
             self.message
             and interaction.message
@@ -1445,8 +1463,22 @@ class ClaimRouteView(discord.ui.View):
 
 class CopilotConfirmationView(discord.ui.View):
     def __init__(self, claim_view):
-        super().__init__(timeout=120)
+        super().__init__(timeout=300)
         self.claim_view = claim_view
+        self.message = None
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(
+                content="This flight confirmation expired. Run `/request-flight` again.",
+                view=self,
+            )
+        except discord.HTTPException:
+            log.exception("Could not disable expired co-pilot confirmation")
 
     async def interaction_check(self, interaction):
         if str(interaction.user.id) != str(self.claim_view.pilot.get("discordid")):
@@ -1462,6 +1494,7 @@ class CopilotConfirmationView(discord.ui.View):
         style=discord.ButtonStyle.success,
     )
     async def confirm(self, interaction, button):
+        await interaction.response.defer()
         await self.claim_view.confirm(interaction, button)
 
     @discord.ui.button(
