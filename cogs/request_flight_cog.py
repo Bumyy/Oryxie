@@ -93,8 +93,9 @@ RULES = (
     "• If parked at a hub airport, you have 6 hours from assignment to take off.\n"
     "• If parked at a non-hub airport, you have 12 hours from assignment to take off.\n"
     "• If overdue, an admin may take over the flight or make it available to other pilots.\n\n"
-    "⚠️ Each pilot may be assigned to a maximum of **2 distinct aircraft**. "
-    "If you are accidentally assigned to 3 aircraft, contact a Live Admin immediately."
+    "⚠️ Each pilot may have unflown outbound routes on up to **2 distinct aircraft**. "
+    "Once a route takes off, its aircraft no longer counts toward this limit. "
+    "Return legs do not count."
 )
 
 
@@ -196,11 +197,63 @@ def _sequence(route):
         return 0
 
 
-def _is_unavailable_status(route):
+def _route_status(route):
     try:
-        return int(_get(route, "status")) in {9, 11}
+        return int(_get(route, "status"))
     except (TypeError, ValueError):
-        return False
+        return None
+
+
+def _is_unavailable_status(route):
+    return _route_status(route) in {8, 9, 11}
+
+
+def _is_return_leg(previous, route):
+    previous_origin = str(
+        _get(previous, "origin_icao", "") or ""
+    ).strip().upper()
+    previous_destination = str(
+        _get(previous, "destination_icao", "") or ""
+    ).strip().upper()
+    origin = str(_get(route, "origin_icao", "") or "").strip().upper()
+    destination = str(
+        _get(route, "destination_icao", "") or ""
+    ).strip().upper()
+    return bool(
+        previous_origin
+        and previous_destination
+        and origin
+        and destination
+        and previous_origin == destination
+        and previous_destination == origin
+    )
+
+
+def _counted_booked_aircraft_ids(schedules, if_user_id):
+    """Count aircraft with the pilot's unflown, non-return assigned routes."""
+    target_id = str(if_user_id).strip()
+    schedules_by_aircraft = {}
+    for route in schedules or []:
+        aircraft_id = _get(route, "aircraft_id")
+        if aircraft_id not in (None, ""):
+            schedules_by_aircraft.setdefault(str(aircraft_id), []).append(route)
+
+    booked = set()
+    for aircraft_id, aircraft_schedules in schedules_by_aircraft.items():
+        ordered = sorted(aircraft_schedules, key=_sequence)
+        for index, route in enumerate(ordered):
+            if _is_unavailable_status(route) or _route_status(route) in {6, 7}:
+                continue
+            if not any(
+                _crew_user_id(member) == target_id
+                for member in (_get(route, "crew", []) or [])
+            ):
+                continue
+            if index and _is_return_leg(ordered[index - 1], route):
+                continue
+            booked.add(aircraft_id)
+            break
+    return booked
 
 
 def _active_schedules(schedules):
@@ -886,11 +939,13 @@ class ClaimRouteView(discord.ui.View):
 
         assigned = []
         failed_route = None
+        schedule_order_note = ""
         registration = _registration(self.aircraft)
         hub = _aircraft_hub(self.aircraft)
         hubs = _aircraft_hubs(self.aircraft)
         airline = _airline_name(self.aircraft)
 
+        await self.cog._booking_lock.acquire()
         try:
             manager = getattr(self.cog.bot, "if_live_manager", None)
 
@@ -902,17 +957,37 @@ class ClaimRouteView(discord.ui.View):
             async with await manager.get_client(TOKEN_OWNER_ID) as client:
                 aircraft_id = str(_get(self.aircraft, "id"))
 
+                try:
+                    organization_schedules = (
+                        await self.cog.get_organization_schedules(client)
+                    )
+                except Exception:
+                    log.exception(
+                        "Could not verify organization-wide aircraft bookings"
+                    )
+                    await interaction.edit_original_response(
+                        content=(
+                            "I couldn't verify your current aircraft bookings, "
+                            "so nothing was assigned. Please try again shortly."
+                        ),
+                        embed=None,
+                        view=None,
+                    )
+                    return
+
                 pilot_bookings, pilot_ready = await self.cog.booked_aircraft_ids(
                     client,
                     self.pilot_if_user_id,
+                    schedules=organization_schedules,
                 )
 
                 if len(pilot_bookings - {aircraft_id}) >= MAX_BOOKED_AIRCRAFT:
                     await interaction.edit_original_response(
                         content=(
                             "⛔ **Aircraft booking limit reached.** You already have "
-                            "2 other distinct aircraft assigned, so you cannot book "
-                            "a third. Contact a Live Admin if you believe this is incorrect."
+                            "2 other aircraft with unflown outbound routes assigned. "
+                            "Flights that have taken off and return legs do not count. "
+                            "Contact a Live Admin if you believe this is incorrect."
                         ),
                         embed=None,
                         view=None,
@@ -931,6 +1006,7 @@ class ClaimRouteView(discord.ui.View):
                         await self.cog.booked_aircraft_ids(
                             client,
                             self.copilot_if_user_id,
+                            schedules=organization_schedules,
                         )
                     )
 
@@ -939,7 +1015,9 @@ class ClaimRouteView(discord.ui.View):
                             content=(
                                 "⛔ **Co-pilot aircraft booking limit reached.** "
                                 f"{self.copilot_callsign} already has 2 other aircraft "
-                                "assigned. Choose another co-pilot or contact a Live Admin."
+                                "with unflown outbound routes assigned. Flights that "
+                                "have taken off and return legs do not count. Choose "
+                                "another co-pilot or contact a Live Admin."
                             ),
                             embed=None,
                             view=None,
@@ -1025,6 +1103,71 @@ class ClaimRouteView(discord.ui.View):
                         view=None,
                     )
                     return
+
+                assigned_before = [
+                    route
+                    for route in schedules[:start_index]
+                    if _get(route, "crew", []) or []
+                ]
+                after_id = (
+                    str(_get(assigned_before[-1], "id"))
+                    if assigned_before
+                    else None
+                )
+                already_positioned = (
+                    start_index == 0
+                    if after_id is None
+                    else (
+                        start_index > 0
+                        and str(_get(schedules[start_index - 1], "id"))
+                        == after_id
+                    )
+                )
+
+                if already_positioned:
+                    schedule_order_note = (
+                        "The selected route chain was already in the correct "
+                        "schedule position."
+                    )
+                else:
+                    next_after_id = after_id
+                    try:
+                        for route in current_routes:
+                            route_id = str(_get(route, "id"))
+                            reordered = await client.reorder_schedules(
+                                aircraft_id,
+                                route_id,
+                                after_id=next_after_id,
+                            )
+                            if not reordered:
+                                schedule_order_note = (
+                                    "I couldn't move the selected route chain "
+                                    "in the aircraft schedule."
+                                )
+                                log.warning(
+                                    "Infinite Flight did not reorder schedule %s "
+                                    "for aircraft %s.",
+                                    route_id,
+                                    aircraft_id,
+                                )
+                                break
+                            next_after_id = route_id
+                        else:
+                            schedule_order_note = (
+                                "The selected route chain was moved to the next "
+                                "available position in the aircraft schedule."
+                            )
+                    except Exception:
+                        schedule_order_note = (
+                            "I couldn't move the selected route chain in the "
+                            "aircraft schedule."
+                        )
+                        log.exception(
+                            "Could not reorder selected route chain for aircraft %s",
+                            aircraft_id,
+                        )
+
+                    self.cog._schedule_cache.pop(aircraft_id, None)
 
                 for current in current_routes:
                     failed_route = current
@@ -1203,7 +1346,8 @@ class ClaimRouteView(discord.ui.View):
                 f"{copilot_line}"
                 f"Aircraft: **{registration}** ({_model_label(self.aircraft)})\n"
                 f"Airline hub: **{airline} · {hub}**\n"
-                f"Route(s):\n{route_lines}\n\n{RULES}",
+                f"Route(s):\n{route_lines}\n"
+                f"Schedule: {schedule_order_note}\n\n{RULES}",
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,
@@ -1248,6 +1392,8 @@ class ClaimRouteView(discord.ui.View):
                 )
             except Exception:
                 log.exception("Could not update assignment response")
+        finally:
+            self.cog._booking_lock.release()
 
     @discord.ui.button(
         label="Cancel",
@@ -1287,6 +1433,35 @@ class RequestFlightCog(commands.Cog):
         self._schedule_scan_cursor = 0
         self._scan_lock = asyncio.Lock()
         self._rate_limit_until = 0.0
+        self._booking_lock = asyncio.Lock()
+
+    async def get_organization_schedules(self, client):
+        """Fetch every organization schedule for an authoritative booking check."""
+        schedules = []
+        page_number = 1
+        total_pages = 1
+
+        while page_number <= total_pages:
+            page = await client.list_organization_schedules(
+                ORG_ID,
+                page=page_number,
+                page_size=100,
+            )
+            if page is None or not hasattr(page, "items"):
+                raise RuntimeError(
+                    "Infinite Flight returned an invalid organization schedule page"
+                )
+
+            schedules.extend(page.items or [])
+            try:
+                total_pages = max(1, int(page.total_pages or 1))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Infinite Flight returned an invalid organization page count"
+                ) from exc
+            page_number += 1
+
+        return schedules
 
     async def _get_fleet(self, client, force=False):
         now = time.monotonic()
@@ -1407,8 +1582,11 @@ class RequestFlightCog(commands.Cog):
 
             return schedules
 
-    async def booked_aircraft_ids(self, client, if_user_id):
-        """Return known assigned aircraft IDs and whether all snapshots are current."""
+    async def booked_aircraft_ids(self, client, if_user_id, schedules=None):
+        """Return aircraft with unflown outbound assignments and snapshot freshness."""
+        if schedules is not None:
+            return _counted_booked_aircraft_ids(schedules, if_user_id), True
+
         if not ORG_ID:
             raise RuntimeError("IF_ORGANIZATION_ID is not configured")
 
@@ -1495,14 +1673,9 @@ class RequestFlightCog(commands.Cog):
             if now - cached[0] >= SCHEDULE_CACHE_SECONDS:
                 stale_count += 1
 
-            schedules = _active_schedules(cached[1])
-
-            if any(
-                _crew_user_id(member) == target_id
-                for route in schedules
-                for member in (_get(route, "crew", []) or [])
-            ):
-                booked.add(aircraft_id)
+            booked.update(
+                _counted_booked_aircraft_ids(cached[1], target_id)
+            )
 
         cache_complete = missing_count == 0 and stale_count == 0
 
@@ -1516,6 +1689,143 @@ class RequestFlightCog(commands.Cog):
             )
 
         return booked, cache_complete
+
+    @app_commands.command(
+        name="current-assignments",
+        description="View your currently assigned aircraft and routes",
+    )
+    async def current_assignments(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if not ORG_ID:
+            await interaction.followup.send(
+                "The bot is missing `IF_ORGANIZATION_ID`.",
+                ephemeral=True,
+            )
+            return
+
+        pilots_model = getattr(self.bot, "pilots_model", None)
+        manager = getattr(self.bot, "if_live_manager", None)
+        if pilots_model is None or manager is None:
+            await interaction.followup.send(
+                "Pilot database or Infinite Flight services are unavailable. Contact staff.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            pilot = await pilots_model.get_pilot_by_discord_id(
+                str(interaction.user.id)
+            )
+            if not pilot:
+                await interaction.followup.send(
+                    "No active pilot profile is linked to your Discord account.",
+                    ephemeral=True,
+                )
+                return
+
+            if_user_id = str(pilot.get("ifuserid") or "").strip()
+            if not if_user_id:
+                await interaction.followup.send(
+                    "Your pilot profile has no Infinite Flight user ID. Contact staff to update it.",
+                    ephemeral=True,
+                )
+                return
+
+            async with await manager.get_client(TOKEN_OWNER_ID) as client:
+                schedules = await self.get_organization_schedules(client)
+                fleet = await self._get_fleet(client)
+
+            registration_by_aircraft = {
+                str(_get(aircraft, "id")): _registration(aircraft)
+                for aircraft in fleet
+                if _get(aircraft, "id") not in (None, "")
+            }
+            assignments = {}
+            for route in _active_schedules(schedules):
+                if not any(
+                    _crew_user_id(member) == if_user_id
+                    for member in (_get(route, "crew", []) or [])
+                ):
+                    continue
+
+                aircraft_id = str(_get(route, "aircraft_id") or "")
+                if not aircraft_id:
+                    continue
+                assignments.setdefault(aircraft_id, []).append(route)
+
+            if not assignments:
+                await interaction.followup.send(
+                    "You have no current aircraft assignments.",
+                    ephemeral=True,
+                )
+                return
+
+            status_labels = {
+                0: "Scheduled",
+                1: "Scheduled",
+                2: "Scheduled",
+                3: "Scheduled",
+                4: "Scheduled",
+                5: "Scheduled",
+                6: "In flight",
+                7: "Diverted",
+                10: "Taxiing",
+            }
+            embed = discord.Embed(
+                title=f"Current assignments · {pilot.get('callsign', 'Pilot')}",
+                description=(
+                    f"You have **{len(assignments)} distinct aircraft** assigned. "
+                    "Connected routes on the same aircraft count as one booking."
+                ),
+                color=discord.Color.blue(),
+            )
+
+            for aircraft_id, routes in sorted(
+                assignments.items(),
+                key=lambda item: registration_by_aircraft.get(item[0], item[0]),
+            )[:25]:
+                registration = (
+                    registration_by_aircraft.get(aircraft_id) or "Aircraft"
+                )
+                route_lines = []
+                for route in routes:
+                    try:
+                        status = int(_get(route, "status"))
+                    except (TypeError, ValueError):
+                        status = None
+                    status_label = status_labels.get(status, "Active")
+                    route_lines.append(
+                        f"• **{_get(route, 'callsign') or 'Callsign unavailable'}** "
+                        f"{_get(route, 'origin_icao') or '???'} → "
+                        f"{_get(route, 'destination_icao') or '???'} "
+                        f"· {status_label}"
+                    )
+
+                value = "\n".join(route_lines)
+                if len(value) > 1024:
+                    value = value[:1000].rsplit("\n", 1)[0] + "\n… more routes omitted"
+                embed.add_field(
+                    name=f"{registration} · {_airline_name({'registration': registration})}",
+                    value=value,
+                    inline=False,
+                )
+
+            if len(assignments) > 25:
+                embed.set_footer(
+                    text=f"Showing 25 of {len(assignments)} assigned aircraft."
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception:
+            log.exception(
+                "Could not load current assignments for Discord user %s",
+                interaction.user.id,
+            )
+            await interaction.followup.send(
+                "I couldn't load your current assignments. Please try again shortly.",
+                ephemeral=True,
+            )
 
     @app_commands.command(
         name="request-flight",
@@ -1681,8 +1991,8 @@ class RequestFlightCog(commands.Cog):
                 f"Airbus {counts['Airbus']} · "
                 f"Boeing {counts['Boeing']} · "
                 f"Other {counts['Other']}.\n\n"
-                f"⚠️ Maximum **{MAX_BOOKED_AIRCRAFT} distinct aircraft per pilot**. "
-                "Connected routes on the same aircraft count as one aircraft.",
+                f"⚠️ Maximum **{MAX_BOOKED_AIRCRAFT} aircraft with unflown outbound "
+                "routes per pilot**. Taken-off flights and return legs do not count.",
                 view=AircraftSelectView(self, pilot, aircraft),
                 ephemeral=True,
             )
@@ -1768,9 +2078,9 @@ class RequestFlightCog(commands.Cog):
                 await interaction.edit_original_response(
                     content=(
                         f"**{registration} does not have a complete connected route "
-                        f"chain in its schedule that returns to a LATAM hub "
-                        f"({hub}).** A route may end at an airport such as SBPS "
-                        "without a following scheduled route back to a LATAM hub. "
+                        f"chain in its schedule that returns to a configured "
+                        f"{airline} hub ({hub}).** A route may end at an airport "
+                        "without a following scheduled route back to a configured hub. "
                         "Please ask a Live Admin to add the missing connecting "
                         "routes to the schedule."
                     ),
@@ -1831,9 +2141,9 @@ class RequestFlightCog(commands.Cog):
             embed.add_field(
                 name="Aircraft booking limit",
                 value=(
-                    "Maximum **2 distinct aircraft per pilot**. Connected routes on "
-                    "the same aircraft count as one aircraft. If accidentally assigned "
-                    "to 3 aircraft, contact a Live Admin."
+                    "Maximum **2 aircraft with unflown outbound routes per pilot**. "
+                    "Once a route takes off, its aircraft no longer counts. Return "
+                    "legs do not count toward the limit."
                 ),
                 inline=False,
             )

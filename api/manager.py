@@ -136,6 +136,19 @@ class InfiniteFlightAPIManager:
         # The correct endpoint uses plural 'users' and 'flights'
         # This returns a paginated result including 'data' list.
         return await self._request('GET', f'/users/{user_id}/flights')
+
+    async def get_user_flights_page(
+        self,
+        user_id: str,
+        page_index: int = 0,
+        page_size: int = 25,
+    ) -> Dict:
+        """Fetch a page of confirmed Infinite Flight user flight history."""
+        return await self._request(
+            'GET',
+            f'/users/{user_id}/flights',
+            params={"pageIndex": page_index, "pageSize": page_size},
+        )
     
     async def get_user_flights_all_time(self, user_id: str, limit: int = 4) -> Dict:
         """
