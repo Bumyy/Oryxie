@@ -286,6 +286,18 @@ def _active_schedules(schedules):
     ]
 
 
+def _assigned_schedule_prefix(schedules):
+    """Return the index and ID of the last consecutively assigned route."""
+    index = 0
+    after_id = None
+    for route in schedules:
+        if not (_get(route, "crew", []) or []):
+            break
+        after_id = str(_get(route, "id"))
+        index += 1
+    return index, after_id
+
+
 def _next_claimable_index(schedules):
     for index, route in enumerate(schedules):
         if not (_get(route, "crew", []) or []):
@@ -1132,70 +1144,131 @@ class ClaimRouteView(discord.ui.View):
                     )
                     return
 
-                assigned_before = [
-                    route
-                    for route in schedules[:start_index]
-                    if _get(route, "crew", []) or []
-                ]
-                after_id = (
-                    str(_get(assigned_before[-1], "id"))
-                    if assigned_before
-                    else None
-                )
+                insertion_index, after_id = _assigned_schedule_prefix(schedules)
+                route_ids = _route_ids(current_routes)
                 already_positioned = (
-                    start_index == 0
-                    if after_id is None
-                    else (
-                        start_index > 0
-                        and str(_get(schedules[start_index - 1], "id"))
-                        == after_id
+                    _route_ids(
+                        schedules[
+                            insertion_index : insertion_index + len(route_ids)
+                        ]
                     )
+                    == route_ids
                 )
 
-                if already_positioned:
-                    schedule_order_note = (
-                        "The selected route chain was already in the correct "
-                        "schedule position."
-                    )
-                else:
+                if not already_positioned:
                     next_after_id = after_id
-                    try:
-                        for route in current_routes:
-                            route_id = str(_get(route, "id"))
+                    reordered_count = 0
+                    for route_id in route_ids:
+                        try:
                             reordered = await client.reorder_schedules(
                                 aircraft_id,
                                 route_id,
                                 after_id=next_after_id,
                             )
-                            if not reordered:
-                                schedule_order_note = (
-                                    "I couldn't move the selected route chain "
-                                    "in the aircraft schedule."
-                                )
-                                log.warning(
-                                    "Infinite Flight did not reorder schedule %s "
-                                    "for aircraft %s.",
-                                    route_id,
-                                    aircraft_id,
-                                )
-                                break
-                            next_after_id = route_id
-                        else:
-                            schedule_order_note = (
-                                "The selected route chain was moved to the next "
-                                "available position in the aircraft schedule."
+                        except Exception:
+                            log.exception(
+                                "Could not reorder schedule %s for aircraft %s",
+                                route_id,
+                                aircraft_id,
                             )
-                    except Exception:
-                        schedule_order_note = (
-                            "I couldn't move the selected route chain in the "
-                            "aircraft schedule."
-                        )
-                        log.exception(
-                            "Could not reorder selected route chain for aircraft %s",
-                            aircraft_id,
-                        )
+                            partial_reorder_note = (
+                                f" Up to {reordered_count + 1} route(s) may already "
+                                "have moved; check the schedule before retrying."
+                                if reordered_count
+                                else ""
+                            )
+                            await interaction.edit_original_response(
+                                content=(
+                                    "I couldn't move the selected route chain beneath "
+                                    "the already-assigned routes. Nothing was assigned;"
+                                    f"{partial_reorder_note} please contact a Live Admin."
+                                ),
+                                embed=None,
+                                view=None,
+                            )
+                            return
+
+                        if not reordered:
+                            log.warning(
+                                "Infinite Flight did not reorder schedule %s "
+                                "for aircraft %s.",
+                                route_id,
+                                aircraft_id,
+                            )
+                            partial_reorder_note = (
+                                f" Up to {reordered_count} route(s) may already have "
+                                "moved; check the schedule before retrying."
+                                if reordered_count
+                                else ""
+                            )
+                            await interaction.edit_original_response(
+                                content=(
+                                    "Infinite Flight rejected the schedule reorder. "
+                                    "Nothing was assigned;"
+                                    f"{partial_reorder_note} please contact a Live Admin."
+                                ),
+                                embed=None,
+                                view=None,
+                            )
+                            return
+                        next_after_id = route_id
+                        reordered_count += 1
 
                     self.cog._schedule_cache.pop(aircraft_id, None)
+                    try:
+                        reordered_schedules = _active_schedules(
+                            await self.cog.get_schedules(
+                                client,
+                                aircraft_id,
+                                force=True,
+                            )
+                        )
+                    except Exception:
+                        log.exception(
+                            "Could not verify reordered schedules for aircraft %s",
+                            aircraft_id,
+                        )
+                        await interaction.edit_original_response(
+                            content=(
+                                "The schedule reorder was requested, but I couldn't "
+                                "verify the new order. Nothing was assigned; please "
+                                "check the aircraft schedule before retrying."
+                            ),
+                            embed=None,
+                            view=None,
+                        )
+                        return
+
+                    verified_index, _ = _assigned_schedule_prefix(
+                        reordered_schedules
+                    )
+                    if (
+                        _route_ids(
+                            reordered_schedules[
+                                verified_index : verified_index + len(route_ids)
+                            ]
+                        )
+                        != route_ids
+                    ):
+                        log.error(
+                            "Schedule reorder verification failed for aircraft %s",
+                            aircraft_id,
+                        )
+                        await interaction.edit_original_response(
+                            content=(
+                                "Infinite Flight did not place the selected routes "
+                                "beneath the already-assigned routes. Nothing was "
+                                "assigned; please contact a Live Admin."
+                            ),
+                            embed=None,
+                            view=None,
+                        )
+                        return
+
+                schedule_order_note = (
+                    "The selected route chain is beneath all consecutive "
+                    "already-assigned routes."
+                )
 
                 for current in current_routes:
                     failed_route = current
