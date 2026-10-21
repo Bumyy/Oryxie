@@ -221,6 +221,14 @@ def _queue_emoji(assigned_before):
     return "🔴"
 
 
+def _queue_group(assigned_before):
+    if assigned_before <= GREEN_MAX_FLIGHTS_AHEAD:
+        return "green"
+    if assigned_before <= YELLOW_MAX_FLIGHTS_AHEAD:
+        return "yellow"
+    return "red"
+
+
 class AvailabilityView(discord.ui.View):
     """Public, paginated aircraft availability list."""
 
@@ -231,13 +239,28 @@ class AvailabilityView(discord.ui.View):
         self.rows = rows
         self.failed_count = failed_count
         self.page = page
+        self.pages = self._build_pages()
 
         self._update_buttons()
+
+    def _build_pages(self):
+        grouped = {"green": [], "yellow": [], "red": []}
+        for row in sorted(self.rows, key=lambda item: item[0].upper()):
+            grouped[_queue_group(row[4])].append(row)
+
+        pages = []
+        for group in ("green", "yellow", "red"):
+            rows = grouped[group]
+            pages.extend(
+                (group, rows[start:start + PAGE_SIZE])
+                for start in range(0, len(rows), PAGE_SIZE)
+            )
+        return pages
 
     def _update_buttons(self):
         self.clear_items()
 
-        if len(self.rows) > PAGE_SIZE:
+        if len(self.pages) > 1:
             previous = discord.ui.Button(
                 label="Previous",
                 style=discord.ButtonStyle.secondary,
@@ -249,7 +272,7 @@ class AvailabilityView(discord.ui.View):
             next_button = discord.ui.Button(
                 label="Next",
                 style=discord.ButtonStyle.secondary,
-                disabled=(self.page + 1) * PAGE_SIZE >= len(self.rows),
+                disabled=self.page + 1 >= len(self.pages),
             )
             next_button.callback = self.next_page
             self.add_item(next_button)
@@ -263,33 +286,36 @@ class AvailabilityView(discord.ui.View):
         self.add_item(refresh)
 
     def make_embed(self):
-        total_pages = max(
-            1,
-            (len(self.rows) + PAGE_SIZE - 1) // PAGE_SIZE,
+        total_pages = max(1, len(self.pages))
+        page_group, page_rows = (
+            self.pages[self.page] if self.pages else ("green", [])
         )
+        page_colors = {
+            "green": discord.Color.green(),
+            "yellow": discord.Color.yellow(),
+            "red": discord.Color.red(),
+        }
+        group_labels = {
+            "green": "🟢 Ready now",
+            "yellow": "🟡 1–2 assigned flights ahead",
+            "red": "🔴 3 or more assigned flights ahead",
+        }
 
         embed = discord.Embed(
-            title="Qatari Virtual · Aircraft Availability",
+            title=f"Qatari Virtual · Aircraft Availability · {group_labels[page_group]}",
             description=(
                 "Public live-schedule snapshot. **Available** means the next "
                 "unassigned active route can be requested.\n"
                 "This command only checks schedules; it never assigns a flight.\n\n"
-                "**Queue indicators — assigned flights ahead of your turn:**\n"
-                "🟢 **Green:** 0 flights ahead — next route is ready to claim.\n"
-                "🟡 **Yellow:** 1–2 flights ahead.\n"
-                "🔴 **Red:** 3 or more flights ahead.\n\n"
-                "The queue indicator is based on assigned routes before the "
-                "next unassigned route, not a guaranteed waiting time.\n"
+                "Aircraft are grouped by queue status: green first, then yellow, "
+                "then red. Queue status counts assigned flights before the next "
+                "unassigned route; it is not a guaranteed waiting time.\n"
                 "Use **Refresh** to check updated availability."
                 "\n\n⚠️ This list and its buttons stop responding after 5 minutes. "
                 "Run /available-aircraft again to check availability."
             ),
-            color=discord.Color.teal(),
+            color=page_colors[page_group],
         )
-
-        page_rows = self.rows[
-            self.page * PAGE_SIZE:(self.page + 1) * PAGE_SIZE
-        ]
 
         if not page_rows:
             embed.add_field(
@@ -332,7 +358,7 @@ class AvailabilityView(discord.ui.View):
 
         embed.set_footer(
             text=(
-                f"Page {self.page + 1}/{total_pages} · "
+                f"{group_labels[page_group]} · Page {self.page + 1}/{total_pages} · "
                 "The schedule snapshot includes the full organization fleet; "
                 "cached results are retained during API limits."
             )
@@ -352,7 +378,7 @@ class AvailabilityView(discord.ui.View):
         await self._edit(interaction)
 
     async def next_page(self, interaction):
-        max_page = max(0, (len(self.rows) - 1) // PAGE_SIZE)
+        max_page = max(0, len(self.pages) - 1)
         self.page = min(max_page, self.page + 1)
         await self._edit(interaction)
 
@@ -366,9 +392,10 @@ class AvailabilityView(discord.ui.View):
 
             self.rows = rows
             self.failed_count = failed_count
+            self.pages = self._build_pages()
             self.page = min(
                 self.page,
-                max(0, (len(rows) - 1) // PAGE_SIZE),
+                max(0, len(self.pages) - 1),
             )
 
             self._update_buttons()
