@@ -84,7 +84,7 @@ AIRLINE_HUBS = {
     "LATAM": ("SCEL", "SBGR", "SPJC"),
     "JAL": "RJTT",
     "Qantas": "YSSY",
-    "American Airlines": ("KDFW", "KJFK"),
+    "American Airlines": ("KDFW", "KJFK", "KPHX"),
 }
 
 RULES = (
