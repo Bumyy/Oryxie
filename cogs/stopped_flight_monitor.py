@@ -655,6 +655,7 @@ class StoppedFlightMonitor(commands.Cog):
 
     async def _send_eta_warning(self, row, if_user_ids, eta):
         sent_any = False
+        delivered_recipients = []
         for if_user_id in if_user_ids:
             pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
             discord_id = str((pilot or {}).get("discordid") or "")
@@ -671,11 +672,20 @@ class StoppedFlightMonitor(commands.Cog):
                     "after one hour stopped."
                 )
                 sent_any = True
+                delivered_recipients.append(
+                    f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
+                )
             except (discord.Forbidden, discord.HTTPException):
                 log.exception(
                     "Could not send 30-minute arrival warning to IF user %s",
                     if_user_id,
                 )
+        if delivered_recipients:
+            await self._send_dm_recipient_report(
+                row,
+                "30-minute arrival warning",
+                delivered_recipients,
+            )
         return sent_any
 
     async def _unassign_and_alert(self, client, model, schedule, row):
@@ -715,8 +725,20 @@ class StoppedFlightMonitor(commands.Cog):
             expected_lifecycle="monitoring",
         )
         row = await model.get_incident(schedule_id)
+        delivered_recipients = []
         for if_user_id in original_ids:
-            await self._notify_unassigned_pilot(model, row, if_user_id)
+            recipient = await self._notify_unassigned_pilot(
+                model,
+                row,
+                if_user_id,
+            )
+            if recipient:
+                delivered_recipients.append(recipient)
+        await self._send_dm_recipient_report(
+            row,
+            "1-hour crew removal notice",
+            delivered_recipients,
+        )
         try:
             await self._send_pilot_wave(model, row, wave=1)
         except Exception:
@@ -748,8 +770,10 @@ class StoppedFlightMonitor(commands.Cog):
                 channel_id=str(message.channel.id),
                 message_id=str(message.id),
             )
+            return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
         except (discord.Forbidden, discord.HTTPException):
             log.exception("Could not DM pilot %s about stopped-flight removal", if_user_id)
+        return None
 
     async def _recent_live_flight_count(self, if_user_id):
         now = _utcnow()
@@ -900,7 +924,16 @@ class StoppedFlightMonitor(commands.Cog):
                     delivery_status="failed",
                 )
             await asyncio.sleep(0.5)
-        await self._send_dm_recipient_report(row, wave, delivered_recipients)
+        wave_labels = {
+            1: "1-hour recovery alert",
+            2: "2-hour follow-up",
+            3: "3-hour follow-up",
+        }
+        await self._send_dm_recipient_report(
+            row,
+            wave_labels.get(wave, f"Wave {wave}"),
+            delivered_recipients,
+        )
         log.info(
             "Stopped-flight wave %s for schedule %s sent to %s eligible pilots.",
             wave,
@@ -908,28 +941,22 @@ class StoppedFlightMonitor(commands.Cog):
             len(delivered_recipients),
         )
 
-    async def _send_dm_recipient_report(self, row, wave, recipients):
-        channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
-        if channel is None:
-            channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
-
-        wave_labels = {
-            1: "1-hour recovery alert",
-            2: "2-hour follow-up",
-            3: "3-hour follow-up",
-        }
+    async def _send_dm_recipient_report(self, row, event_label, recipients):
         recipient_list = "\n".join(f"• {recipient}" for recipient in recipients)
         if not recipient_list:
             recipient_list = "No eligible pilots received a DM."
         try:
+            channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
+            if channel is None:
+                channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
             await channel.send(
-                f"📨 **Stopped-flight DM report · {wave_labels.get(wave, f'Wave {wave}')}**\n"
+                f"📨 **Stopped-flight DM report · {event_label}**\n"
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']})\n"
                 f"{recipient_list}",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except discord.HTTPException:
+        except (discord.Forbidden, discord.HTTPException):
             log.exception(
                 "Could not post stopped-flight DM recipient report for schedule %s",
                 row["schedule_id"],
