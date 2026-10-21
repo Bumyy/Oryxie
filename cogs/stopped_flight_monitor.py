@@ -15,7 +15,6 @@ log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
-ALERT_CHANNEL_ID = int(os.getenv("STOPPED_FLIGHT_ALERT_CHANNEL_ID", "0") or 0)
 STAFF_CHANNEL_ID = int(os.getenv("STOPPED_FLIGHT_STAFF_CHANNEL_ID", "0") or 0)
 FLEET_ROLE_ID = int(os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "0") or 0)
 TOKEN_OWNER_ID = 1
@@ -148,8 +147,8 @@ class StoppedFlightMonitor(commands.Cog):
         if not ORG_ID:
             log.error("IF_ORGANIZATION_ID is not configured; stopped-flight monitoring is disabled.")
             return
-        if not all((GUILD_ID, ALERT_CHANNEL_ID, STAFF_CHANNEL_ID, FLEET_ROLE_ID)):
-            log.error("Stopped-flight monitoring requires guild, alert, staff, and fleet-role IDs.")
+        if not all((GUILD_ID, STAFF_CHANNEL_ID, FLEET_ROLE_ID)):
+            log.error("Stopped-flight monitoring requires guild, staff, and fleet-role IDs.")
             return
 
         model = getattr(self.bot, "stopped_flight_model", None)
@@ -363,8 +362,6 @@ class StoppedFlightMonitor(commands.Cog):
             row = await self._unassign_and_alert(client, model, schedule, row)
             if not row:
                 return
-        elif row["lifecycle"] == "available" and not row.get("alert_message_id"):
-            await self._send_alert_message(model, row)
         if elapsed >= timedelta(hours=2) and not row["two_hour_sent"]:
             await self._send_pilot_wave(model, row, wave=2)
             await model.update_incident(
@@ -452,31 +449,10 @@ class StoppedFlightMonitor(commands.Cog):
         for if_user_id in original_ids:
             await self._notify_unassigned_pilot(model, row, if_user_id)
         try:
-            await self._send_alert_message(model, row)
+            await self._send_pilot_wave(model, row, wave=1)
         except Exception:
-            log.exception("Could not post stopped-flight alert for %s", schedule_id)
+            log.exception("Could not send one-hour recovery DMs for %s", schedule_id)
         return row
-
-    async def _send_alert_message(self, model, row):
-        channel = self.bot.get_channel(ALERT_CHANNEL_ID)
-        if channel is None:
-            channel = await self.bot.fetch_channel(ALERT_CHANNEL_ID)
-        message = await channel.send(
-            f"<@&{FLEET_ROLE_ID}> ⚠️ **Stopped flight needs a pilot immediately**\n"
-            f"**{row['registration']} · {row['callsign']}**: "
-            f"{row['origin_icao']} → {row['destination_icao']}\n"
-            "The assigned crew has been removed after one hour stopped. "
-            "A fleet-role pilot may claim this route without using a normal aircraft slot.",
-            view=self._claim_view(str(row["schedule_id"])),
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
-        await model.update_incident(
-            row["schedule_id"],
-            {
-                "alert_channel_id": str(channel.id),
-                "alert_message_id": str(message.id),
-            },
-        )
 
     async def _notify_unassigned_pilot(self, model, row, if_user_id):
         pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
@@ -609,9 +585,10 @@ class StoppedFlightMonitor(commands.Cog):
                     f"🚨 **Stopped flight available now**\n"
                     f"**{row['registration']} · {row['callsign']}**\n"
                     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
-                    "The aircraft has been stopped in the air and the previous "
-                    "crew was removed. Claiming this recovery flight does **not** "
-                    "count toward your normal two-aircraft booking limit.",
+                    "The aircraft has been stopped in the air for at least one "
+                    "hour and the previous crew was removed. Claiming this recovery "
+                    "flight does **not** count toward your normal two-aircraft "
+                    "booking limit.",
                     view=self._claim_view(str(row["schedule_id"])),
                 )
                 await model.record_dm_event(
