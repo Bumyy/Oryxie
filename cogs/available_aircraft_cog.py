@@ -18,7 +18,6 @@ TOKEN_OWNER_ID = 1
 FLEET_CACHE_SECONDS = 300
 SCHEDULE_CACHE_SECONDS = 300
 PAGE_SIZE = 10
-VIEW_TIMEOUT_SECONDS = 300
 
 # Queue color thresholds based on assigned flights before the next
 # unassigned route.
@@ -233,7 +232,7 @@ class AvailabilityView(discord.ui.View):
     """Public, paginated aircraft availability list."""
 
     def __init__(self, cog, rows, failed_count=0, page=0):
-        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+        super().__init__(timeout=None)
 
         self.cog = cog
         self.rows = rows
@@ -260,27 +259,29 @@ class AvailabilityView(discord.ui.View):
     def _update_buttons(self):
         self.clear_items()
 
-        if len(self.pages) > 1:
-            previous = discord.ui.Button(
-                label="Previous",
-                style=discord.ButtonStyle.secondary,
-                disabled=self.page <= 0,
-            )
-            previous.callback = self.previous_page
-            self.add_item(previous)
+        previous = discord.ui.Button(
+            label="Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.page <= 0,
+            custom_id="available-aircraft:previous",
+        )
+        previous.callback = self.previous_page
+        self.add_item(previous)
 
-            next_button = discord.ui.Button(
-                label="Next",
-                style=discord.ButtonStyle.secondary,
-                disabled=self.page + 1 >= len(self.pages),
-            )
-            next_button.callback = self.next_page
-            self.add_item(next_button)
+        next_button = discord.ui.Button(
+            label="Next",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.page + 1 >= len(self.pages),
+            custom_id="available-aircraft:next",
+        )
+        next_button.callback = self.next_page
+        self.add_item(next_button)
 
         refresh = discord.ui.Button(
             label="Refresh",
             style=discord.ButtonStyle.primary,
             emoji="🔄",
+            custom_id="available-aircraft:refresh",
         )
         refresh.callback = self.refresh_list
         self.add_item(refresh)
@@ -311,8 +312,7 @@ class AvailabilityView(discord.ui.View):
                 "then red. Queue status counts assigned flights before the next "
                 "unassigned route; it is not a guaranteed waiting time.\n"
                 "Use **Refresh** to check updated availability."
-                "\n\n⚠️ This list and its buttons stop responding after 5 minutes. "
-                "Run /available-aircraft again to check availability."
+                "\n\nUse **Previous**, **Next**, or **Refresh** to browse the live list."
             ),
             color=page_colors[page_group],
         )
@@ -366,53 +366,61 @@ class AvailabilityView(discord.ui.View):
 
         return embed
 
-    async def _edit(self, interaction):
-        self._update_buttons()
-        await interaction.response.edit_message(
-            embed=self.make_embed(),
-            view=self,
-        )
+    @staticmethod
+    def _message_page(interaction):
+        if not interaction.message or not interaction.message.embeds:
+            return 0
+        footer = interaction.message.embeds[0].footer.text or ""
+        for section in footer.split("·"):
+            section = section.strip()
+            if section.startswith("Page "):
+                try:
+                    return max(0, int(section[5:].split("/", 1)[0]) - 1)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
 
-    async def previous_page(self, interaction):
-        self.page = max(0, self.page - 1)
-        await self._edit(interaction)
-
-    async def next_page(self, interaction):
-        max_page = max(0, len(self.pages) - 1)
-        self.page = min(max_page, self.page + 1)
-        await self._edit(interaction)
-
-    async def refresh_list(self, interaction):
+    async def _edit(self, interaction, page, force_refresh=False):
         await interaction.response.defer()
-
         try:
             rows, failed_count = await self.cog.collect_availability(
-                force_refresh=True
+                force_refresh=force_refresh
             )
-
-            self.rows = rows
-            self.failed_count = failed_count
-            self.pages = self._build_pages()
-            self.page = min(
-                self.page,
-                max(0, len(self.pages) - 1),
+            updated_view = AvailabilityView(
+                self.cog,
+                rows,
+                failed_count=failed_count,
+                page=page,
             )
-
-            self._update_buttons()
-
+            updated_view.page = min(
+                max(0, page),
+                max(0, len(updated_view.pages) - 1),
+            )
+            updated_view._update_buttons()
             await interaction.edit_original_response(
-                embed=self.make_embed(),
-                view=self,
+                embed=updated_view.make_embed(),
+                view=updated_view,
             )
-
         except Exception:
-            log.exception("Failed to refresh public aircraft availability")
-
+            log.exception("Failed to update public aircraft availability")
             await interaction.followup.send(
-                "I couldn't refresh the aircraft list right now. "
+                "I couldn't update the aircraft list right now. "
                 "Please try again shortly.",
                 ephemeral=True,
             )
+
+    async def previous_page(self, interaction):
+        await self._edit(interaction, self._message_page(interaction) - 1)
+
+    async def next_page(self, interaction):
+        await self._edit(interaction, self._message_page(interaction) + 1)
+
+    async def refresh_list(self, interaction):
+        await self._edit(
+            interaction,
+            self._message_page(interaction),
+            force_refresh=True,
+        )
 
 
 class AvailableAircraftCog(commands.Cog):
@@ -422,6 +430,9 @@ class AvailableAircraftCog(commands.Cog):
         self._fleet_at = 0.0
         self._fleet_lock = asyncio.Lock()
         self._schedule_cache = {}
+
+    async def cog_load(self):
+        self.bot.add_view(AvailabilityView(self, []))
 
     async def _get_fleet(self, client):
         now = time.monotonic()
