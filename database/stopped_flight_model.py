@@ -40,6 +40,41 @@ class StoppedFlightModel:
                     "database/stopped_flight_monitor_mysql_schema.sql"
                 )
 
+    async def has_aircraft_status_table(self) -> bool:
+        return bool(
+            await self.db.fetch_one(
+                "SHOW TABLES LIKE %s",
+                ("if_aircraft_status_logs",),
+            )
+        )
+
+    async def get_aircraft_statuses(self) -> dict[str, str]:
+        rows = await self.db.fetch_all(
+            "SELECT aircraft_id, status_text FROM if_aircraft_status_logs"
+        )
+        return {
+            str(row["aircraft_id"]): str(row["status_text"])
+            for row in rows or []
+        }
+
+    async def set_aircraft_status(
+        self,
+        aircraft_id: str,
+        registration: str,
+        status_text: str,
+    ) -> int:
+        return await self.db.execute(
+            """
+            INSERT INTO if_aircraft_status_logs
+                (aircraft_id, registration, status_text)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                registration = VALUES(registration),
+                status_text = VALUES(status_text)
+            """,
+            (str(aircraft_id), registration, status_text),
+        )
+
     async def sync_route_availability(
         self,
         aircraft_id: str,

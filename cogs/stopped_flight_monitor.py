@@ -19,6 +19,9 @@ STAFF_CHANNEL_ID = int(os.getenv("STOPPED_FLIGHT_STAFF_CHANNEL_ID", "0") or 0)
 DM_LOG_CHANNEL_ID = int(
     os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "0") or 0
 )
+STATUS_LOG_CHANNEL_ID = int(
+    os.getenv("AIRCRAFT_STATUS_LOG_CHANNEL_ID", "0") or 0
+)
 FLEET_ROLE_ID = int(os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "0") or 0)
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", "0") or 0
@@ -46,6 +49,13 @@ def _status(schedule):
         return int(_get(schedule, "status"))
     except (TypeError, ValueError):
         return None
+
+
+def _sequence(schedule):
+    try:
+        return int(_get(schedule, "sequence", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _crew_members(schedule):
@@ -108,6 +118,89 @@ def _eta_minutes(bot, position, destination_icao):
     return distance * 60 / speed
 
 
+def _nearest_airport_icao(bot, position):
+    airports = getattr(getattr(bot, "flightdata", None), "airports_db", None)
+    if not airports:
+        return None
+    try:
+        latitude = float(_get(position, "latitude"))
+        longitude = float(_get(position, "longitude"))
+    except (TypeError, ValueError):
+        return None
+
+    nearest_icao = None
+    nearest_distance = float("inf")
+    for icao, airport in airports.items():
+        try:
+            distance = _distance_nm(
+                latitude,
+                longitude,
+                float(airport["latitude_deg"]),
+                float(airport["longitude_deg"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if distance < nearest_distance:
+            nearest_distance = distance
+            nearest_icao = str(icao).upper()
+
+    return nearest_icao if nearest_distance <= 25 else None
+
+
+def _aircraft_status_text(bot, position, schedules):
+    try:
+        state = int(_get(position, "state", -1))
+    except (TypeError, ValueError):
+        state = -1
+    on_ground = bool(_get(position, "is_on_ground", False))
+    active_schedules = sorted(
+        (
+            schedule
+            for schedule in schedules or []
+            if _status(schedule) not in {8, 9, 11}
+        ),
+        key=_sequence,
+    )
+    current_flight = next(
+        (schedule for schedule in active_schedules if _status(schedule) == 6),
+        None,
+    )
+    taxiing_flight = next(
+        (schedule for schedule in active_schedules if _status(schedule) == 10),
+        None,
+    )
+    destination = str(
+        _get(current_flight, "destination_icao", "") or ""
+    ).strip().upper()
+    taxiing_destination = str(
+        _get(taxiing_flight, "destination_icao", "") or ""
+    ).strip().upper()
+
+    if state == 5:
+        return "MAINTENANCE"
+    if state == STOPPED_POSITION_STATE and not on_ground:
+        return f"STOPPED IN AIR · ENROUTE TO {destination}" if destination else "STOPPED IN AIR"
+    if taxiing_flight:
+        return (
+            f"TAXIING TO {taxiing_destination}"
+            if taxiing_destination
+            else "TAXIING"
+        )
+    if not on_ground or state == 2:
+        return f"ENROUTE TO {destination}" if destination else "ENROUTE"
+
+    airport = _nearest_airport_icao(bot, position)
+    if airport:
+        return f"PARKED AT {airport}"
+    if active_schedules:
+        origin = str(
+            _get(active_schedules[0], "origin_icao", "") or ""
+        ).strip().upper()
+        if origin:
+            return f"PARKED AT {origin}"
+    return "PARKED · LOCATION UNKNOWN"
+
+
 def _weight_pick(candidates, count):
     """Weighted sampling without replacement, proportional to recent flights."""
     remaining = list(candidates)
@@ -146,6 +239,7 @@ class StoppedFlightMonitor(commands.Cog):
         self.bot = bot
         self._registered_views = set()
         self._activity_cache = {}
+        self._warned_status_logging_disabled = False
         self.monitor_stopped_flights.start()
 
     def cog_unload(self):
@@ -199,6 +293,12 @@ class StoppedFlightMonitor(commands.Cog):
                         has_active_routes,
                     )
                 await self._send_route_exhaustion_alerts(model)
+                positions = await self._log_fleet_status_changes(
+                    client,
+                    model,
+                    fleet,
+                    schedules_by_aircraft,
+                )
 
                 active = [
                     schedule
@@ -216,7 +316,9 @@ class StoppedFlightMonitor(commands.Cog):
                         if not existing:
                             continue
                     try:
-                        position = await client.get_aircraft_position(aircraft_id)
+                        position = positions.get(aircraft_id)
+                        if position is None:
+                            position = await client.get_aircraft_position(aircraft_id)
                         await self._process_schedule(
                             client,
                             model,
@@ -264,6 +366,114 @@ class StoppedFlightMonitor(commands.Cog):
                     "Could not post route exhaustion alert for aircraft %s",
                     aircraft["aircraft_id"],
                 )
+
+    async def _log_fleet_status_changes(
+        self,
+        client,
+        model,
+        fleet,
+        schedules_by_aircraft,
+    ):
+        if not STATUS_LOG_CHANNEL_ID:
+            if not self._warned_status_logging_disabled:
+                log.warning(
+                    "Aircraft status logging is disabled; set "
+                    "AIRCRAFT_STATUS_LOG_CHANNEL_ID to enable it."
+                )
+                self._warned_status_logging_disabled = True
+            return {}
+
+        if not await model.has_aircraft_status_table():
+            log.error(
+                "Aircraft status logging is disabled because "
+                "if_aircraft_status_logs is missing; apply "
+                "database/stopped_flight_monitor_mysql_schema.sql."
+            )
+            return {}
+
+        previous_statuses = await model.get_aircraft_statuses()
+        current_statuses = {}
+        positions = {}
+        for aircraft in fleet or []:
+            aircraft_id = str(_get(aircraft, "id") or "")
+            if not aircraft_id:
+                continue
+            try:
+                position = await client.get_aircraft_position(aircraft_id)
+            except Exception:
+                log.exception(
+                    "Could not load position for aircraft status log %s",
+                    aircraft_id,
+                )
+                continue
+            positions[aircraft_id] = position
+            registration = str(
+                _get(aircraft, "registration") or "Unknown aircraft"
+            )
+            current_statuses[aircraft_id] = (
+                registration,
+                _aircraft_status_text(
+                    self.bot,
+                    position,
+                    schedules_by_aircraft.get(aircraft_id, []),
+                ),
+            )
+
+        changed = [
+            (aircraft_id, registration, status_text)
+            for aircraft_id, (registration, status_text) in current_statuses.items()
+            if previous_statuses.get(aircraft_id) != status_text
+        ]
+        if not changed:
+            return positions
+
+        channel = self.bot.get_channel(STATUS_LOG_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(STATUS_LOG_CHANNEL_ID)
+            except (discord.Forbidden, discord.HTTPException):
+                log.exception(
+                    "Could not access aircraft status log channel %s",
+                    STATUS_LOG_CHANNEL_ID,
+                )
+                return positions
+        header = "✈️ **Aircraft status updates**"
+        chunks = []
+        current_entries = []
+        current_length = len(header)
+        for entry in changed:
+            aircraft_id, registration, status_text = entry
+            line = f"• **{registration}** — {status_text}"
+            if current_entries and current_length + len(line) + 1 > 1800:
+                chunks.append(current_entries)
+                current_entries = []
+                current_length = len(header)
+            current_entries.append(entry)
+            current_length += len(line) + 1
+        if current_entries:
+            chunks.append(current_entries)
+
+        for chunk in chunks:
+            content = "\n".join(
+                [header]
+                + [
+                    f"• **{registration}** — {status_text}"
+                    for _, registration, status_text in chunk
+                ]
+            )
+            try:
+                await channel.send(content)
+            except discord.HTTPException:
+                log.exception("Could not post aircraft status updates.")
+                break
+            for aircraft_id, registration, status_text in chunk:
+                await model.set_aircraft_status(
+                    aircraft_id,
+                    registration,
+                    status_text,
+                )
+            await asyncio.sleep(0.5)
+        return positions
 
     async def _register_active_views(self, model):
         rows = await model.list_claimable_incidents()
