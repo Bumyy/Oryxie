@@ -1495,14 +1495,14 @@ class CopilotConfirmationView(discord.ui.View):
     )
     async def confirm(self, interaction, button):
         await interaction.response.defer()
-        await self.claim_view.confirm(interaction)
+        await self.claim_view.confirm(interaction, button)
 
     @discord.ui.button(
         label="Cancel",
         style=discord.ButtonStyle.secondary,
     )
     async def cancel(self, interaction, button):
-        await self.claim_view.cancel(interaction)
+        await self.claim_view.cancel(interaction, button)
 
 
 class RequestFlightCog(commands.Cog):
