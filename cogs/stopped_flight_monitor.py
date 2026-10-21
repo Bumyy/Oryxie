@@ -17,6 +17,12 @@ ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 STAFF_CHANNEL_ID = int(os.getenv("STOPPED_FLIGHT_STAFF_CHANNEL_ID", "0") or 0)
 FLEET_ROLE_ID = int(os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "0") or 0)
+ROUTE_EXHAUSTION_CHANNEL_ID = int(
+    os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", "0") or 0
+)
+ROUTE_EXHAUSTION_ROLE_ID = int(
+    os.getenv("ROUTE_EXHAUSTION_ROLE_ID", "0") or 0
+)
 TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
 STOPPED_POSITION_STATE = 4
@@ -169,6 +175,25 @@ class StoppedFlightMonitor(commands.Cog):
                     )
                     for aircraft in fleet or []
                 }
+                schedules_by_aircraft = {}
+                for schedule in schedules:
+                    aircraft_id = str(_get(schedule, "aircraft_id") or "")
+                    if aircraft_id:
+                        schedules_by_aircraft.setdefault(aircraft_id, []).append(
+                            schedule
+                        )
+                for aircraft_id, registration in registrations.items():
+                    has_active_routes = any(
+                        _status(schedule) not in {8, 9, 11}
+                        for schedule in schedules_by_aircraft.get(aircraft_id, [])
+                    )
+                    await model.sync_route_availability(
+                        aircraft_id,
+                        registration,
+                        has_active_routes,
+                    )
+                await self._send_route_exhaustion_alerts(model)
+
                 active = [
                     schedule
                     for schedule in schedules
@@ -205,6 +230,34 @@ class StoppedFlightMonitor(commands.Cog):
     @monitor_stopped_flights.before_loop
     async def before_monitor_stopped_flights(self):
         await self.bot.wait_until_ready()
+
+    async def _send_route_exhaustion_alerts(self, model):
+        if not ROUTE_EXHAUSTION_CHANNEL_ID or not ROUTE_EXHAUSTION_ROLE_ID:
+            log.error(
+                "Route exhaustion alerts require channel and role IDs."
+            )
+            return
+        pending = await model.list_pending_route_exhaustion_alerts()
+        for aircraft in pending:
+            try:
+                channel = self.bot.get_channel(ROUTE_EXHAUSTION_CHANNEL_ID)
+                if channel is None:
+                    channel = await self.bot.fetch_channel(
+                        ROUTE_EXHAUSTION_CHANNEL_ID
+                    )
+                await channel.send(
+                    f"<@&{ROUTE_EXHAUSTION_ROLE_ID}> **Scheduled routes finished "
+                    f"for {aircraft['registration']}.** Please add more routes.",
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                await model.mark_route_exhaustion_alert_sent(
+                    aircraft["aircraft_id"]
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                log.exception(
+                    "Could not post route exhaustion alert for aircraft %s",
+                    aircraft["aircraft_id"],
+                )
 
     async def _register_active_views(self, model):
         rows = await model.list_claimable_incidents()

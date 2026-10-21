@@ -35,3 +35,12 @@ CREATE TABLE IF NOT EXISTS if_stopped_flight_dm_events (
     PRIMARY KEY (schedule_id, if_user_id),
     INDEX idx_stopped_flight_dm_wave (schedule_id, wave)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS if_aircraft_route_availability (
+    aircraft_id VARCHAR(64) NOT NULL PRIMARY KEY,
+    registration VARCHAR(32) NOT NULL,
+    has_active_routes TINYINT(1) NOT NULL DEFAULT 0,
+    alert_sent TINYINT(1) NOT NULL DEFAULT 1,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
