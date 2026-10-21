@@ -16,6 +16,9 @@ log = logging.getLogger(__name__)
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 STAFF_CHANNEL_ID = int(os.getenv("STOPPED_FLIGHT_STAFF_CHANNEL_ID", "0") or 0)
+DM_LOG_CHANNEL_ID = int(
+    os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "0") or 0
+)
 FLEET_ROLE_ID = int(os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "0") or 0)
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", "0") or 0
@@ -153,8 +156,11 @@ class StoppedFlightMonitor(commands.Cog):
         if not ORG_ID:
             log.error("IF_ORGANIZATION_ID is not configured; stopped-flight monitoring is disabled.")
             return
-        if not all((GUILD_ID, STAFF_CHANNEL_ID, FLEET_ROLE_ID)):
-            log.error("Stopped-flight monitoring requires guild, staff, and fleet-role IDs.")
+        if not all((GUILD_ID, STAFF_CHANNEL_ID, DM_LOG_CHANNEL_ID, FLEET_ROLE_ID)):
+            log.error(
+                "Stopped-flight monitoring requires guild, staff, DM-log, "
+                "and fleet-role IDs."
+            )
             return
 
         model = getattr(self.bot, "stopped_flight_model", None)
@@ -628,6 +634,7 @@ class StoppedFlightMonitor(commands.Cog):
                 await asyncio.sleep(1.05)
 
         selected = _weight_pick(candidates, DM_BATCH_SIZE)
+        delivered_recipients = []
         for candidate in selected:
             incident_state = await model.get_incident_state(row["schedule_id"])
             if not incident_state or incident_state["lifecycle"] != "available":
@@ -643,6 +650,9 @@ class StoppedFlightMonitor(commands.Cog):
                     "flight does **not** count toward your normal two-aircraft "
                     "booking limit.",
                     view=self._claim_view(str(row["schedule_id"])),
+                )
+                delivered_recipients.append(
+                    f"<@{member.id}> ({candidate['pilot'].get('callsign') or 'Pilot'})"
                 )
                 await model.record_dm_event(
                     schedule_id=row["schedule_id"],
@@ -680,12 +690,40 @@ class StoppedFlightMonitor(commands.Cog):
                     delivery_status="failed",
                 )
             await asyncio.sleep(0.5)
+        await self._send_dm_recipient_report(row, wave, delivered_recipients)
         log.info(
             "Stopped-flight wave %s for schedule %s sent to %s eligible pilots.",
             wave,
             row["schedule_id"],
-            len(selected),
+            len(delivered_recipients),
         )
+
+    async def _send_dm_recipient_report(self, row, wave, recipients):
+        channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
+        if channel is None:
+            channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
+
+        wave_labels = {
+            1: "1-hour recovery alert",
+            2: "2-hour follow-up",
+            3: "3-hour follow-up",
+        }
+        recipient_list = "\n".join(f"• {recipient}" for recipient in recipients)
+        if not recipient_list:
+            recipient_list = "No eligible pilots received a DM."
+        try:
+            await channel.send(
+                f"📨 **Stopped-flight DM report · {wave_labels.get(wave, f'Wave {wave}')}**\n"
+                f"**{row['registration']} · {row['callsign']}** "
+                f"({row['origin_icao']} → {row['destination_icao']})\n"
+                f"{recipient_list}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            log.exception(
+                "Could not post stopped-flight DM recipient report for schedule %s",
+                row["schedule_id"],
+            )
 
     async def _send_staff_alert(self, row, elapsed):
         channel = self.bot.get_channel(STAFF_CHANNEL_ID)
