@@ -128,6 +128,15 @@ class PilotsModel:
         args = (ifuserid, pattern)
         return await self.db.execute(query, args)
 
+    async def update_ifuserid_by_id(self, pilot_id: int, ifuserid: str) -> int:
+        """Updates the Infinite Flight user ID for one pilot record."""
+        query = """
+            UPDATE pilots
+            SET ifuserid = %s
+            WHERE id = %s
+        """
+        return await self.db.execute(query, (ifuserid, pilot_id))
+
     async def get_all_verified_discord_ids(self) -> Set[str]:
         """
         Retrieves a set of all unique, non-empty Discord IDs from the pilots table.

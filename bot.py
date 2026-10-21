@@ -22,6 +22,7 @@ from api.manager import InfiniteFlightAPIManager
 from api.crewcenter_manager import CrewCenterAPIManager
 from api.if_live_manager import IFLiveManager
 from database.if_live_tokens_model import IFLiveTokensModel
+from database.stopped_flight_model import StoppedFlightModel
 try:
     from services.ai_service import AIService
 except ImportError:
@@ -42,6 +43,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 intents.guild_scheduled_events = True
 
 class MyBot(commands.Bot):
@@ -56,6 +58,7 @@ class MyBot(commands.Bot):
         self.shop_model: ShopModel = None
         self.mission_db: MissionDB = None
         self.flight_board_model: FlightBoardModel = None
+        self.stopped_flight_model: StoppedFlightModel = None
         self.flightdata: FlightData = None
         # VA Data Models
         self.rank_model: RankModel = None
@@ -93,6 +96,7 @@ class MyBot(commands.Bot):
         self.shop_model = ShopModel(self.db_manager)
         self.mission_db = MissionDB(self.db_manager)
         self.flight_board_model = FlightBoardModel(self.db_manager)
+        self.stopped_flight_model = StoppedFlightModel(self.db_manager)
         
         # Initialize VA Data Models
         self.rank_model = RankModel(self.db_manager)
@@ -193,6 +197,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.request_flight_cog')
             await self.load_extension('cogs.available_aircraft_cog')
             await self.load_extension("cogs.remove_assignment_cog")
+            await self.load_extension("cogs.stopped_flight_monitor")
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
            # await self.load_extension('cogs.ayush')

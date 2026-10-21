@@ -18,8 +18,6 @@ TOKEN_OWNER_ID = 1
 FLEET_CACHE_SECONDS = 300
 SCHEDULE_CACHE_SECONDS = 300
 PAGE_SIZE = 10
-SCAN_CONCURRENCY = 1
-MAX_SCHEDULE_FETCHES_PER_SCAN = 5
 VIEW_TIMEOUT_SECONDS = 300
 
 # Queue color thresholds based on assigned flights before the next
@@ -148,8 +146,8 @@ def _route_status_number(schedule):
 
 
 def _is_unavailable_status(schedule):
-    # Infinite Flight status values used here: CANCELLED=9, ARRIVED=11.
-    return _route_status_number(schedule) in {9, 11}
+    # Completed=8, CANCELLED=9, ARRIVED=11.
+    return _route_status_number(schedule) in {8, 9, 11}
 
 
 def _active_schedules(schedules):
@@ -283,7 +281,8 @@ class AvailabilityView(discord.ui.View):
                 "The queue indicator is based on assigned routes before the "
                 "next unassigned route, not a guaranteed waiting time.\n"
                 "Use **Refresh** to check updated availability."
-                "⚠️ This list and its buttons stop responding after 5 minutes. Run /available-aircraft again to check availability."
+                "\n\n⚠️ This list and its buttons stop responding after 5 minutes. "
+                "Run /available-aircraft again to check availability."
             ),
             color=discord.Color.teal(),
         )
@@ -324,7 +323,7 @@ class AvailabilityView(discord.ui.View):
             embed.add_field(
                 name="Some aircraft could not be checked",
                 value=(
-                    f"{self.failed_count} aircraft could not be refreshed "
+                    f"{self.failed_count} aircraft could not be verified "
                     "because of an API error or rate limit. Cached results "
                     "are retained where available; try Refresh again later."
                 ),
@@ -334,8 +333,8 @@ class AvailabilityView(discord.ui.View):
         embed.set_footer(
             text=(
                 f"Page {self.page + 1}/{total_pages} · "
-                "Refresh checks a rotating batch; cached results are retained "
-                "during API limits."
+                "The schedule snapshot includes the full organization fleet; "
+                "cached results are retained during API limits."
             )
         )
 
@@ -362,7 +361,7 @@ class AvailabilityView(discord.ui.View):
 
         try:
             rows, failed_count = await self.cog.collect_availability(
-                force_refresh=False
+                force_refresh=True
             )
 
             self.rows = rows
@@ -396,8 +395,6 @@ class AvailableAircraftCog(commands.Cog):
         self._fleet_at = 0.0
         self._fleet_lock = asyncio.Lock()
         self._schedule_cache = {}
-        self._schedule_lock = asyncio.Lock()
-        self._scan_cursor = 0
 
     async def _get_fleet(self, client):
         now = time.monotonic()
@@ -427,97 +424,67 @@ class AvailableAircraftCog(commands.Cog):
 
             return self._fleet
 
-    async def _fetch_one(
-        self,
-        client,
-        aircraft,
-        semaphore,
-        force_refresh,
-    ):
-        aircraft_id = str(
-            _get(aircraft, "id", "")
-            or _get(aircraft, "aircraft_id", "")
-        )
+    async def _get_organization_schedules(self, client):
+        schedules = []
+        page_number = 1
+        total_pages = 1
+
+        while page_number <= total_pages:
+            page = await client.list_organization_schedules(
+                ORG_ID,
+                page=page_number,
+                page_size=100,
+            )
+            if page is None or not hasattr(page, "items"):
+                raise RuntimeError(
+                    "Infinite Flight returned an invalid organization schedule page"
+                )
+
+            schedules.extend(page.items or [])
+            try:
+                total_pages = max(1, int(page.total_pages or 1))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Infinite Flight returned an invalid organization page count"
+                ) from exc
+            page_number += 1
+
+        return schedules
+
+    @staticmethod
+    def _availability_row(aircraft, schedules):
+        schedules = _active_schedules(schedules)
+        if not schedules:
+            return None
+
+        claim_index = _next_claimable_index(schedules)
+        if claim_index is None:
+            return None
 
         registration = str(
             _get(aircraft, "registration", "Unknown registration")
             or "Unknown registration"
         )
-
-        if not aircraft_id:
-            return None, True
-
-        now = time.monotonic()
-        cached = self._schedule_cache.get(aircraft_id)
-
-        if (
-            cached
-            and not force_refresh
-            and now - cached[0] < SCHEDULE_CACHE_SECONDS
-        ):
-            schedules = cached[1]
-            fetch_failed = False
-
-        else:
-            async with semaphore:
-                try:
-                    schedules = _active_schedules(
-                        await client.list_aircraft_schedules(aircraft_id)
-                    )
-
-                    self._schedule_cache[aircraft_id] = (
-                        time.monotonic(),
-                        schedules,
-                    )
-                    fetch_failed = False
-
-                except Exception:
-                    log.warning(
-                        "Could not check schedules for %s; retaining cached "
-                        "data when available",
-                        registration,
-                        exc_info=True,
-                    )
-
-                    if cached:
-                        schedules = cached[1]
-                        fetch_failed = True
-                    else:
-                        return None, True
-
-        if not schedules:
-            return None, fetch_failed
-
-        claim_index = _next_claimable_index(schedules)
-
-        if claim_index is None:
-            return None, fetch_failed
-
         route = schedules[claim_index]
-
         origin = _get(route, "origin_icao") or "???"
         destination = _get(route, "destination_icao") or "???"
-
         model = AIRCRAFT_MODELS.get(
             registration.strip().upper(),
             _aircraft_model(aircraft) or "Model unknown",
         )
-
         assigned_before = sum(
             1
             for item in schedules[:claim_index]
             if _get(item, "crew", []) or []
         )
 
-        row = (
+        return (
             registration,
             model,
             f"{origin} → {destination}",
             len(schedules),
             assigned_before,
         )
-
-        return row, fetch_failed
 
     async def collect_availability(self, force_refresh=False):
         if not ORG_ID:
@@ -532,86 +499,70 @@ class AvailableAircraftCog(commands.Cog):
 
         async with await manager.get_client(TOKEN_OWNER_ID) as client:
             fleet = await self._get_fleet(client)
-            semaphore = asyncio.Semaphore(SCAN_CONCURRENCY)
-
             now = time.monotonic()
-            stale_indexes = []
-
-            for index, aircraft in enumerate(fleet):
-                aircraft_id = str(
-                    _get(aircraft, "id", "")
-                    or _get(aircraft, "aircraft_id", "")
+            cache_fresh = all(
+                (
+                    str(_get(aircraft, "id", "") or _get(aircraft, "aircraft_id", ""))
+                    in self._schedule_cache
+                    and now
+                    - self._schedule_cache[
+                        str(_get(aircraft, "id", "") or _get(aircraft, "aircraft_id", ""))
+                    ][0]
+                    < SCHEDULE_CACHE_SECONDS
                 )
+                for aircraft in fleet
+            )
 
-                cached = self._schedule_cache.get(aircraft_id)
+            refresh_failed = False
+            if force_refresh or not cache_fresh:
+                try:
+                    organization_schedules = await self._get_organization_schedules(
+                        client
+                    )
+                    schedules_by_aircraft = {}
+                    for schedule in organization_schedules:
+                        aircraft_id = str(_get(schedule, "aircraft_id") or "")
+                        if aircraft_id:
+                            schedules_by_aircraft.setdefault(
+                                aircraft_id, []
+                            ).append(schedule)
 
-                is_fresh = bool(
-                    cached
-                    and now - cached[0] < SCHEDULE_CACHE_SECONDS
-                )
+                    refreshed_at = time.monotonic()
+                    for aircraft in fleet:
+                        aircraft_id = str(
+                            _get(aircraft, "id", "")
+                            or _get(aircraft, "aircraft_id", "")
+                        )
+                        if aircraft_id:
+                            self._schedule_cache[aircraft_id] = (
+                                refreshed_at,
+                                schedules_by_aircraft.get(aircraft_id, []),
+                            )
+                except Exception:
+                    refresh_failed = True
+                    log.exception(
+                        "Could not refresh organization schedules for "
+                        "/available-aircraft; using cached snapshots where available"
+                    )
 
-                if not is_fresh:
-                    stale_indexes.append(index)
-
-            if force_refresh:
-                stale_indexes = list(range(len(fleet)))
-
-            if stale_indexes:
-                start = self._scan_cursor % len(stale_indexes)
-                rotated_indexes = (
-                    stale_indexes[start:] + stale_indexes[:start]
-                )
-
-                selected_indexes = rotated_indexes[
-                    :MAX_SCHEDULE_FETCHES_PER_SCAN
-                ]
-
-                self._scan_cursor = (
-                    start + len(selected_indexes)
-                ) % len(stale_indexes)
-            else:
-                selected_indexes = []
-
-            selected_set = set(selected_indexes)
             rows = []
-            failed_count = 0
-
-            for index, aircraft in enumerate(fleet):
+            failed_count = len(fleet) if refresh_failed else 0
+            for aircraft in fleet:
                 aircraft_id = str(
                     _get(aircraft, "id", "")
                     or _get(aircraft, "aircraft_id", "")
                 )
-
                 cached = self._schedule_cache.get(aircraft_id)
+                if not cached:
+                    if not refresh_failed:
+                        failed_count += 1
+                    continue
 
-                if index in selected_set:
-                    row, fetch_failed = await self._fetch_one(
-                        client,
-                        aircraft,
-                        semaphore,
-                        force_refresh,
-                    )
-                elif cached:
-                    row, fetch_failed = await self._fetch_one(
-                        client,
-                        aircraft,
-                        semaphore,
-                        False,
-                    )
-                else:
-                    # No cache yet, and this aircraft is outside the
-                    # current API-fetch batch. It can be checked in a
-                    # subsequent scan.
-                    row, fetch_failed = None, False
-
-                if fetch_failed:
-                    failed_count += 1
-
+                row = self._availability_row(aircraft, cached[1])
                 if row:
                     rows.append(row)
 
             rows.sort(key=lambda row: row[0].upper())
-
             return rows, failed_count
 
     @app_commands.command(
