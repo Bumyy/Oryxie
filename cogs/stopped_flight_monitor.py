@@ -867,9 +867,11 @@ class StoppedFlightMonitor(commands.Cog):
             if not had_cached_score:
                 await asyncio.sleep(1.05)
 
-        selected = _weight_pick(candidates, DM_BATCH_SIZE)
+        selected = _weight_pick(candidates, len(candidates))
         delivered_recipients = []
         for candidate in selected:
+            if len(delivered_recipients) >= DM_BATCH_SIZE:
+                break
             incident_state = await model.get_incident_state(row["schedule_id"])
             if not incident_state or incident_state["lifecycle"] != "available":
                 break
@@ -910,10 +912,12 @@ class StoppedFlightMonitor(commands.Cog):
                     )
                     break
             except (discord.Forbidden, discord.HTTPException):
-                log.exception(
-                    "Could not DM fleet-role pilot %s about stopped flight %s",
+                log.warning(
+                    "Could not DM fleet-role pilot %s about stopped flight %s; "
+                    "continuing to the next eligible pilot.",
                     member.id,
                     row["schedule_id"],
+                    exc_info=True,
                 )
                 await model.record_dm_event(
                     schedule_id=row["schedule_id"],
