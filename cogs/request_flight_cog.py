@@ -863,6 +863,7 @@ class CopilotCallsignModal(discord.ui.Modal, title="Set Co-pilot"):
         await interaction.response.send_message(
             f"Co-pilot set to **{view.copilot_callsign}**. Confirm to continue.",
             ephemeral=True,
+            view=CopilotConfirmationView(view),
         )
 
 
@@ -936,6 +937,15 @@ class ClaimRouteView(discord.ui.View):
             child.disabled = True
 
         await interaction.response.edit_message(view=self)
+        if (
+            self.message
+            and interaction.message
+            and self.message.id != interaction.message.id
+        ):
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                log.exception("Could not disable the original route confirmation")
 
         assigned = []
         failed_route = None
@@ -1418,6 +1428,48 @@ class ClaimRouteView(discord.ui.View):
             embed=None,
             view=self,
         )
+        if (
+            self.message
+            and interaction.message
+            and self.message.id != interaction.message.id
+        ):
+            try:
+                await self.message.edit(
+                    content="Flight request cancelled.",
+                    embed=None,
+                    view=self,
+                )
+            except discord.HTTPException:
+                log.exception("Could not update the original route confirmation")
+
+
+class CopilotConfirmationView(discord.ui.View):
+    def __init__(self, claim_view):
+        super().__init__(timeout=120)
+        self.claim_view = claim_view
+
+    async def interaction_check(self, interaction):
+        if str(interaction.user.id) != str(self.claim_view.pilot.get("discordid")):
+            await interaction.response.send_message(
+                "Only the requesting pilot can confirm this flight.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(
+        label="Confirm & Assign",
+        style=discord.ButtonStyle.success,
+    )
+    async def confirm(self, interaction, button):
+        await self.claim_view.confirm(interaction, button)
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def cancel(self, interaction, button):
+        await self.claim_view.cancel(interaction, button)
 
 
 class RequestFlightCog(commands.Cog):
