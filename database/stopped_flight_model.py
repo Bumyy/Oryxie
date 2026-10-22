@@ -19,6 +19,7 @@ class StoppedFlightModel:
         "eta_warning_sent",
         "eta_warning_attempts",
         "eta_warning_last_attempt_at",
+        "test_wave_rechecked",
         "one_hour_sent",
         "two_hour_sent",
         "three_hour_sent",
@@ -53,6 +54,10 @@ class StoppedFlightModel:
             (
                 "eta_warning_last_attempt_at",
                 "DATETIME NULL",
+            ),
+            (
+                "test_wave_rechecked",
+                "TINYINT(1) NOT NULL DEFAULT 0",
             ),
         )
         for column_name, column_definition in columns:
@@ -280,6 +285,7 @@ class StoppedFlightModel:
         schedule_id: str,
         delivered_only: bool = False,
         with_message_ids: bool = False,
+        recovery_only: bool = False,
     ) -> list[dict]:
         fields = "if_user_id, channel_id, message_id" if with_message_ids else "if_user_id"
         query = (
@@ -289,6 +295,8 @@ class StoppedFlightModel:
         args = [str(schedule_id)]
         if delivered_only:
             query += " AND delivery_status = 'delivered'"
+        if recovery_only:
+            query += " AND wave > 0"
         if with_message_ids:
             query += " AND channel_id IS NOT NULL AND message_id IS NOT NULL"
         return await self.db.fetch_all(query, tuple(args))

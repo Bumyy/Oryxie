@@ -148,10 +148,14 @@ not create or repair that account link.
 
 Stopped-flight recovery-wave reports include the number of Fleet-role members
 found, linked active pilot records, recent-activity matches, and failed activity
-checks. The configured `STOPPED_FLIGHT_TEST_PILOT_DISCORD_ID` is prioritized
-and bypasses the recent-flight requirement for testing, but must still be in
-the configured Fleet role and have an active pilot record linked to their
-Discord ID.
+checks. The configured `STOPPED_FLIGHT_TEST_PILOT_DISCORD_ID` is sent first and
+bypasses the recent-flight requirement for testing, followed by up to five
+other eligible Fleet-role pilots. The test account must still be in the Fleet
+role and have an active pilot record linked to their Discord ID. Failed
+recovery-wave and crew-removal DMs are retried once after five minutes; if the
+retry fails, no further attempt is made for that pilot in that notification.
+Set `STOPPED_FLIGHT_TEST_PILOT_DISCORD_ID` to an empty value to disable the
+temporary test priority after testing.
 
 Route-exhaustion alerts also include an estimated demand label based on Infinite
 Flight aircraft flight-history records: **High Demand** means at least 3
