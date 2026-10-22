@@ -10,16 +10,13 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 
-from cogs.dm_logging import post_dm_report
+from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
 
 log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 STAFF_CHANNEL_ID = int(os.getenv("STOPPED_FLIGHT_STAFF_CHANNEL_ID", "0") or 0)
-DM_LOG_CHANNEL_ID = int(
-    os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "0") or 0
-)
 STATUS_LOG_CHANNEL_ID = int(
     os.getenv("AIRCRAFT_STATUS_LOG_CHANNEL_ID", "0") or 0
 )
@@ -258,12 +255,6 @@ class StoppedFlightMonitor(commands.Cog):
                 "fleet-role IDs."
             )
             return
-        if not DM_LOG_CHANNEL_ID:
-            log.warning(
-                "STOPPED_FLIGHT_DM_LOG_CHANNEL_ID is not configured; "
-                "DM reports will use the staff channel."
-            )
-
         model = getattr(self.bot, "stopped_flight_model", None)
         manager = getattr(self.bot, "if_live_manager", None)
         if model is None or manager is None:

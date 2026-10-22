@@ -135,13 +135,10 @@ to the bot database. Route-ready messages require the pilot's Discord account
 to be linked and their DMs to be open.
 
 Stopped-flight, route-ready, and Oryxpace task-notification DMs are reported to
-the channel configured by `STOPPED_FLIGHT_DM_LOG_CHANNEL_ID`, including delivery
-status and recipient. If that channel is unavailable or not configured, reports
-fall back to `STOPPED_FLIGHT_STAFF_CHANNEL_ID`; failures to post to both are
-written to the bot logs. Stopped-flight monitoring continues even if the
-dedicated DM-log channel is not configured. Other bot messages posted in
-channels or as interaction responses are not DMs and are not included in these
-reports.
+channel `1562428318043602965`, including delivery status and recipient. If the
+bot cannot post to that channel, the failure is written to bot logs. Other bot
+messages posted in channels or as interaction responses are not DMs and are not
+included in these reports.
 
 The 30-minute arrival warning is attempted at most twice: once when the pilot
 is within range, then once more after five minutes if delivery failed and the
