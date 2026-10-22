@@ -140,9 +140,16 @@ status and recipient. Other bot messages posted in channels or as interaction
 responses are not DMs and are not included in these reports.
 
 Route-exhaustion alerts also include an estimated demand label based on Infinite
-Flight aircraft activity: **High Demand** means at least 3 flights in the last
-7 days; otherwise it is **Low Demand**. If recent activity cannot be checked,
-the alert says **Demand unknown** rather than guessing.
+Flight aircraft flight-history records: **High Demand** means at least 3
+timestamped flight records in the last 7 days; otherwise it is **Low Demand**.
+Records without usable timestamps are reported as **Demand unknown** rather
+than being incorrectly counted as zero.
+
+Use `/available-aircraft` without a registration to browse claimable routes, or
+pass a registration to search the full fleet. Registration search ignores
+spaces and punctuation, recognizes common short forms (for example `FXQK` or
+`A&BFC`), and suggests close matches. A matched aircraft with no claimable
+route is reported as such.
 
 The `/request-flight` menu has a **Cargo** category for A7BFA (777F). Cargo
 bookings allow up to two connected legs at a time, without requiring a hub

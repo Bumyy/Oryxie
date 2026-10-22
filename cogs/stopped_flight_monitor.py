@@ -403,6 +403,7 @@ class StoppedFlightMonitor(commands.Cog):
     async def _recent_aircraft_flight_count(self, client, aircraft_id):
         cutoff = _utcnow() - timedelta(days=DEMAND_HISTORY_DAYS)
         count = 0
+        unparseable_flight_found = False
         for page_number in range(1, MAX_DEMAND_HISTORY_PAGES + 1):
             page = await client.list_aircraft_flights(
                 aircraft_id,
@@ -415,26 +416,39 @@ class StoppedFlightMonitor(commands.Cog):
                     f"Infinite Flight returned invalid flight history for {aircraft_id}"
                 )
             if not flights:
+                if unparseable_flight_found:
+                    raise RuntimeError(
+                        f"Infinite Flight returned flight records without usable "
+                        f"timestamps for aircraft {aircraft_id}"
+                    )
                 return count
 
             older_flight_found = False
             for flight in flights:
                 created = _parse_utc(
-                    _get(flight, "created") or _get(flight, "createdAt")
+                    _get(flight, "created")
+                    or _get(flight, "createdAt")
+                    or _get(flight, "startTime")
+                    or _get(flight, "startedAt")
                 )
                 if created is None:
+                    unparseable_flight_found = True
                     continue
                 if created < cutoff:
                     older_flight_found = True
                     continue
-                if float(_get(flight, "totalTime", 0) or 0) > 0:
-                    count += 1
-                    if count >= HIGH_DEMAND_FLIGHT_THRESHOLD:
-                        return count
+                count += 1
+                if count >= HIGH_DEMAND_FLIGHT_THRESHOLD:
+                    return count
 
             if older_flight_found or page_number >= int(
                 _get(page, "total_pages", 0) or 0
             ):
+                if unparseable_flight_found and count < HIGH_DEMAND_FLIGHT_THRESHOLD:
+                    raise RuntimeError(
+                        f"Could not determine whether all flights occurred within "
+                        f"the last {DEMAND_HISTORY_DAYS} days for aircraft {aircraft_id}"
+                    )
                 return count
 
         raise RuntimeError(
