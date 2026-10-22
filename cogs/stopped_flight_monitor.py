@@ -23,6 +23,10 @@ STATUS_LOG_CHANNEL_ID = int(
     os.getenv("AIRCRAFT_STATUS_LOG_CHANNEL_ID", "0") or 0
 )
 FLEET_ROLE_ID = int(os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "0") or 0)
+TEST_PILOT_DISCORD_ID = os.getenv(
+    "STOPPED_FLIGHT_TEST_PILOT_DISCORD_ID",
+    "1277609750191800334",
+).strip()
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", "0") or 0
 )
@@ -1007,6 +1011,25 @@ class StoppedFlightMonitor(commands.Cog):
                 await asyncio.sleep(1.05)
 
         selected = _weight_pick(candidates, len(candidates))
+        if TEST_PILOT_DISCORD_ID:
+            test_pilot_index = next(
+                (
+                    index
+                    for index, candidate in enumerate(selected)
+                    if str(candidate["member"].id) == TEST_PILOT_DISCORD_ID
+                ),
+                None,
+            )
+            if test_pilot_index is not None:
+                selected.insert(0, selected.pop(test_pilot_index))
+            else:
+                log.info(
+                    "Configured stopped-flight test pilot %s is not eligible "
+                    "for schedule %s in wave %s.",
+                    TEST_PILOT_DISCORD_ID,
+                    row["schedule_id"],
+                    wave,
+                )
         delivered_recipients = []
         failed_recipients = []
         for candidate in selected:
