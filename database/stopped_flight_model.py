@@ -19,7 +19,6 @@ class StoppedFlightModel:
         "eta_warning_sent",
         "eta_warning_attempts",
         "eta_warning_last_attempt_at",
-        "test_wave_rechecked",
         "one_hour_sent",
         "two_hour_sent",
         "three_hour_sent",
@@ -54,10 +53,6 @@ class StoppedFlightModel:
             (
                 "eta_warning_last_attempt_at",
                 "DATETIME NULL",
-            ),
-            (
-                "test_wave_rechecked",
-                "TINYINT(1) NOT NULL DEFAULT 0",
             ),
         )
         for column_name, column_definition in columns:

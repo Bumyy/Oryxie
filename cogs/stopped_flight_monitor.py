@@ -5,7 +5,6 @@ import json
 import logging
 import math
 import os
-import random
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -27,10 +26,6 @@ STATUS_LOG_CHANNEL_ID = int(
 FLEET_ROLE_ID = int(
     os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "1484645309983490119") or 0
 )
-TEST_PILOT_DISCORD_ID = os.getenv(
-    "STOPPED_FLIGHT_TEST_PILOT_DISCORD_ID",
-    "1277609750191800334",
-).strip()
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", "0") or 0
 )
@@ -47,7 +42,6 @@ FLIGHT_HISTORY_DAYS = 3
 DEMAND_HISTORY_DAYS = 7
 HIGH_DEMAND_FLIGHT_THRESHOLD = 3
 MAX_DEMAND_HISTORY_PAGES = 5
-DM_BATCH_SIZE = 5
 FLIGHT_HISTORY_PAGE_SIZE = 25
 MAX_FLIGHT_HISTORY_PAGES = 20
 ACTIVITY_CACHE_SECONDS = 15 * 60
@@ -222,21 +216,6 @@ def _aircraft_status_text(bot, position, schedules):
         if origin:
             return f"PARKED AT {origin}"
     return "PARKED · LOCATION UNKNOWN"
-
-
-def _weight_pick(candidates, count):
-    """Weighted sampling without replacement, proportional to recent flights."""
-    remaining = list(candidates)
-    selected = []
-    while remaining and len(selected) < count:
-        winner = random.choices(
-            remaining,
-            weights=[max(1, item["flight_count"]) for item in remaining],
-            k=1,
-        )[0]
-        selected.append(winner)
-        remaining.remove(winner)
-    return selected
 
 
 class StoppedFlightClaimView(discord.ui.View):
@@ -753,61 +732,6 @@ class StoppedFlightMonitor(commands.Cog):
         if stopped_since is None:
             return
         elapsed = _utcnow() - stopped_since
-        if (
-            elapsed >= timedelta(hours=3)
-            and row.get("three_hour_sent")
-            and not row.get("test_wave_rechecked")
-            and TEST_PILOT_DISCORD_ID
-        ):
-            guild = self.bot.get_guild(GUILD_ID)
-            role = guild.get_role(FLEET_ROLE_ID) if guild else None
-            test_member = next(
-                (
-                    member
-                    for member in (role.members if role else [])
-                    if str(member.id) == TEST_PILOT_DISCORD_ID
-                    and not member.bot
-                ),
-                None,
-            )
-            test_pilot = await self.bot.pilots_model.get_pilot_by_discord_id(
-                TEST_PILOT_DISCORD_ID
-            ) if test_member else None
-            if test_pilot and test_pilot.get("ifuserid"):
-                prior_recovery_events = await model.get_dm_events(
-                    schedule_id,
-                    delivered_only=True,
-                    recovery_only=True,
-                )
-                test_if_user_id = str(test_pilot["ifuserid"])
-                if not any(
-                    str(event["if_user_id"]) == test_if_user_id
-                    for event in prior_recovery_events or []
-                ):
-                    await model.update_incident(
-                        schedule_id,
-                        {
-                            "three_hour_sent": 0,
-                            "test_wave_rechecked": 1,
-                        },
-                        expected_lifecycle="available",
-                    )
-                    row["three_hour_sent"] = 0
-                    row["test_wave_rechecked"] = 1
-                    log.info(
-                        "Reopening the three-hour recovery wave for schedule %s "
-                        "because the configured test pilot has not received a "
-                        "recovery DM.",
-                        schedule_id,
-                    )
-                else:
-                    await model.update_incident(
-                        schedule_id,
-                        {"test_wave_rechecked": 1},
-                        expected_lifecycle="available",
-                    )
-                    row["test_wave_rechecked"] = 1
-
         if elapsed >= timedelta(hours=1) and not row["one_hour_sent"]:
             row = await self._unassign_and_alert(client, model, schedule, row)
             if not row:
@@ -1203,40 +1127,16 @@ class StoppedFlightMonitor(commands.Cog):
         role_member_count = 0
         linked_pilot_count = 0
         recent_activity_count = 0
-        test_pilot_status = (
-            "not configured" if not TEST_PILOT_DISCORD_ID else "not in fleet role"
-        )
         for member in role.members:
             if member.bot:
                 continue
             role_member_count += 1
-            is_test_pilot = (
-                bool(TEST_PILOT_DISCORD_ID)
-                and str(member.id) == TEST_PILOT_DISCORD_ID
-            )
             pilot = by_discord.get(str(member.id))
             if not pilot:
-                if is_test_pilot:
-                    test_pilot_status = "no active pilot record linked to Discord"
                 continue
             linked_pilot_count += 1
             if_user_id = str(pilot["ifuserid"])
             if if_user_id in contacted:
-                if is_test_pilot:
-                    test_pilot_status = "already received a recovery DM for this flight"
-                continue
-            if is_test_pilot:
-                candidates.append(
-                    {
-                        "member": member,
-                        "pilot": pilot,
-                        "if_user_id": if_user_id,
-                        "flight_count": 0,
-                    }
-                )
-                test_pilot_status = (
-                    "prioritized; recent-activity requirement bypassed for testing"
-                )
                 continue
 
             had_cached_score = if_user_id in self._activity_cache
@@ -1263,34 +1163,7 @@ class StoppedFlightMonitor(commands.Cog):
             if not had_cached_score:
                 await asyncio.sleep(1.05)
 
-        test_candidate = next(
-            (
-                candidate
-                for candidate in candidates
-                if str(candidate["member"].id) == TEST_PILOT_DISCORD_ID
-            ),
-            None,
-        )
-        other_candidates = [
-            candidate
-            for candidate in candidates
-            if candidate is not test_candidate
-        ]
-        selected = _weight_pick(
-            other_candidates,
-            min(DM_BATCH_SIZE, len(other_candidates)),
-        )
-        if test_candidate:
-            selected.insert(0, test_candidate)
-        elif TEST_PILOT_DISCORD_ID and test_pilot_status == "not in fleet role":
-            log.info(
-                "Configured stopped-flight test pilot %s is not a member "
-                "of fleet role %s for schedule %s in wave %s.",
-                TEST_PILOT_DISCORD_ID,
-                FLEET_ROLE_ID,
-                row["schedule_id"],
-                wave,
-            )
+        selected = candidates
         delivered_recipients = []
         failed_recipients = []
         retry_candidates = []
@@ -1478,13 +1351,10 @@ class StoppedFlightMonitor(commands.Cog):
                 f"{role_member_count} non-bot Fleet-role members, "
                 f"{linked_pilot_count} with active linked pilot records, "
                 f"{recent_activity_count} with recent flights, "
-                f"{activity_check_failures} flight-history checks failed."
+                f"{activity_check_failures} flight-history checks failed, "
+                f"{len(selected)} eligible pilots selected."
             )
         ]
-        if TEST_PILOT_DISCORD_ID:
-            diagnostic_notes.append(
-                f"Configured test pilot status: {test_pilot_status}."
-            )
         if retry_candidates:
             diagnostic_notes.append(
                 f"Failed DMs were retried once after five minutes: "
