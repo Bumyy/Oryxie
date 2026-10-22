@@ -38,6 +38,9 @@ POLL_INTERVAL_MINUTES = 2
 STOPPED_POSITION_STATE = 4
 IN_FLIGHT_SCHEDULE_STATUS = 6
 FLIGHT_HISTORY_DAYS = 3
+DEMAND_HISTORY_DAYS = 7
+HIGH_DEMAND_FLIGHT_THRESHOLD = 3
+MAX_DEMAND_HISTORY_PAGES = 5
 DM_BATCH_SIZE = 5
 FLIGHT_HISTORY_PAGE_SIZE = 25
 MAX_FLIGHT_HISTORY_PAGES = 20
@@ -296,7 +299,7 @@ class StoppedFlightMonitor(commands.Cog):
                         registration,
                         has_active_routes,
                     )
-                await self._send_route_exhaustion_alerts(model)
+                await self._send_route_exhaustion_alerts(client, model)
                 positions = await self._log_fleet_status_changes(
                     client,
                     model,
@@ -343,7 +346,7 @@ class StoppedFlightMonitor(commands.Cog):
     async def before_monitor_stopped_flights(self):
         await self.bot.wait_until_ready()
 
-    async def _send_route_exhaustion_alerts(self, model):
+    async def _send_route_exhaustion_alerts(self, client, model):
         if not ROUTE_EXHAUSTION_CHANNEL_ID or not ROUTE_EXHAUSTION_ROLE_ID:
             log.error(
                 "Route exhaustion alerts require channel and role IDs."
@@ -352,6 +355,31 @@ class StoppedFlightMonitor(commands.Cog):
         pending = await model.list_pending_route_exhaustion_alerts()
         for aircraft in pending:
             try:
+                try:
+                    recent_flights = await self._recent_aircraft_flight_count(
+                        client,
+                        str(aircraft["aircraft_id"]),
+                    )
+                    if recent_flights is None:
+                        demand_label = "Demand unknown"
+                    else:
+                        demand_level = (
+                            "High"
+                            if recent_flights >= HIGH_DEMAND_FLIGHT_THRESHOLD
+                            else "Low"
+                        )
+                        flight_word = "flight" if recent_flights == 1 else "flights"
+                        demand_label = (
+                            f"{demand_level} Demand · {recent_flights} "
+                            f"{flight_word} in 7 days"
+                        )
+                except Exception:
+                    log.exception(
+                        "Could not determine recent demand for aircraft %s",
+                        aircraft["aircraft_id"],
+                    )
+                    demand_label = "Demand unknown"
+
                 channel = self.bot.get_channel(ROUTE_EXHAUSTION_CHANNEL_ID)
                 if channel is None:
                     channel = await self.bot.fetch_channel(
@@ -359,7 +387,8 @@ class StoppedFlightMonitor(commands.Cog):
                     )
                 await channel.send(
                     f"<@&{ROUTE_EXHAUSTION_ROLE_ID}> **Scheduled routes finished "
-                    f"for {aircraft['registration']}.** Please add more routes.",
+                    f"for {aircraft['registration']} · ({demand_label}).** "
+                    "Please add more routes.",
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
                 await model.mark_route_exhaustion_alert_sent(
@@ -370,6 +399,48 @@ class StoppedFlightMonitor(commands.Cog):
                     "Could not post route exhaustion alert for aircraft %s",
                     aircraft["aircraft_id"],
                 )
+
+    async def _recent_aircraft_flight_count(self, client, aircraft_id):
+        cutoff = _utcnow() - timedelta(days=DEMAND_HISTORY_DAYS)
+        count = 0
+        for page_number in range(1, MAX_DEMAND_HISTORY_PAGES + 1):
+            page = await client.list_aircraft_flights(
+                aircraft_id,
+                page=page_number,
+                page_size=FLIGHT_HISTORY_PAGE_SIZE,
+            )
+            flights = _get(page, "items")
+            if not isinstance(flights, list):
+                raise RuntimeError(
+                    f"Infinite Flight returned invalid flight history for {aircraft_id}"
+                )
+            if not flights:
+                return count
+
+            older_flight_found = False
+            for flight in flights:
+                created = _parse_utc(
+                    _get(flight, "created") or _get(flight, "createdAt")
+                )
+                if created is None:
+                    continue
+                if created < cutoff:
+                    older_flight_found = True
+                    continue
+                if float(_get(flight, "totalTime", 0) or 0) > 0:
+                    count += 1
+                    if count >= HIGH_DEMAND_FLIGHT_THRESHOLD:
+                        return count
+
+            if older_flight_found or page_number >= int(
+                _get(page, "total_pages", 0) or 0
+            ):
+                return count
+
+        raise RuntimeError(
+            f"Could not determine seven-day flight count for aircraft {aircraft_id} "
+            f"within {MAX_DEMAND_HISTORY_PAGES} pages"
+        )
 
     async def _log_fleet_status_changes(
         self,

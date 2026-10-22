@@ -134,6 +134,11 @@ Before enabling this feature in a deployment, apply
 to the bot database. Route-ready messages require the pilot's Discord account
 to be linked and their DMs to be open.
 
+Route-exhaustion alerts also include an estimated demand label based on Infinite
+Flight aircraft activity: **High Demand** means at least 3 flights in the last
+7 days; otherwise it is **Low Demand**. If recent activity cannot be checked,
+the alert says **Demand unknown** rather than guessing.
+
 ---
 
 ## Summary
