@@ -122,6 +122,20 @@ python bot.py
 
 ---
 
+## Route-Ready Pilot DMs
+
+The bot sends a direct message to assigned next-leg pilots after it detects that
+the aircraft has landed and is parked at the next route's origin. The message
+includes the route and takeoff deadline: **6 hours at an airline hub** or
+**12 hours at a non-hub airport**. The route-ready cog is loaded automatically.
+
+Before enabling this feature in a deployment, apply
+[`database/route_ready_notifications_mysql_schema.sql`](./database/route_ready_notifications_mysql_schema.sql)
+to the bot database. Route-ready messages require the pilot's Discord account
+to be linked and their DMs to be open.
+
+---
+
 ## Summary
 
 - Clone repo → Switch to `dev` branch

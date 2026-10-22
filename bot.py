@@ -198,6 +198,7 @@ class MyBot(commands.Bot):
             await self.load_extension('cogs.available_aircraft_cog')
             await self.load_extension("cogs.remove_assignment_cog")
             await self.load_extension("cogs.stopped_flight_monitor")
+            await self.load_extension("cogs.route_ready_notifications")
             #await self.load_extension('cogs.live_flights')
             #await self.load_extension('cogs.remainder')
            # await self.load_extension('cogs.ayush')

@@ -10,6 +10,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.airline_hubs import (
+    DEFAULT_HUB_ICAO,
+    airline_name_for_registration,
+    hubs_for_registration,
+)
+
 log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
@@ -20,7 +26,6 @@ SCHEDULE_CACHE_SECONDS = 60
 MAX_BOOKED_AIRCRAFT = 2
 SCHEDULES_PER_SCAN = 3
 VIEW_TIMEOUT_SECONDS = 180
-DEFAULT_HUB_ICAO = "OTHH"
 RETIRED_REGISTRATIONS = {"A7BFC", "A7BFA"}
 
 AIRCRAFT_MODELS = {
@@ -63,28 +68,6 @@ AIRCRAFT_MODELS = {
     "IF-MPSK": "A321neo",
     "IF-SKJK": "777-300ER",
     "IF-KSKI": "787-9",
-}
-
-AIRCRAFT_AIRLINES = {
-    "B-LRO": "Cathay Pacific",
-    "EC-ORE": "Iberia",
-    "IF-KSKI": "British Airways",
-    "IF-MPSK": "LATAM",
-    "IF-FXQK": "JAL",
-    "VH-ZNF": "Qantas",
-    "N762AN": "American Airlines",
-    "N302NY": "American Airlines",
-}
-
-AIRLINE_HUBS = {
-    "Qatar Airways": "OTHH",
-    "Cathay Pacific": "VHHH",
-    "Iberia": "LEMD",
-    "British Airways": "EGLL",
-    "LATAM": ("SCEL", "SBGR", "SPJC"),
-    "JAL": "RJTT",
-    "Qantas": "YSSY",
-    "American Airlines": ("KDFW", "KJFK", "KPHX"),
 }
 
 RULES = (
@@ -133,14 +116,11 @@ def _aircraft_model(aircraft):
 
 
 def _airline_name(aircraft):
-    return AIRCRAFT_AIRLINES.get(_registration(aircraft), "Qatar Airways")
+    return airline_name_for_registration(_registration(aircraft))
 
 
 def _aircraft_hubs(aircraft):
-    hubs = AIRLINE_HUBS.get(_airline_name(aircraft), DEFAULT_HUB_ICAO)
-    if isinstance(hubs, str):
-        hubs = (hubs,)
-    return tuple(str(hub).strip().upper() for hub in hubs if hub)
+    return hubs_for_registration(_registration(aircraft))
 
 
 def _aircraft_hub(aircraft):

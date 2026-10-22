@@ -5,6 +5,8 @@ import os
 import discord
 from discord.ext import commands, tasks
 
+from cogs.airline_hubs import hubs_for_registration
+
 log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
@@ -66,7 +68,6 @@ def _arrival_candidates(schedules, observed_statuses):
             old_status = observed_statuses.get(route_id)
             if (
                 not route_id
-                or old_status is None
                 or old_status == ARRIVED_STATUS
                 or _status(arrived) != ARRIVED_STATUS
             ):
@@ -258,6 +259,9 @@ class RouteReadyNotifications(commands.Cog):
             ).strip().upper()
             next_schedule_id = str(_get(next_route, "id"))
             arrived_schedule_id = str(_get(arrived, "id"))
+            hubs = hubs_for_registration(registration)
+            takeoff_window_hours = 6 if airport in hubs else 12
+            airport_type = "hub" if airport in hubs else "non-hub"
             attempted_delivery = False
 
             for if_user_id in if_user_ids:
@@ -267,10 +271,14 @@ class RouteReadyNotifications(commands.Cog):
                     if_user_id,
                 )
                 existing_event = await db.fetch_one(
-                    "SELECT event_key FROM if_route_ready_dm_events WHERE event_key = %s",
+                    "SELECT delivery_status FROM if_route_ready_dm_events "
+                    "WHERE event_key = %s",
                     (event_key,),
                 )
-                if existing_event:
+                if (
+                    existing_event
+                    and existing_event["delivery_status"] == "delivered"
+                ):
                     attempted_delivery = True
                     continue
 
@@ -293,10 +301,22 @@ class RouteReadyNotifications(commands.Cog):
                         user = await self.bot.fetch_user(int(discord_user_id))
                     await user.send(
                         f"🛬 **Aircraft {registration} is ready for your next flight.**\n"
-                        f"It has landed at **{airport}**. Your scheduled flight is "
-                        f"**{next_callsign}**: {airport} → {next_destination}."
+                        f"It is parked at **{airport}** for your scheduled flight "
+                        f"**{next_callsign}**: {airport} → {next_destination}.\n"
+                        f"Please take off within **{takeoff_window_hours} hours** "
+                        f"({airport_type} airport)."
                     )
                     delivery_status = "delivered"
+                    log.info(
+                        "Sent route-ready DM to pilot %s (%s) for %s on schedule %s; "
+                        "takeoff window is %s hours from %s.",
+                        if_user_id,
+                        discord_user_id,
+                        registration,
+                        next_schedule_id,
+                        takeoff_window_hours,
+                        airport,
+                    )
                 except discord.Forbidden:
                     delivery_status = "failed"
                     log.warning(
@@ -316,10 +336,13 @@ class RouteReadyNotifications(commands.Cog):
 
                 await db.execute(
                     """
-                    INSERT IGNORE INTO if_route_ready_dm_events
+                    INSERT INTO if_route_ready_dm_events
                         (event_key, arrival_schedule_id, next_schedule_id,
                          if_user_id, discord_user_id, delivery_status)
                     VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        discord_user_id = VALUES(discord_user_id),
+                        delivery_status = VALUES(delivery_status)
                     """,
                     (
                         event_key,
