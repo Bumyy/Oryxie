@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import Optional
 
 from .manager import DatabaseManager
@@ -16,6 +17,8 @@ class StoppedFlightModel:
         "stopped_since",
         "lifecycle",
         "eta_warning_sent",
+        "eta_warning_attempts",
+        "eta_warning_last_attempt_at",
         "one_hour_sent",
         "two_hour_sent",
         "three_hour_sent",
@@ -39,6 +42,58 @@ class StoppedFlightModel:
                     f"Required table {table_name} is missing; apply "
                     "database/stopped_flight_monitor_mysql_schema.sql"
                 )
+        await self._ensure_eta_warning_columns()
+
+    async def _ensure_eta_warning_columns(self) -> None:
+        columns = (
+            (
+                "eta_warning_attempts",
+                "TINYINT UNSIGNED NOT NULL DEFAULT 0",
+            ),
+            (
+                "eta_warning_last_attempt_at",
+                "DATETIME NULL",
+            ),
+        )
+        for column_name, column_definition in columns:
+            if not await self.db.fetch_one(
+                "SHOW COLUMNS FROM if_stopped_flight_incidents LIKE %s",
+                (column_name,),
+            ):
+                await self.db.execute(
+                    "ALTER TABLE if_stopped_flight_incidents "
+                    f"ADD COLUMN {column_name} {column_definition}"
+                )
+
+    async def try_start_eta_warning_attempt(
+        self,
+        schedule_id: str,
+        attempted_at,
+        retry_after_minutes: int = 5,
+        max_attempts: int = 2,
+    ) -> bool:
+        retry_cutoff = attempted_at - timedelta(minutes=retry_after_minutes)
+        changed = await self.db.execute(
+            """
+            UPDATE if_stopped_flight_incidents
+            SET eta_warning_attempts = eta_warning_attempts + 1,
+                eta_warning_last_attempt_at = %s
+            WHERE schedule_id = %s
+              AND eta_warning_sent = 0
+              AND eta_warning_attempts < %s
+              AND (
+                  eta_warning_last_attempt_at IS NULL
+                  OR eta_warning_last_attempt_at <= %s
+              )
+            """,
+            (
+                attempted_at,
+                str(schedule_id),
+                int(max_attempts),
+                retry_cutoff,
+            ),
+        )
+        return bool(changed)
 
     async def has_aircraft_status_table(self) -> bool:
         return bool(

@@ -139,6 +139,13 @@ the channel configured by `STOPPED_FLIGHT_DM_LOG_CHANNEL_ID`, including delivery
 status and recipient. Other bot messages posted in channels or as interaction
 responses are not DMs and are not included in these reports.
 
+The 30-minute arrival warning is attempted at most twice: once when the pilot
+is within range, then once more after five minutes if delivery failed and the
+aircraft is still within 30 minutes of arrival. The retry report is marked as
+the final attempt. The pilot's Discord account must be linked to their Infinite
+Flight user ID in the pilot database; changing only their Discord nickname does
+not create or repair that account link.
+
 Route-exhaustion alerts also include an estimated demand label based on Infinite
 Flight aircraft flight-history records: **High Demand** means at least 3
 timestamped flight records in the last 7 days; otherwise it is **Low Demand**.

@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS if_stopped_flight_incidents (
     stopped_since DATETIME NULL,
     lifecycle VARCHAR(16) NOT NULL DEFAULT 'monitoring',
     eta_warning_sent TINYINT(1) NOT NULL DEFAULT 0,
+    eta_warning_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    eta_warning_last_attempt_at DATETIME NULL,
     one_hour_sent TINYINT(1) NOT NULL DEFAULT 0,
     two_hour_sent TINYINT(1) NOT NULL DEFAULT 0,
     three_hour_sent TINYINT(1) NOT NULL DEFAULT 0,

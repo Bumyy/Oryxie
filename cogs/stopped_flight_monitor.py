@@ -37,6 +37,8 @@ TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
 STOPPED_POSITION_STATE = 4
 IN_FLIGHT_SCHEDULE_STATUS = 6
+ETA_WARNING_RETRY_MINUTES = 5
+MAX_ETA_WARNING_ATTEMPTS = 2
 FLIGHT_HISTORY_DAYS = 3
 DEMAND_HISTORY_DAYS = 7
 HIGH_DEMAND_FLIGHT_THRESHOLD = 3
@@ -706,11 +708,25 @@ class StoppedFlightMonitor(commands.Cog):
                 self.bot, position, _get(schedule, "destination_icao")
             )
             if eta is not None and 0 <= eta <= 30:
-                sent = await self._send_eta_warning(row, crew_ids, eta)
-                if sent:
-                    await model.update_incident(
-                        schedule_id, {"eta_warning_sent": 1}
+                attempt_started = await model.try_start_eta_warning_attempt(
+                    schedule_id,
+                    _utcnow(),
+                    retry_after_minutes=ETA_WARNING_RETRY_MINUTES,
+                    max_attempts=MAX_ETA_WARNING_ATTEMPTS,
+                )
+                if attempt_started:
+                    attempt_number = int(row.get("eta_warning_attempts") or 0) + 1
+                    sent = await self._send_eta_warning(
+                        row,
+                        crew_ids,
+                        eta,
+                        attempt_number,
                     )
+                    if sent:
+                        await model.update_incident(
+                            schedule_id, {"eta_warning_sent": 1}
+                        )
+                    row["eta_warning_attempts"] = attempt_number
 
         stopped_since = _parse_utc(row.get("stopped_since"))
         if stopped_since is None:
@@ -772,7 +788,7 @@ class StoppedFlightMonitor(commands.Cog):
                 expected_lifecycle="available",
             )
 
-    async def _send_eta_warning(self, row, if_user_ids, eta):
+    async def _send_eta_warning(self, row, if_user_ids, eta, attempt_number):
         sent_any = False
         delivered_recipients = []
         failed_recipients = []
@@ -829,11 +845,20 @@ class StoppedFlightMonitor(commands.Cog):
                     f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})."
                 )
         if delivered_recipients or failed_recipients:
+            retry_note = (
+                f"This was attempt {attempt_number}/{MAX_ETA_WARNING_ATTEMPTS}; "
+                f"the bot will retry once in {ETA_WARNING_RETRY_MINUTES} minutes "
+                "if the aircraft is still within 30 minutes of arrival."
+                if attempt_number < MAX_ETA_WARNING_ATTEMPTS
+                else "This was the final attempt; no further arrival-warning retry will be made."
+            )
             await self._send_dm_recipient_report(
                 row,
-                "30-minute arrival warning",
+                f"30-minute arrival warning · attempt {attempt_number}/"
+                f"{MAX_ETA_WARNING_ATTEMPTS}",
                 delivered_recipients,
                 failed_recipients=failed_recipients,
+                notes=[retry_note],
             )
         return sent_any
 
