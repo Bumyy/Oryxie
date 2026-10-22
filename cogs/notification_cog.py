@@ -25,6 +25,10 @@ EVENT_TITLES = {
     "task_comment": "New Task Comment",
 }
 
+DM_LOG_CHANNEL_ID = int(
+    os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "0") or 0
+)
+
 class NotificationCog(commands.Cog):
     """
     HTTP notification server for Oryxpace integration.
@@ -172,10 +176,23 @@ class NotificationCog(commands.Cog):
 
         # 6. Build the embed
         embed = self._build_embed(data)
+        event_type = str(data.get("event_type", "task_updated")).strip().lower()
+        event_label = EVENT_TITLES.get(
+            event_type,
+            "Oryxpace Task Notification",
+        )
+        task_title = str(data.get("task_title") or "Untitled Task")[:200]
 
         # 7. Deliver DM
         try:
             await user.send(embed=embed)
+            await self._report_dm_delivery(
+                user_id,
+                user,
+                event_label,
+                task_title,
+                "Delivered",
+            )
             logger.info(f"Oryxpace notification delivered to {user} ({user_id})")
             return web.json_response({
                 "status": "delivered",
@@ -184,6 +201,14 @@ class NotificationCog(commands.Cog):
             }, status=200)
 
         except discord.Forbidden:
+            await self._report_dm_delivery(
+                user_id,
+                user,
+                event_label,
+                task_title,
+                "Not delivered",
+                "Discord rejected the DM (user privacy settings or no mutual server).",
+            )
             logger.warning(f"Forbidden: Cannot DM user {user_id}. DMs disabled or no shared guild.")
             return web.json_response({
                 "status": "error",
@@ -192,6 +217,14 @@ class NotificationCog(commands.Cog):
             }, status=403)
 
         except discord.HTTPException as e:
+            await self._report_dm_delivery(
+                user_id,
+                user,
+                event_label,
+                task_title,
+                "Not delivered",
+                "Discord returned an HTTP error while sending the DM.",
+            )
             logger.error(f"Failed to send DM to {user_id}: {e}")
             return web.json_response({
                 "status": "error",
@@ -200,12 +233,63 @@ class NotificationCog(commands.Cog):
             }, status=502)
 
         except Exception as e:
+            await self._report_dm_delivery(
+                user_id,
+                user,
+                event_label,
+                task_title,
+                "Not delivered",
+                "An unexpected error occurred while sending the DM.",
+            )
             logger.exception(f"Unexpected error sending DM to {user_id}: {e}")
             return web.json_response({
                 "status": "error",
                 "error": f"Internal server error: {e}",
                 "code": "internal_error"
-            }, status=500)
+            }, status=500            )
+
+    async def _report_dm_delivery(
+        self,
+        user_id: int,
+        user,
+        event_label: str,
+        task_title: str,
+        delivery_status: str,
+        reason: str = "",
+    ) -> None:
+        if not DM_LOG_CHANNEL_ID:
+            logger.error(
+                "Cannot report Oryxpace DM delivery: "
+                "STOPPED_FLIGHT_DM_LOG_CHANNEL_ID is not configured."
+            )
+            return
+
+        try:
+            channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
+            if channel is None:
+                channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
+            report = (
+                f"📨 **Bot DM report · Oryxpace task notification**\n"
+                f"**Recipient:** <@{user_id}> ({user})\n"
+                f"**Notification:** {event_label} · {task_title}\n"
+                f"**Status:** {delivery_status}"
+            )
+            if reason:
+                report += f"\n**Details:** {reason}"
+            await channel.send(
+                report,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception(
+                "Could not report Oryxpace DM delivery to user %s.",
+                user_id,
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected error reporting Oryxpace DM delivery to user %s.",
+                user_id,
+            )
 
     def _build_embed(self, data: dict) -> discord.Embed:
         """Construct the Discord embed for the task notification."""
