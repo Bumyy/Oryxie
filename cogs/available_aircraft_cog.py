@@ -730,7 +730,7 @@ class AvailableAircraftCog(commands.Cog):
     )
     @app_commands.describe(
         registration=(
-            "Optionally search the fleet by registration, e.g. FXQK or A&BFC."
+            "Search by registration, e.g. IF-FXQK or A7BFC; punctuation is optional."
         )
     )
     async def available_aircraft(
@@ -756,7 +756,7 @@ class AvailableAircraftCog(commands.Cog):
                     else:
                         message = (
                             f"No organization aircraft matched **{registration}**. "
-                            "Try a shorter registration, such as `FXQK`, or use the "
+                            "Try a short form, such as `FXQK`, or use the "
                             "full registration."
                         )
                     await interaction.followup.send(message, ephemeral=True)

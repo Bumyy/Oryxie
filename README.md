@@ -147,9 +147,10 @@ than being incorrectly counted as zero.
 
 Use `/available-aircraft` without a registration to browse claimable routes, or
 pass a registration to search the full fleet. Registration search ignores
-spaces and punctuation, recognizes common short forms (for example `FXQK` or
-`A&BFC`), and suggests close matches. A matched aircraft with no claimable
-route is reported as such.
+spaces and punctuation, recognizes common short forms (for example `FXQK` for
+`IF-FXQK`), and suggests close matches. You can also search using a full
+registration such as `A7BFC`. A matched aircraft with no claimable route is
+reported as such.
 
 The `/request-flight` menu has a **Cargo** category for A7BFA (777F). Cargo
 bookings allow up to two connected legs at a time, without requiring a hub
