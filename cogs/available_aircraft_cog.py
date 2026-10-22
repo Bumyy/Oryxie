@@ -10,6 +10,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.airline_hubs import RETIRED_REGISTRATIONS, is_cargo_registration
+
 log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
@@ -95,6 +97,12 @@ def _aircraft_model(aircraft):
 
 
 def _aircraft_category(aircraft):
+    registration = str(
+        _get(aircraft, "registration", "") or ""
+    ).strip().upper()
+    if is_cargo_registration(registration):
+        return "Cargo"
+
     model = _aircraft_model(aircraft).lower().replace(" ", "")
 
     if model.startswith("a") and len(model) > 1 and model[1].isdigit():
@@ -455,7 +463,14 @@ class AvailableAircraftCog(commands.Cog):
             fleet = await client.list_organization_aircraft(ORG_ID)
 
             self._fleet = sorted(
-                list(fleet or []),
+                [
+                    aircraft
+                    for aircraft in (fleet or [])
+                    if str(
+                        _get(aircraft, "registration", "") or ""
+                    ).strip().upper()
+                    not in RETIRED_REGISTRATIONS
+                ],
                 key=lambda item: str(_get(item, "registration", "")),
             )
             self._fleet_at = time.monotonic()

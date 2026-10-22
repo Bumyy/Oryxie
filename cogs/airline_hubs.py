@@ -1,8 +1,12 @@
 """Shared airline and hub configuration for fleet workflows."""
 
 DEFAULT_HUB_ICAO = "OTHH"
+CARGO_REGISTRATIONS = frozenset({"A7BFA"})
+RETIRED_REGISTRATIONS = frozenset({"A7BFC"})
 
 AIRCRAFT_AIRLINES = {
+    "A7BFA": "Qatar Airways Cargo",
+    "A7BFC": "Qatar Airways",
     "B-LRO": "Cathay Pacific",
     "EC-ORE": "Iberia",
     "IF-KSKI": "British Airways",
@@ -15,6 +19,7 @@ AIRCRAFT_AIRLINES = {
 
 AIRLINE_HUBS = {
     "Qatar Airways": ("OTHH",),
+    "Qatar Airways Cargo": ("OTHH",),
     "Cathay Pacific": ("VHHH",),
     "Iberia": ("LEMD",),
     "British Airways": ("EGLL",),
@@ -33,3 +38,8 @@ def airline_name_for_registration(registration):
 def hubs_for_registration(registration):
     airline = airline_name_for_registration(registration)
     return AIRLINE_HUBS.get(airline, (DEFAULT_HUB_ICAO,))
+
+
+def is_cargo_registration(registration):
+    normalized = str(registration or "").strip().upper()
+    return normalized in CARGO_REGISTRATIONS

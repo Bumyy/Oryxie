@@ -12,8 +12,10 @@ from discord.ext import commands
 
 from cogs.airline_hubs import (
     DEFAULT_HUB_ICAO,
+    RETIRED_REGISTRATIONS,
     airline_name_for_registration,
     hubs_for_registration,
+    is_cargo_registration,
 )
 
 log = logging.getLogger(__name__)
@@ -26,8 +28,6 @@ SCHEDULE_CACHE_SECONDS = 60
 MAX_BOOKED_AIRCRAFT = 2
 SCHEDULES_PER_SCAN = 3
 VIEW_TIMEOUT_SECONDS = 180
-RETIRED_REGISTRATIONS = {"A7BFC", "A7BFA"}
-
 AIRCRAFT_MODELS = {
     "A7-ANN": "A350-1000",
     "A7-APC": "A380-800",
@@ -128,6 +128,12 @@ def _aircraft_hub(aircraft):
 
 
 def _aircraft_category(aircraft):
+    registration = _registration(aircraft)
+    if is_cargo_registration(registration):
+        return "Cargo"
+    if registration in RETIRED_REGISTRATIONS:
+        return "Retired"
+
     model = _aircraft_model(aircraft).lower().replace(" ", "")
 
     if model.startswith("a") and len(model) > 1 and model[1].isdigit():
@@ -139,6 +145,48 @@ def _aircraft_category(aircraft):
         return "Boeing"
 
     return "Other"
+
+
+def _retired_aircraft():
+    return [
+        {
+            "id": f"retired:{registration}",
+            "registration": registration,
+            "model": AIRCRAFT_MODELS.get(registration, "Model unknown"),
+        }
+        for registration in sorted(RETIRED_REGISTRATIONS)
+    ]
+
+
+def _build_cargo_route_chain(schedules, start_index, max_routes=2):
+    if start_index < 0 or start_index >= len(schedules):
+        return []
+
+    routes = []
+    previous = None
+    for route in schedules[start_index:]:
+        if len(routes) >= max_routes:
+            break
+        if (
+            _is_unavailable_status(route)
+            or _route_status(route) in {6, 7, 10}
+            or (_get(route, "crew", []) or [])
+        ):
+            break
+
+        origin = str(_get(route, "origin_icao", "") or "").strip().upper()
+        destination = str(
+            _get(route, "destination_icao", "") or ""
+        ).strip().upper()
+        if not origin or not destination:
+            break
+        if previous is not None and not _connected_routes(previous, route):
+            break
+
+        routes.append(route)
+        previous = route
+
+    return routes
 
 
 def _model_label(aircraft):
@@ -400,20 +448,24 @@ class AircraftCategorySelect(discord.ui.Select):
         self.pilot = pilot
         self.aircraft = aircraft
 
-        categories = [
+        available_categories = [
             name
-            for name in ("Airbus", "Boeing", "Other")
+            for name in ("Airbus", "Boeing", "Other", "Cargo")
             if any(_aircraft_category(a) == name for a in aircraft)
         ]
+        if RETIRED_REGISTRATIONS:
+            available_categories.append("Retired")
 
         options = [
             discord.SelectOption(
                 label=name,
                 description=(
-                    f"{sum(_aircraft_category(a) == name for a in aircraft)} aircraft"
+                    "1 retired aircraft"
+                    if name == "Retired"
+                    else f"{sum(_aircraft_category(a) == name for a in aircraft)} aircraft"
                 ),
             )
-            for name in categories
+            for name in available_categories
         ]
 
         super().__init__(
@@ -432,11 +484,15 @@ class AircraftCategorySelect(discord.ui.Select):
             return
 
         category = self.values[0]
-        selected = [
-            aircraft
-            for aircraft in self.aircraft
-            if _aircraft_category(aircraft) == category
-        ]
+        selected = (
+            _retired_aircraft()
+            if category == "Retired"
+            else [
+                aircraft
+                for aircraft in self.aircraft
+                if _aircraft_category(aircraft) == category
+            ]
+        )
 
         await interaction.response.edit_message(
             content=(
@@ -497,6 +553,16 @@ class AircraftListSelect(discord.ui.Select):
             await interaction.response.send_message(
                 "Aircraft not found. Run `/request-flight` again.",
                 ephemeral=True,
+            )
+            return
+
+        if _registration(aircraft) in RETIRED_REGISTRATIONS:
+            await interaction.response.send_message(
+                "✈️ **A7BFC · Boeing 777F**\n"
+                "She was a beauty—every cargo run showed what a 777F could do. "
+                "Though she has retired from the fleet, her legacy still flies "
+                "on in every aircraft following in her contrail.",
+                ephemeral=False,
             )
             return
 
@@ -610,13 +676,19 @@ class RouteStartSelect(discord.ui.Select):
         options = []
 
         for start_index, routes in page_items:
+            route_kind = (
+                f"{len(routes)} cargo leg(s) · "
+                if is_cargo_registration(_registration(aircraft))
+                else (
+                    f"{len(routes)} route(s) · "
+                    f"Returns to one of {_aircraft_hub(aircraft)} · "
+                )
+            )
             options.append(
                 discord.SelectOption(
                     label=_route_option_label(routes),
                     description=(
-                        f"{len(routes)} route(s) · "
-                        f"Returns to one of {_aircraft_hub(aircraft)} · "
-                        f"{_route_chain_description(routes)}"
+                        route_kind + _route_chain_description(routes)
                     )[:100],
                     value=str(start_index),
                 )
@@ -964,6 +1036,7 @@ class ClaimRouteView(discord.ui.View):
         hub = _aircraft_hub(self.aircraft)
         hubs = _aircraft_hubs(self.aircraft)
         airline = _airline_name(self.aircraft)
+        cargo_aircraft = is_cargo_registration(registration)
 
         await self.cog._booking_lock.acquire()
         try:
@@ -1062,7 +1135,8 @@ class ClaimRouteView(discord.ui.View):
                 if not schedules:
                     await interaction.edit_original_response(
                         content=(
-                            f"{registration} has no active scheduled routes. "
+                            f"{registration} has no active scheduled "
+                            f"{'cargo ' if cargo_aircraft else ''}routes. "
                             "Contact a Live Admin."
                         ),
                         embed=None,
@@ -1094,6 +1168,22 @@ class ClaimRouteView(discord.ui.View):
                     )
                     return
 
+                if cargo_aircraft and any(
+                    (_get(route, "crew", []) or [])
+                    for route in schedules
+                    if not _is_unavailable_status(route)
+                ):
+                    await interaction.edit_original_response(
+                        content=(
+                            f"**{registration} cargo routes are booked two legs at "
+                            "a time.** Finish the currently assigned cargo leg(s) "
+                            "before booking the next pair."
+                        ),
+                        embed=None,
+                        view=None,
+                    )
+                    return
+
                 start_index = next(
                     (
                         index
@@ -1103,22 +1193,34 @@ class ClaimRouteView(discord.ui.View):
                     -1,
                 )
 
-                current_routes = _build_connected_route_chain(
-                    schedules,
-                    start_index,
-                    hubs,
+                current_routes = (
+                    _build_cargo_route_chain(schedules, start_index)
+                    if cargo_aircraft
+                    else _build_connected_route_chain(
+                        schedules,
+                        start_index,
+                        hubs,
+                    )
                 )
 
                 if (
                     not current_routes
                     or _route_ids(current_routes) != _route_ids(self.routes_to_assign)
                 ):
-                    await interaction.edit_original_response(
-                        content=(
+                    if cargo_aircraft:
+                        changed_route_message = (
+                            "The selected cargo legs changed or are no longer "
+                            "available. Nothing was assigned; run `/request-flight` "
+                            "again."
+                        )
+                    else:
+                        changed_route_message = (
                             "The selected route chain changed or no longer returns "
                             f"to the airline hub ({hub}). Nothing was assigned; "
                             "run `/request-flight` again."
-                        ),
+                        )
+                    await interaction.edit_original_response(
+                        content=changed_route_message,
                         embed=None,
                         view=None,
                     )
@@ -1260,7 +1362,8 @@ class ClaimRouteView(discord.ui.View):
                         break
 
                     if (
-                        assigned
+                        not cargo_aircraft
+                        and assigned
                         and str(
                             _get(assigned[-1], "destination_icao", "") or ""
                         ).strip().upper() in hubs
@@ -1426,9 +1529,13 @@ class ClaimRouteView(discord.ui.View):
                 f"Pilot: **{pilot_name}**\n"
                 f"{copilot_line}"
                 f"Aircraft: **{registration}** ({_model_label(self.aircraft)})\n"
-                f"Airline hub: **{airline} · {hub}**\n"
-                f"Route(s):\n{route_lines}\n"
-                f"Schedule: {schedule_order_note}\n\n{RULES}",
+                + (
+                    "Cargo operation: **maximum two connected legs per booking**\n"
+                    if cargo_aircraft
+                    else f"Airline hub: **{airline} · {hub}**\n"
+                )
+                + f"Route(s):\n{route_lines}\n"
+                + f"Schedule: {schedule_order_note}\n\n{RULES}",
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,
@@ -2133,14 +2240,17 @@ class RequestFlightCog(commands.Cog):
                     _aircraft_category(item) == name
                     for item in aircraft
                 )
-                for name in ("Airbus", "Boeing", "Other")
+                for name in ("Airbus", "Boeing", "Other", "Cargo")
             }
+            counts["Retired"] = len(RETIRED_REGISTRATIONS)
 
             await interaction.followup.send(
                 f"Choose an aircraft category ({len(aircraft)} aircraft available): "
                 f"Airbus {counts['Airbus']} · "
                 f"Boeing {counts['Boeing']} · "
-                f"Other {counts['Other']}.\n\n"
+                f"Other {counts['Other']} · "
+                f"Cargo {counts['Cargo']} · "
+                f"Retired {counts['Retired']}.\n\n"
                 f"⚠️ Maximum **{MAX_BOOKED_AIRCRAFT} aircraft with unflown outbound "
                 "routes per pilot**. Taken-off flights and return legs do not count.",
                 view=AircraftSelectView(self, pilot, aircraft),
@@ -2181,11 +2291,13 @@ class RequestFlightCog(commands.Cog):
             airline = _airline_name(aircraft)
             hub = _aircraft_hub(aircraft)
             hubs = _aircraft_hubs(aircraft)
+            cargo_aircraft = is_cargo_registration(registration)
 
             if not schedules:
                 await interaction.edit_original_response(
                     content=(
-                        f"{registration} has no active scheduled routes. "
+                        f"{registration} has no active scheduled "
+                        f"{'cargo ' if cargo_aircraft else ''}routes. "
                         "Contact a Live Admin."
                     ),
                     embed=None,
@@ -2193,7 +2305,23 @@ class RequestFlightCog(commands.Cog):
                 )
                 return
 
-            # Present each complete, connected chain that ends at the airline hub once.
+            if cargo_aircraft and any(
+                (_get(route, "crew", []) or [])
+                for route in schedules
+                if not _is_unavailable_status(route)
+            ):
+                await interaction.edit_original_response(
+                    content=(
+                        f"**{registration} cargo routes are booked two legs at a "
+                        "time.** Finish the currently assigned cargo leg(s) before "
+                        "booking the next pair."
+                    ),
+                    embed=None,
+                    view=None,
+                )
+                return
+
+            # Present complete hub-return chains, or batches of two cargo legs.
             choices = []
             seen_start_routes = set()
             included_route_ids = set()
@@ -2209,10 +2337,10 @@ class RequestFlightCog(commands.Cog):
                 ):
                     continue
 
-                chain = _build_connected_route_chain(
-                    schedules,
-                    index,
-                    hubs,
+                chain = (
+                    _build_cargo_route_chain(schedules, index)
+                    if cargo_aircraft
+                    else _build_connected_route_chain(schedules, index, hubs)
                 )
 
                 if chain:
@@ -2225,15 +2353,22 @@ class RequestFlightCog(commands.Cog):
                     )
 
             if not choices:
-                await interaction.edit_original_response(
-                    content=(
+                if cargo_aircraft:
+                    no_routes_message = (
+                        f"**{registration} has no available cargo legs to book.** "
+                        "Please ask a Live Admin to add cargo routes."
+                    )
+                else:
+                    no_routes_message = (
                         f"**{registration} does not have a complete connected route "
                         f"chain in its schedule that returns to a configured "
                         f"{airline} hub ({hub}).** A route may end at an airport "
                         "without a following scheduled route back to a configured hub. "
                         "Please ask a Live Admin to add the missing connecting "
                         "routes to the schedule."
-                    ),
+                    )
+                await interaction.edit_original_response(
+                    content=no_routes_message,
                     embed=None,
                     view=None,
                 )
@@ -2256,12 +2391,20 @@ class RequestFlightCog(commands.Cog):
                 title=f"Choose your route · {registration}",
                 description=(
                     f"**Aircraft:** {_model_label(aircraft)}\n"
-                    f"**Airline hubs:** {airline} · **{hub}**\n\n"
-                    "Choose the starting route you want. Each option includes "
-                    "the connected scheduled routes that follow it and return "
-                    "to the airline hub.\n\n"
-                    "Only routes that are currently unassigned and have a "
-                    "complete connected chain back to the hub are listed."
+                    + (
+                        "**Cargo booking:** choose up to two connected scheduled "
+                        "legs. Cargo routes do not need to return to a hub; book "
+                        "another pair after the assigned cargo legs are complete."
+                        if cargo_aircraft
+                        else (
+                            f"**Airline hubs:** {airline} · **{hub}**\n\n"
+                            "Choose the starting route you want. Each option "
+                            "includes the connected scheduled routes that follow "
+                            "it and return to the airline hub.\n\n"
+                            "Only routes that are currently unassigned and have a "
+                            "complete connected chain back to the hub are listed."
+                        )
+                    )
                 ),
                 color=discord.Color.blue(),
             )
@@ -2354,6 +2497,7 @@ class RequestFlightCog(commands.Cog):
             airline = _airline_name(aircraft)
             hub = _aircraft_hub(aircraft)
             hubs = _aircraft_hubs(aircraft)
+            cargo_aircraft = is_cargo_registration(registration)
 
             if start_index < 0 or start_index >= len(schedules):
                 await interaction.response.send_message(
@@ -2373,10 +2517,14 @@ class RequestFlightCog(commands.Cog):
                 )
                 return
 
-            current_chain = _build_connected_route_chain(
-                schedules,
-                start_index,
-                hubs,
+            current_chain = (
+                _build_cargo_route_chain(schedules, start_index)
+                if cargo_aircraft
+                else _build_connected_route_chain(
+                    schedules,
+                    start_index,
+                    hubs,
+                )
             )
 
             if not current_chain or _route_ids(current_chain) != _route_ids(routes):
@@ -2393,6 +2541,15 @@ class RequestFlightCog(commands.Cog):
             final_hub = str(
                 _get(routes[-1], "destination_icao", "") or ""
             ).strip().upper()
+            route_policy = (
+                "**Cargo limit:** A maximum of two connected legs can be booked "
+                "at once. Book the next cargo legs after these are complete."
+                if cargo_aircraft
+                else (
+                    f"**Return-to-base check:** The final route returns to "
+                    f"**{final_hub}**."
+                )
+            )
 
             position_state = "Not checked in this step"
 
@@ -2401,12 +2558,16 @@ class RequestFlightCog(commands.Cog):
                 description=(
                     f"**Aircraft model:** {_model_label(aircraft)}\n"
                     f"**Registration:** {registration}\n"
-                    f"**Airline hubs:** {airline} · {hub}\n"
-                    f"**Starting route:** {_route_text(selected_route)}\n"
-                    f"**Routes to be assigned:** {len(routes)}\n\n"
-                    f"**Your selected route chain**\n{route_lines}\n\n"
-                    f"**Return-to-base check:** The final route returns to **{final_hub}**.\n\n"
-                    "Confirm only if you want every listed route assigned to you."
+                    + (
+                        "**Cargo operation:** Up to two connected legs per booking\n"
+                        if cargo_aircraft
+                        else f"**Airline hubs:** {airline} · {hub}\n"
+                    )
+                    + f"**Starting route:** {_route_text(selected_route)}\n"
+                    + f"**Routes to be assigned:** {len(routes)}\n\n"
+                    + f"**Your selected route chain**\n{route_lines}\n\n"
+                    + f"{route_policy}\n\n"
+                    + "Confirm only if you want every listed route assigned to you."
                 ),
                 color=discord.Color.green(),
             )

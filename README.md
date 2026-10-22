@@ -144,6 +144,12 @@ Flight aircraft activity: **High Demand** means at least 3 flights in the last
 7 days; otherwise it is **Low Demand**. If recent activity cannot be checked,
 the alert says **Demand unknown** rather than guessing.
 
+The `/request-flight` menu has a **Cargo** category for A7BFA (777F). Cargo
+bookings allow up to two connected legs at a time, without requiring a hub
+return; another cargo booking is available after the currently assigned legs
+are complete. **Retired** shows A7BFC (777F) and posts a public tribute instead
+of assigning the retired aircraft.
+
 ---
 
 ## Summary
