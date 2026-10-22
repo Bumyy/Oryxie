@@ -632,19 +632,49 @@ class StoppedFlightMonitor(commands.Cog):
             if not row:
                 return
         if elapsed >= timedelta(hours=2) and not row["two_hour_sent"]:
-            await self._send_pilot_wave(model, row, wave=2)
-            await model.update_incident(
-                schedule_id,
-                {"two_hour_sent": 1},
-                expected_lifecycle="available",
-            )
+            wave_sent = True
+            try:
+                await self._send_pilot_wave(model, row, wave=2)
+            except Exception:
+                wave_sent = False
+                log.exception(
+                    "Could not send two-hour recovery DMs for %s",
+                    schedule_id,
+                )
+                await self._send_dm_recipient_report(
+                    row,
+                    "2-hour follow-up",
+                    [],
+                    notes=["The recovery DM wave failed; see bot logs for details."],
+                )
+            if wave_sent:
+                await model.update_incident(
+                    schedule_id,
+                    {"two_hour_sent": 1},
+                    expected_lifecycle="available",
+                )
         if elapsed >= timedelta(hours=3) and not row["three_hour_sent"]:
-            await self._send_pilot_wave(model, row, wave=3)
-            await model.update_incident(
-                schedule_id,
-                {"three_hour_sent": 1},
-                expected_lifecycle="available",
-            )
+            wave_sent = True
+            try:
+                await self._send_pilot_wave(model, row, wave=3)
+            except Exception:
+                wave_sent = False
+                log.exception(
+                    "Could not send three-hour recovery DMs for %s",
+                    schedule_id,
+                )
+                await self._send_dm_recipient_report(
+                    row,
+                    "3-hour follow-up",
+                    [],
+                    notes=["The recovery DM wave failed; see bot logs for details."],
+                )
+            if wave_sent:
+                await model.update_incident(
+                    schedule_id,
+                    {"three_hour_sent": 1},
+                    expected_lifecycle="available",
+                )
         if elapsed >= timedelta(hours=4) and not row["four_hour_sent"]:
             await self._send_staff_alert(row, elapsed)
             await model.update_incident(
@@ -656,10 +686,26 @@ class StoppedFlightMonitor(commands.Cog):
     async def _send_eta_warning(self, row, if_user_ids, eta):
         sent_any = False
         delivered_recipients = []
+        failed_recipients = []
         for if_user_id in if_user_ids:
-            pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
+            try:
+                pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(
+                    if_user_id
+                )
+            except Exception:
+                log.exception(
+                    "Could not look up pilot for ETA warning, IF user %s",
+                    if_user_id,
+                )
+                failed_recipients.append(
+                    f"Could not look up the pilot linked to IF user `{if_user_id}`."
+                )
+                continue
             discord_id = str((pilot or {}).get("discordid") or "")
             if not discord_id.isdigit():
+                failed_recipients.append(
+                    f"No valid Discord account is linked to IF user `{if_user_id}`."
+                )
                 continue
             try:
                 user = self.bot.get_user(int(discord_id))
@@ -680,11 +726,25 @@ class StoppedFlightMonitor(commands.Cog):
                     "Could not send 30-minute arrival warning to IF user %s",
                     if_user_id,
                 )
-        if delivered_recipients:
+                failed_recipients.append(
+                    f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'}) "
+                    "could not be DM'd; Discord rejected the message."
+                )
+            except Exception:
+                log.exception(
+                    "Unexpected error sending 30-minute arrival warning to IF user %s",
+                    if_user_id,
+                )
+                failed_recipients.append(
+                    f"An unexpected error prevented the arrival warning for "
+                    f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})."
+                )
+        if delivered_recipients or failed_recipients:
             await self._send_dm_recipient_report(
                 row,
                 "30-minute arrival warning",
                 delivered_recipients,
+                failed_recipients=failed_recipients,
             )
         return sent_any
 
@@ -717,6 +777,15 @@ class StoppedFlightMonitor(commands.Cog):
                 )
         except Exception:
             log.exception("Could not unassign crew from stopped flight %s", schedule_id)
+            await self._send_dm_recipient_report(
+                row,
+                "1-hour recovery attempt failed",
+                [],
+                notes=[
+                    "The bot could not verify removal of the original crew, "
+                    "so it did not offer the flight to recovery pilots."
+                ],
+            )
             return None
 
         await model.update_incident(
@@ -726,30 +795,73 @@ class StoppedFlightMonitor(commands.Cog):
         )
         row = await model.get_incident(schedule_id)
         delivered_recipients = []
+        failed_recipients = []
         for if_user_id in original_ids:
-            recipient = await self._notify_unassigned_pilot(
-                model,
-                row,
-                if_user_id,
-            )
+            try:
+                recipient = await self._notify_unassigned_pilot(
+                    model,
+                    row,
+                    if_user_id,
+                    failed_recipients,
+                )
+            except Exception:
+                log.exception(
+                    "Could not process the crew-removal DM for IF user %s "
+                    "on schedule %s",
+                    if_user_id,
+                    schedule_id,
+                )
+                failed_recipients.append(
+                    f"An unexpected error prevented the removal notice for "
+                    f"IF user `{if_user_id}`."
+                )
+                recipient = None
             if recipient:
                 delivered_recipients.append(recipient)
         await self._send_dm_recipient_report(
             row,
             "1-hour crew removal notice",
             delivered_recipients,
+            failed_recipients=failed_recipients,
         )
         try:
             await self._send_pilot_wave(model, row, wave=1)
         except Exception:
             log.exception("Could not send one-hour recovery DMs for %s", schedule_id)
+            await self._send_dm_recipient_report(
+                row,
+                "1-hour recovery alert",
+                [],
+                notes=["The recovery DM wave failed; see bot logs for details."],
+            )
         return row
 
-    async def _notify_unassigned_pilot(self, model, row, if_user_id):
-        pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
+    async def _notify_unassigned_pilot(
+        self,
+        model,
+        row,
+        if_user_id,
+        failed_recipients=None,
+    ):
+        failed_recipients = failed_recipients if failed_recipients is not None else []
+        try:
+            pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
+        except Exception:
+            log.exception(
+                "Could not look up pilot for stopped-flight removal DM, IF user %s",
+                if_user_id,
+            )
+            failed_recipients.append(
+                f"Could not look up the pilot linked to IF user `{if_user_id}`."
+            )
+            return
         discord_id = str((pilot or {}).get("discordid") or "")
         if not discord_id.isdigit():
             log.warning("No Discord user linked to removed crew member %s", if_user_id)
+            failed_recipients.append(
+                f"No valid Discord account is linked to removed crew member "
+                f"`{if_user_id}`."
+            )
             return
         try:
             user = self.bot.get_user(int(discord_id))
@@ -762,7 +874,8 @@ class StoppedFlightMonitor(commands.Cog):
                 "Do not request this stopped route again. You may fly this aircraft "
                 "after this flight is complete and a Live Admin adds new routes."
             )
-            await model.record_dm_event(
+            await self._record_dm_event_safely(
+                model,
                 schedule_id=row["schedule_id"],
                 if_user_id=if_user_id,
                 discord_user_id=discord_id,
@@ -773,7 +886,31 @@ class StoppedFlightMonitor(commands.Cog):
             return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
         except (discord.Forbidden, discord.HTTPException):
             log.exception("Could not DM pilot %s about stopped-flight removal", if_user_id)
+            failed_recipients.append(
+                f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'}) "
+                "could not be DM'd; Discord rejected the message."
+            )
+        except Exception:
+            log.exception(
+                "Unexpected error sending stopped-flight removal DM to IF user %s",
+                if_user_id,
+            )
+            failed_recipients.append(
+                f"An unexpected error prevented the removal notice for "
+                f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})."
+            )
         return None
+
+    async def _record_dm_event_safely(self, model, **event):
+        try:
+            await model.record_dm_event(**event)
+        except Exception:
+            log.exception(
+                "Could not persist stopped-flight DM delivery record for "
+                "schedule %s and IF user %s",
+                event.get("schedule_id"),
+                event.get("if_user_id"),
+            )
 
     async def _recent_live_flight_count(self, if_user_id):
         now = _utcnow()
@@ -837,6 +974,7 @@ class StoppedFlightMonitor(commands.Cog):
             if pilot.get("discordid") and pilot.get("ifuserid")
         }
         candidates = []
+        activity_check_failures = 0
         for member in role.members:
             if member.bot:
                 continue
@@ -854,6 +992,7 @@ class StoppedFlightMonitor(commands.Cog):
                     "Could not check three-day Live flight history for %s",
                     pilot.get("callsign", if_user_id),
                 )
+                activity_check_failures += 1
                 continue
             if flight_count:
                 candidates.append(
@@ -869,10 +1008,22 @@ class StoppedFlightMonitor(commands.Cog):
 
         selected = _weight_pick(candidates, len(candidates))
         delivered_recipients = []
+        failed_recipients = []
         for candidate in selected:
             if len(delivered_recipients) >= DM_BATCH_SIZE:
                 break
-            incident_state = await model.get_incident_state(row["schedule_id"])
+            try:
+                incident_state = await model.get_incident_state(row["schedule_id"])
+            except Exception:
+                log.exception(
+                    "Could not verify recovery status before DM wave for %s",
+                    row["schedule_id"],
+                )
+                failed_recipients.append(
+                    "Stopped sending because the bot could not verify whether "
+                    "the flight had already been claimed."
+                )
+                break
             if not incident_state or incident_state["lifecycle"] != "available":
                 break
             member = candidate["member"]
@@ -890,7 +1041,8 @@ class StoppedFlightMonitor(commands.Cog):
                 delivered_recipients.append(
                     f"<@{member.id}> ({candidate['pilot'].get('callsign') or 'Pilot'})"
                 )
-                await model.record_dm_event(
+                await self._record_dm_event_safely(
+                    model,
                     schedule_id=row["schedule_id"],
                     if_user_id=candidate["if_user_id"],
                     discord_user_id=str(member.id),
@@ -899,7 +1051,18 @@ class StoppedFlightMonitor(commands.Cog):
                     channel_id=str(message.channel.id),
                     message_id=str(message.id),
                 )
-                incident_state = await model.get_incident_state(row["schedule_id"])
+                try:
+                    incident_state = await model.get_incident_state(row["schedule_id"])
+                except Exception:
+                    log.exception(
+                        "Could not recheck recovery status after DM for %s",
+                        row["schedule_id"],
+                    )
+                    failed_recipients.append(
+                        f"Could not verify whether <@{member.id}>'s claim buttons "
+                        "remain active."
+                    )
+                    continue
                 if incident_state and incident_state["lifecycle"] != "available":
                     claimant = incident_state.get("claim_user_id")
                     booked_text = (
@@ -919,13 +1082,30 @@ class StoppedFlightMonitor(commands.Cog):
                     row["schedule_id"],
                     exc_info=True,
                 )
-                await model.record_dm_event(
+                failed_recipients.append(
+                    f"<@{member.id}> ({candidate['pilot'].get('callsign') or 'Pilot'}) "
+                    "could not be DM'd; Discord rejected the message."
+                )
+                await self._record_dm_event_safely(
+                    model,
                     schedule_id=row["schedule_id"],
                     if_user_id=candidate["if_user_id"],
                     discord_user_id=str(member.id),
                     wave=wave,
                     flight_count_7d=candidate["flight_count"],
                     delivery_status="failed",
+                )
+            except Exception:
+                log.exception(
+                    "Unexpected error processing recovery DM for pilot %s "
+                    "on schedule %s",
+                    member.id,
+                    row["schedule_id"],
+                )
+                failed_recipients.append(
+                    f"An unexpected error prevented the recovery DM for "
+                    f"<@{member.id}> "
+                    f"({candidate['pilot'].get('callsign') or 'Pilot'})."
                 )
             await asyncio.sleep(0.5)
         wave_labels = {
@@ -937,6 +1117,15 @@ class StoppedFlightMonitor(commands.Cog):
             row,
             wave_labels.get(wave, f"Wave {wave}"),
             delivered_recipients,
+            failed_recipients=failed_recipients,
+            notes=(
+                [
+                    f"Activity history could not be checked for "
+                    f"{activity_check_failures} pilot(s)."
+                ]
+                if activity_check_failures
+                else None
+            ),
         )
         log.info(
             "Stopped-flight wave %s for schedule %s sent to %s eligible pilots.",
@@ -945,10 +1134,25 @@ class StoppedFlightMonitor(commands.Cog):
             len(delivered_recipients),
         )
 
-    async def _send_dm_recipient_report(self, row, event_label, recipients):
+    async def _send_dm_recipient_report(
+        self,
+        row,
+        event_label,
+        recipients,
+        failed_recipients=None,
+        notes=None,
+    ):
         recipient_list = "\n".join(f"• {recipient}" for recipient in recipients)
         if not recipient_list:
             recipient_list = "No eligible pilots received a DM."
+        sections = [recipient_list]
+        if failed_recipients:
+            sections.append(
+                "**Not delivered / follow-up needed:**\n"
+                + "\n".join(f"• {item}" for item in failed_recipients)
+            )
+        if notes:
+            sections.append("\n".join(f"ℹ️ {item}" for item in notes))
         try:
             channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
             if channel is None:
@@ -957,7 +1161,7 @@ class StoppedFlightMonitor(commands.Cog):
                 f"📨 **Stopped-flight DM report · {event_label}**\n"
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']})\n"
-                f"{recipient_list}",
+                + "\n".join(sections),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except (discord.Forbidden, discord.HTTPException):
