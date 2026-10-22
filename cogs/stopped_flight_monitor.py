@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 
+from cogs.dm_logging import post_dm_report
+
 log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
@@ -271,12 +273,17 @@ class StoppedFlightMonitor(commands.Cog):
         if not ORG_ID:
             log.error("IF_ORGANIZATION_ID is not configured; stopped-flight monitoring is disabled.")
             return
-        if not all((GUILD_ID, STAFF_CHANNEL_ID, DM_LOG_CHANNEL_ID, FLEET_ROLE_ID)):
+        if not all((GUILD_ID, STAFF_CHANNEL_ID, FLEET_ROLE_ID)):
             log.error(
-                "Stopped-flight monitoring requires guild, staff, DM-log, "
-                "and fleet-role IDs."
+                "Stopped-flight monitoring requires guild, staff, and "
+                "fleet-role IDs."
             )
             return
+        if not DM_LOG_CHANNEL_ID:
+            log.warning(
+                "STOPPED_FLIGHT_DM_LOG_CHANNEL_ID is not configured; "
+                "DM reports will use the staff channel."
+            )
 
         model = getattr(self.bot, "stopped_flight_model", None)
         manager = getattr(self.bot, "if_live_manager", None)
@@ -1517,22 +1524,17 @@ class StoppedFlightMonitor(commands.Cog):
             )
         if notes:
             sections.append("\n".join(f"ℹ️ {item}" for item in notes))
-        try:
-            channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
-            if channel is None:
-                channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
-            await channel.send(
+        await post_dm_report(
+            self.bot,
+            (
                 f"📨 **Stopped-flight DM report · {event_label}**\n"
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']})\n"
-                + "\n".join(sections),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            log.exception(
-                "Could not post stopped-flight DM recipient report for schedule %s",
-                row["schedule_id"],
-            )
+                + "\n".join(sections)
+            ),
+            log,
+            f"stopped-flight schedule {row['schedule_id']}",
+        )
 
     async def _send_staff_alert(self, row, elapsed):
         channel = self.bot.get_channel(STAFF_CHANNEL_ID)

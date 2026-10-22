@@ -6,13 +6,11 @@ import discord
 from discord.ext import commands, tasks
 
 from cogs.airline_hubs import hubs_for_registration
+from cogs.dm_logging import post_dm_report
 
 log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
-DM_LOG_CHANNEL_ID = int(
-    os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "0") or 0
-)
 TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
 ARRIVED_STATUS = 11
@@ -442,13 +440,6 @@ class RouteReadyNotifications(commands.Cog):
         delivered_recipients,
         failed_recipients,
     ):
-        if not DM_LOG_CHANNEL_ID:
-            log.error(
-                "Cannot report route-ready DMs: "
-                "STOPPED_FLIGHT_DM_LOG_CHANNEL_ID is not configured."
-            )
-            return
-
         sections = [
             "**Delivered:**\n"
             + (
@@ -463,28 +454,18 @@ class RouteReadyNotifications(commands.Cog):
                 + "\n".join(f"• {recipient}" for recipient in failed_recipients)
             )
 
-        try:
-            channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
-            if channel is None:
-                channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
-            await channel.send(
+        await post_dm_report(
+            self.bot,
+            (
                 f"📨 **Route-ready DM report**\n"
                 f"**{registration} · {callsign}** "
                 f"({origin} → {destination}) · "
                 f"{takeoff_window_hours}-hour takeoff window\n"
-                + "\n".join(sections),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            log.exception(
-                "Could not post route-ready DM recipient report for %s.",
-                callsign,
-            )
-        except Exception:
-            log.exception(
-                "Unexpected error posting route-ready DM recipient report for %s.",
-                callsign,
-            )
+                + "\n".join(sections)
+            ),
+            log,
+            f"route-ready flight {callsign}",
+        )
 
 
 async def setup(bot):

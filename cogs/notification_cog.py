@@ -5,6 +5,8 @@ import discord
 from discord.ext import commands
 from aiohttp import web
 
+from cogs.dm_logging import post_dm_report
+
 logger = logging.getLogger("oryxie.notifications")
 
 EVENT_COLORS = {
@@ -24,10 +26,6 @@ EVENT_TITLES = {
     "task_deleted": "Task Deleted",
     "task_comment": "New Task Comment",
 }
-
-DM_LOG_CHANNEL_ID = int(
-    os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "0") or 0
-)
 
 class NotificationCog(commands.Cog):
     """
@@ -157,24 +155,7 @@ class NotificationCog(commands.Cog):
                 status=400
             )
 
-        # 5. Fetch user
-        user = self.bot.get_user(user_id)
-        if user is None:
-            try:
-                user = await self.bot.fetch_user(user_id)
-            except discord.NotFound:
-                return web.json_response(
-                    {"status": "error", "error": f"Discord user {user_id} was not found.", "code": "user_not_found"},
-                    status=404
-                )
-            except discord.HTTPException as e:
-                logger.error(f"Discord API error fetching user {user_id}: {e}")
-                return web.json_response(
-                    {"status": "error", "error": f"Discord API error fetching user: {e}", "code": "discord_api_error"},
-                    status=502
-                )
-
-        # 6. Build the embed
+        # 5. Build notification details and fetch user
         embed = self._build_embed(data)
         event_type = str(data.get("event_type", "task_updated")).strip().lower()
         event_label = EVENT_TITLES.get(
@@ -182,6 +163,38 @@ class NotificationCog(commands.Cog):
             "Oryxpace Task Notification",
         )
         task_title = str(data.get("task_title") or "Untitled Task")[:200]
+
+        user = self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(user_id)
+            except discord.NotFound:
+                await self._report_dm_delivery(
+                    user_id,
+                    None,
+                    event_label,
+                    task_title,
+                    "Not delivered",
+                    "Discord user was not found.",
+                )
+                return web.json_response(
+                    {"status": "error", "error": f"Discord user {user_id} was not found.", "code": "user_not_found"},
+                    status=404
+                )
+            except discord.HTTPException as e:
+                await self._report_dm_delivery(
+                    user_id,
+                    None,
+                    event_label,
+                    task_title,
+                    "Not delivered",
+                    "Discord returned an HTTP error while fetching the user.",
+                )
+                logger.error(f"Discord API error fetching user {user_id}: {e}")
+                return web.json_response(
+                    {"status": "error", "error": f"Discord API error fetching user: {e}", "code": "discord_api_error"},
+                    status=502
+                )
 
         # 7. Deliver DM
         try:
@@ -257,39 +270,21 @@ class NotificationCog(commands.Cog):
         delivery_status: str,
         reason: str = "",
     ) -> None:
-        if not DM_LOG_CHANNEL_ID:
-            logger.error(
-                "Cannot report Oryxpace DM delivery: "
-                "STOPPED_FLIGHT_DM_LOG_CHANNEL_ID is not configured."
-            )
-            return
-
-        try:
-            channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
-            if channel is None:
-                channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
-            report = (
-                f"📨 **Bot DM report · Oryxpace task notification**\n"
-                f"**Recipient:** <@{user_id}> ({user})\n"
-                f"**Notification:** {event_label} · {task_title}\n"
-                f"**Status:** {delivery_status}"
-            )
-            if reason:
-                report += f"\n**Details:** {reason}"
-            await channel.send(
-                report,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            logger.exception(
-                "Could not report Oryxpace DM delivery to user %s.",
-                user_id,
-            )
-        except Exception:
-            logger.exception(
-                "Unexpected error reporting Oryxpace DM delivery to user %s.",
-                user_id,
-            )
+        report = (
+            f"📨 **Bot DM report · Oryxpace task notification**\n"
+            f"**Recipient:** <@{user_id}>"
+            f"{f' ({user})' if user is not None else ''}\n"
+            f"**Notification:** {event_label} · {task_title}\n"
+            f"**Status:** {delivery_status}"
+        )
+        if reason:
+            report += f"\n**Details:** {reason}"
+        await post_dm_report(
+            self.bot,
+            report,
+            logger,
+            f"Oryxpace notification for user {user_id}",
+        )
 
     def _build_embed(self, data: dict) -> discord.Embed:
         """Construct the Discord embed for the task notification."""
