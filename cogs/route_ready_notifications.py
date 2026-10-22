@@ -10,6 +10,9 @@ from cogs.airline_hubs import hubs_for_registration
 log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
+DM_LOG_CHANNEL_ID = int(
+    os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "0") or 0
+)
 TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
 ARRIVED_STATUS = 11
@@ -263,6 +266,8 @@ class RouteReadyNotifications(commands.Cog):
             takeoff_window_hours = 6 if airport in hubs else 12
             airport_type = "hub" if airport in hubs else "non-hub"
             attempted_delivery = False
+            delivered_recipients = []
+            failed_recipients = []
 
             for if_user_id in if_user_ids:
                 event_key = _event_key(
@@ -282,7 +287,20 @@ class RouteReadyNotifications(commands.Cog):
                     attempted_delivery = True
                     continue
 
-                pilot = await pilots_model.get_pilot_by_ifuserid(if_user_id)
+                try:
+                    pilot = await pilots_model.get_pilot_by_ifuserid(if_user_id)
+                except Exception:
+                    log.exception(
+                        "Could not look up pilot %s for route-ready DM "
+                        "on schedule %s.",
+                        if_user_id,
+                        next_schedule_id,
+                    )
+                    failed_recipients.append(
+                        f"IF user `{if_user_id}`: pilot lookup failed."
+                    )
+                    attempted_delivery = True
+                    continue
                 discord_user_id = str(
                     (pilot or {}).get("discordid") or ""
                 ).strip()
@@ -293,6 +311,10 @@ class RouteReadyNotifications(commands.Cog):
                         if_user_id,
                         next_schedule_id,
                     )
+                    failed_recipients.append(
+                        f"IF user `{if_user_id}`: no valid Discord account is linked."
+                    )
+                    attempted_delivery = True
                     continue
 
                 try:
@@ -307,6 +329,10 @@ class RouteReadyNotifications(commands.Cog):
                         f"({airport_type} airport)."
                     )
                     delivery_status = "delivered"
+                    delivered_recipients.append(
+                        f"<@{discord_user_id}> "
+                        f"({(pilot or {}).get('callsign') or 'Pilot'})"
+                    )
                     log.info(
                         "Sent route-ready DM to pilot %s (%s) for %s on schedule %s; "
                         "takeoff window is %s hours from %s.",
@@ -319,6 +345,11 @@ class RouteReadyNotifications(commands.Cog):
                     )
                 except discord.Forbidden:
                     delivery_status = "failed"
+                    failed_recipients.append(
+                        f"<@{discord_user_id}> "
+                        f"({(pilot or {}).get('callsign') or 'Pilot'}): "
+                        "Discord rejected the DM."
+                    )
                     log.warning(
                         "Cannot DM pilot %s (%s) about aircraft %s at %s; "
                         "their Discord DMs may be disabled.",
@@ -329,31 +360,66 @@ class RouteReadyNotifications(commands.Cog):
                     )
                 except discord.HTTPException:
                     delivery_status = "failed"
+                    failed_recipients.append(
+                        f"<@{discord_user_id}> "
+                        f"({(pilot or {}).get('callsign') or 'Pilot'}): "
+                        "Discord could not deliver the DM."
+                    )
                     log.exception(
                         "Discord failed to deliver route-ready DM to pilot %s.",
                         if_user_id,
                     )
-
-                await db.execute(
-                    """
-                    INSERT INTO if_route_ready_dm_events
-                        (event_key, arrival_schedule_id, next_schedule_id,
-                         if_user_id, discord_user_id, delivery_status)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        discord_user_id = VALUES(discord_user_id),
-                        delivery_status = VALUES(delivery_status)
-                    """,
-                    (
-                        event_key,
-                        arrived_schedule_id,
-                        next_schedule_id,
+                except Exception:
+                    delivery_status = "failed"
+                    failed_recipients.append(
+                        f"<@{discord_user_id}> "
+                        f"({(pilot or {}).get('callsign') or 'Pilot'}): "
+                        "an unexpected error prevented DM delivery."
+                    )
+                    log.exception(
+                        "Unexpected error sending route-ready DM to pilot %s.",
                         if_user_id,
-                        discord_user_id,
-                        delivery_status,
-                    ),
-                )
+                    )
+
+                try:
+                    await db.execute(
+                        """
+                        INSERT INTO if_route_ready_dm_events
+                            (event_key, arrival_schedule_id, next_schedule_id,
+                             if_user_id, discord_user_id, delivery_status)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            discord_user_id = VALUES(discord_user_id),
+                            delivery_status = VALUES(delivery_status)
+                        """,
+                        (
+                            event_key,
+                            arrived_schedule_id,
+                            next_schedule_id,
+                            if_user_id,
+                            discord_user_id,
+                            delivery_status,
+                        ),
+                    )
+                except Exception:
+                    log.exception(
+                        "Could not save route-ready DM event for IF user %s "
+                        "on schedule %s.",
+                        if_user_id,
+                        next_schedule_id,
+                    )
                 attempted_delivery = True
+
+            if delivered_recipients or failed_recipients:
+                await self._send_dm_recipient_report(
+                    registration=registration,
+                    callsign=next_callsign,
+                    origin=airport,
+                    destination=next_destination,
+                    takeoff_window_hours=takeoff_window_hours,
+                    delivered_recipients=delivered_recipients,
+                    failed_recipients=failed_recipients,
+                )
 
             if attempted_delivery:
                 await db.execute(
@@ -365,6 +431,60 @@ class RouteReadyNotifications(commands.Cog):
                     """,
                     (arrived_schedule_id, ARRIVED_STATUS),
                 )
+
+    async def _send_dm_recipient_report(
+        self,
+        registration,
+        callsign,
+        origin,
+        destination,
+        takeoff_window_hours,
+        delivered_recipients,
+        failed_recipients,
+    ):
+        if not DM_LOG_CHANNEL_ID:
+            log.error(
+                "Cannot report route-ready DMs: "
+                "STOPPED_FLIGHT_DM_LOG_CHANNEL_ID is not configured."
+            )
+            return
+
+        sections = [
+            "**Delivered:**\n"
+            + (
+                "\n".join(f"• {recipient}" for recipient in delivered_recipients)
+                if delivered_recipients
+                else "• None"
+            )
+        ]
+        if failed_recipients:
+            sections.append(
+                "**Not delivered / follow-up needed:**\n"
+                + "\n".join(f"• {recipient}" for recipient in failed_recipients)
+            )
+
+        try:
+            channel = self.bot.get_channel(DM_LOG_CHANNEL_ID)
+            if channel is None:
+                channel = await self.bot.fetch_channel(DM_LOG_CHANNEL_ID)
+            await channel.send(
+                f"📨 **Route-ready DM report**\n"
+                f"**{registration} · {callsign}** "
+                f"({origin} → {destination}) · "
+                f"{takeoff_window_hours}-hour takeoff window\n"
+                + "\n".join(sections),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Could not post route-ready DM recipient report for %s.",
+                callsign,
+            )
+        except Exception:
+            log.exception(
+                "Unexpected error posting route-ready DM recipient report for %s.",
+                callsign,
+            )
 
 
 async def setup(bot):
