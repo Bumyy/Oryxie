@@ -144,8 +144,12 @@ The 30-minute arrival warning is attempted at most twice: once when the pilot
 is within range, then once more after five minutes if delivery failed and the
 aircraft is still within 30 minutes of arrival. The retry report is marked as
 the final attempt. The pilot's Discord account must be linked to their Infinite
-Flight user ID in the pilot database; changing only their Discord nickname does
-not create or repair that account link.
+Flight user ID in the pilot database. Pilot identity lookups prioritize the
+linked Discord ID over the nickname, and a linked active pilot's stored
+callsign is synchronized from a valid Discord nickname change unless that
+callsign already belongs to another pilot. This preserves the Discord and
+Infinite Flight account links when callsigns change; it does not create a
+missing account link.
 
 Stopped-flight recovery-wave reports include the number of Fleet-role members
 found, linked active pilot records, recent-activity matches, and failed activity

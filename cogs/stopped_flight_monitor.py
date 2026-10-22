@@ -1125,6 +1125,26 @@ class StoppedFlightMonitor(commands.Cog):
             pilot = by_discord.get(str(member.id))
             if not pilot:
                 continue
+            nickname = str(member.nick or "")
+            callsign_match = re.search(r"QRV\d{3,}", nickname, re.IGNORECASE)
+            if callsign_match:
+                current_callsign = str(pilot.get("callsign") or "").upper()
+                new_callsign = callsign_match.group(0).upper()
+                if current_callsign != new_callsign:
+                    sync_result = await self.bot.pilots_model.sync_callsign_by_discord_id(
+                        str(member.id),
+                        new_callsign,
+                    )
+                    if sync_result == "updated":
+                        pilot["callsign"] = new_callsign
+                    elif sync_result == "callsign_conflict":
+                        log.warning(
+                            "Could not sync callsign %s for linked pilot %s "
+                            "during recovery-wave selection; the callsign "
+                            "belongs to another pilot record.",
+                            new_callsign,
+                            member.id,
+                        )
             linked_pilot_count += 1
             if_user_id = str(pilot["ifuserid"])
             if if_user_id in contacted:
