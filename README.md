@@ -146,6 +146,13 @@ the final attempt. The pilot's Discord account must be linked to their Infinite
 Flight user ID in the pilot database; changing only their Discord nickname does
 not create or repair that account link.
 
+Stopped-flight recovery-wave reports include the number of Fleet-role members
+found, linked active pilot records, recent-activity matches, and failed activity
+checks. The configured `STOPPED_FLIGHT_TEST_PILOT_DISCORD_ID` is prioritized
+and bypasses the recent-flight requirement for testing, but must still be in
+the configured Fleet role and have an active pilot record linked to their
+Discord ID.
+
 Route-exhaustion alerts also include an estimated demand label based on Infinite
 Flight aircraft flight-history records: **High Demand** means at least 3
 timestamped flight records in the last 7 days; otherwise it is **Low Demand**.

@@ -740,7 +740,7 @@ class StoppedFlightMonitor(commands.Cog):
             wave_sent = True
             try:
                 await self._send_pilot_wave(model, row, wave=2)
-            except Exception:
+            except Exception as exc:
                 wave_sent = False
                 log.exception(
                     "Could not send two-hour recovery DMs for %s",
@@ -750,7 +750,10 @@ class StoppedFlightMonitor(commands.Cog):
                     row,
                     "2-hour follow-up",
                     [],
-                    notes=["The recovery DM wave failed; see bot logs for details."],
+                    notes=[
+                        "The recovery DM wave failed "
+                        f"({type(exc).__name__}); see bot logs for details."
+                    ],
                 )
             if wave_sent:
                 await model.update_incident(
@@ -762,7 +765,7 @@ class StoppedFlightMonitor(commands.Cog):
             wave_sent = True
             try:
                 await self._send_pilot_wave(model, row, wave=3)
-            except Exception:
+            except Exception as exc:
                 wave_sent = False
                 log.exception(
                     "Could not send three-hour recovery DMs for %s",
@@ -772,7 +775,10 @@ class StoppedFlightMonitor(commands.Cog):
                     row,
                     "3-hour follow-up",
                     [],
-                    notes=["The recovery DM wave failed; see bot logs for details."],
+                    notes=[
+                        "The recovery DM wave failed "
+                        f"({type(exc).__name__}); see bot logs for details."
+                    ],
                 )
             if wave_sent:
                 await model.update_incident(
@@ -940,13 +946,16 @@ class StoppedFlightMonitor(commands.Cog):
         )
         try:
             await self._send_pilot_wave(model, row, wave=1)
-        except Exception:
+        except Exception as exc:
             log.exception("Could not send one-hour recovery DMs for %s", schedule_id)
             await self._send_dm_recipient_report(
                 row,
                 "1-hour recovery alert",
                 [],
-                notes=["The recovery DM wave failed; see bot logs for details."],
+                notes=[
+                    "The recovery DM wave failed "
+                    f"({type(exc).__name__}); see bot logs for details."
+                ],
             )
         return row
 
@@ -1089,15 +1098,45 @@ class StoppedFlightMonitor(commands.Cog):
         }
         candidates = []
         activity_check_failures = 0
+        role_member_count = 0
+        linked_pilot_count = 0
+        recent_activity_count = 0
+        test_pilot_status = (
+            "not configured" if not TEST_PILOT_DISCORD_ID else "not in fleet role"
+        )
         for member in role.members:
             if member.bot:
                 continue
+            role_member_count += 1
+            is_test_pilot = (
+                bool(TEST_PILOT_DISCORD_ID)
+                and str(member.id) == TEST_PILOT_DISCORD_ID
+            )
             pilot = by_discord.get(str(member.id))
             if not pilot:
+                if is_test_pilot:
+                    test_pilot_status = "no active pilot record linked to Discord"
                 continue
+            linked_pilot_count += 1
             if_user_id = str(pilot["ifuserid"])
             if if_user_id in contacted:
+                if is_test_pilot:
+                    test_pilot_status = "already received a recovery DM for this flight"
                 continue
+            if is_test_pilot:
+                candidates.append(
+                    {
+                        "member": member,
+                        "pilot": pilot,
+                        "if_user_id": if_user_id,
+                        "flight_count": 0,
+                    }
+                )
+                test_pilot_status = (
+                    "prioritized; recent-activity requirement bypassed for testing"
+                )
+                continue
+
             had_cached_score = if_user_id in self._activity_cache
             try:
                 flight_count = await self._recent_live_flight_count(if_user_id)
@@ -1117,6 +1156,8 @@ class StoppedFlightMonitor(commands.Cog):
                         "flight_count": flight_count,
                     }
                 )
+                if flight_count:
+                    recent_activity_count += 1
             if not had_cached_score:
                 await asyncio.sleep(1.05)
 
@@ -1132,11 +1173,12 @@ class StoppedFlightMonitor(commands.Cog):
             )
             if test_pilot_index is not None:
                 selected.insert(0, selected.pop(test_pilot_index))
-            else:
+            elif test_pilot_status == "not in fleet role":
                 log.info(
-                    "Configured stopped-flight test pilot %s is not eligible "
-                    "for schedule %s in wave %s.",
+                    "Configured stopped-flight test pilot %s is not a member "
+                    "of fleet role %s for schedule %s in wave %s.",
                     TEST_PILOT_DISCORD_ID,
+                    FLEET_ROLE_ID,
                     row["schedule_id"],
                     wave,
                 )
@@ -1246,19 +1288,25 @@ class StoppedFlightMonitor(commands.Cog):
             2: "2-hour follow-up",
             3: "3-hour follow-up",
         }
+        diagnostic_notes = [
+            (
+                "Candidate check: "
+                f"{role_member_count} non-bot Fleet-role members, "
+                f"{linked_pilot_count} with active linked pilot records, "
+                f"{recent_activity_count} with recent flights, "
+                f"{activity_check_failures} flight-history checks failed."
+            )
+        ]
+        if TEST_PILOT_DISCORD_ID:
+            diagnostic_notes.append(
+                f"Configured test pilot status: {test_pilot_status}."
+            )
         await self._send_dm_recipient_report(
             row,
             wave_labels.get(wave, f"Wave {wave}"),
             delivered_recipients,
             failed_recipients=failed_recipients,
-            notes=(
-                [
-                    f"Activity history could not be checked for "
-                    f"{activity_check_failures} pilot(s)."
-                ]
-                if activity_check_failures
-                else None
-            ),
+            notes=diagnostic_notes,
         )
         log.info(
             "Stopped-flight wave %s for schedule %s sent to %s eligible pilots.",
