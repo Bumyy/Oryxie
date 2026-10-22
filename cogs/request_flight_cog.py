@@ -314,6 +314,30 @@ def _active_schedules(schedules):
     ]
 
 
+def _schedules_for_aircraft(schedules, aircraft_id):
+    """Keep only schedule records belonging to the requested aircraft."""
+    expected_id = str(aircraft_id)
+    matched = []
+    mismatched_count = 0
+
+    for route in schedules or []:
+        route_aircraft_id = _get(route, "aircraft_id")
+        if str(route_aircraft_id or "") == expected_id:
+            matched.append(route)
+        else:
+            mismatched_count += 1
+
+    if mismatched_count:
+        log.warning(
+            "Ignoring %d schedule record(s) returned for a different aircraft "
+            "while loading aircraft %s",
+            mismatched_count,
+            expected_id,
+        )
+
+    return matched
+
+
 def _assigned_schedule_prefix(schedules):
     """Return the index and ID of the last consecutively assigned route."""
     index = 0
@@ -1124,12 +1148,15 @@ class ClaimRouteView(discord.ui.View):
                             self.copilot_if_user_id,
                         )
 
-                schedules = _active_schedules(
-                    await self.cog.get_schedules(
-                        client,
-                        aircraft_id,
-                        force=True,
-                    )
+                schedules = _schedules_for_aircraft(
+                    _active_schedules(
+                        await self.cog.get_schedules(
+                            client,
+                            aircraft_id,
+                            force=True,
+                        )
+                    ),
+                    aircraft_id,
                 )
 
                 if not schedules:
@@ -2286,7 +2313,10 @@ class RequestFlightCog(commands.Cog):
                 position = await client.get_aircraft_position(aircraft_id)
                 raw_schedules = await self.get_schedules(client, aircraft_id)
 
-            schedules = _active_schedules(raw_schedules)
+            schedules = _schedules_for_aircraft(
+                _active_schedules(raw_schedules),
+                aircraft_id,
+            )
             registration = _registration(aircraft)
             airline = _airline_name(aircraft)
             hub = _aircraft_hub(aircraft)
