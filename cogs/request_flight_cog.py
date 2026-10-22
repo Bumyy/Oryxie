@@ -338,6 +338,23 @@ def _schedules_for_aircraft(schedules, aircraft_id):
     return matched
 
 
+def _has_active_assignment_for_pilots(schedules, pilot_ids):
+    assigned_pilot_ids = {
+        str(pilot_id).strip()
+        for pilot_id in pilot_ids
+        if pilot_id not in (None, "")
+    }
+    if not assigned_pilot_ids:
+        return False
+
+    return any(
+        _crew_user_id(member) in assigned_pilot_ids
+        for route in schedules or []
+        if not _is_unavailable_status(route)
+        for member in (_get(route, "crew", []) or [])
+    )
+
+
 def _assigned_schedule_prefix(schedules):
     """Return the index and ID of the last consecutively assigned route."""
     index = 0
@@ -1195,15 +1212,14 @@ class ClaimRouteView(discord.ui.View):
                     )
                     return
 
-                if cargo_aircraft and any(
-                    (_get(route, "crew", []) or [])
-                    for route in schedules
-                    if not _is_unavailable_status(route)
+                if cargo_aircraft and _has_active_assignment_for_pilots(
+                    schedules,
+                    (self.pilot_if_user_id, self.copilot_if_user_id),
                 ):
                     await interaction.edit_original_response(
                         content=(
                             f"**{registration} cargo routes are booked two legs at "
-                            "a time.** Finish the currently assigned cargo leg(s) "
+                            "a time.** Finish your currently assigned cargo leg(s) "
                             "before booking the next pair."
                         ),
                         embed=None,
@@ -2335,15 +2351,14 @@ class RequestFlightCog(commands.Cog):
                 )
                 return
 
-            if cargo_aircraft and any(
-                (_get(route, "crew", []) or [])
-                for route in schedules
-                if not _is_unavailable_status(route)
+            if cargo_aircraft and _has_active_assignment_for_pilots(
+                schedules,
+                (pilot.get("ifuserid"),),
             ):
                 await interaction.edit_original_response(
                     content=(
                         f"**{registration} cargo routes are booked two legs at a "
-                        "time.** Finish the currently assigned cargo leg(s) before "
+                        "time.** Finish your currently assigned cargo leg(s) before "
                         "booking the next pair."
                     ),
                     embed=None,
