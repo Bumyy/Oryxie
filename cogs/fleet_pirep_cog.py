@@ -164,11 +164,18 @@ class FleetPirepCog(commands.Cog):
     
     async def frame_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for fleet frames with full data."""
+        self.fleet_frames = load_fleet_frames()
         frames = list(self.fleet_frames.keys())
         
-        # Filter by frame name
+        # Filter by frame name, ICAO, or livery
         if current:
-            frames = [f for f in frames if current.upper() in f.upper()]
+            query = current.upper()
+            frames = [
+                f for f in frames
+                if query in f.upper()
+                or query in self.fleet_frames[f].get('icao', '').upper()
+                or query in self.fleet_frames[f].get('livery', '').upper()
+            ]
         
         # Build choices with full data: "FRAME (ICAO - Livery)"
         choices = []
@@ -192,6 +199,7 @@ class FleetPirepCog(commands.Cog):
         pilot_2: discord.Member = None
     ):
         """File a fleet PIREP with optional dual pilot split."""
+        self.fleet_frames = load_fleet_frames()
         
         # Validate frame exists
         if frame not in self.fleet_frames:
