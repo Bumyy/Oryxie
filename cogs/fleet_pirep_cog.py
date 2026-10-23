@@ -11,8 +11,10 @@ logger = logging.getLogger(__name__)
 # Load fleet frames data
 FLEET_FRAMES_FILE = "assets/fleet_frames.json"
 
-# Fleet role ID
+# Allowed Role IDs (Fleet role + Executive role)
 FLEET_ROLE_ID = 1480252371320967239
+EXECUTIVE_ROLE_ID = 1421074400773668894
+ALLOWED_ROLE_IDS = (FLEET_ROLE_ID, EXECUTIVE_ROLE_ID)
 
 def load_fleet_frames():
     """Load fleet frames from JSON file."""
@@ -189,7 +191,7 @@ class FleetPirepCog(commands.Cog):
         return choices
     
     @app_commands.command(name="live_fleet_pirep", description="File a dual-pilot PIREP for fleet flights")
-    @app_commands.checks.has_role(FLEET_ROLE_ID)
+    @app_commands.checks.has_any_role(*ALLOWED_ROLE_IDS)
     @app_commands.autocomplete(frame=frame_autocomplete)
     async def live_fleet_pirep(
         self, 
@@ -228,6 +230,18 @@ class FleetPirepCog(commands.Cog):
         # Send modal
         modal = FleetPirepModal(self, frame, frame_data, pilot1_id, pilot2_id, pilot1_name, pilot2_name)
         await interaction.response.send_modal(modal)
+
+    @live_fleet_pirep.error
+    async def live_fleet_pirep_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, (app_commands.MissingRole, app_commands.MissingAnyRole)):
+            await interaction.response.send_message(
+                "❌ You do not have the required Fleet or Executive role to use this command.",
+                ephemeral=True
+            )
+        else:
+            logger.error(f"Error in live_fleet_pirep: {error}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ Error: {error}", ephemeral=True)
 
 async def setup(bot):
     """Setup function for loading the cog."""
