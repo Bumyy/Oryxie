@@ -82,10 +82,12 @@ def _get(obj, key, default=None):
 
 
 def _aircraft_model(aircraft):
-    registration = str(_get(aircraft, "registration", "") or "").strip().upper()
+    registration = _normalize_registration(
+        _get(aircraft, "registration", "") or ""
+    )
     # Use the explicit fleet mapping for the registrations whose API model
     # metadata is missing or incorrect.
-    if registration in {"JA-742J", "PT-LBN", "A7-BAJ", "A7BAB", "G-ZBKC", "A7-APE"}:
+    if registration in {"JA742J", "PTLBN", "A7BAJ", "A7BAB", "GZBKC", "A7APE"}:
         return AIRCRAFT_MODELS[registration]
 
     for key in (
@@ -101,17 +103,13 @@ def _aircraft_model(aircraft):
         if value and str(value).strip():
             return str(value).strip()
 
-    registration = str(
-        _get(aircraft, "registration", "") or ""
-    ).strip().upper()
-
     return AIRCRAFT_MODELS.get(registration, "")
 
 
 def _aircraft_category(aircraft):
-    registration = str(
+    registration = _normalize_registration(
         _get(aircraft, "registration", "") or ""
-    ).strip().upper()
+    )
     if is_cargo_registration(registration):
         return "Cargo"
 

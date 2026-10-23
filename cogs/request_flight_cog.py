@@ -118,7 +118,9 @@ def _get(obj, key, default=None):
 
 
 def _registration(aircraft):
-    return str(_get(aircraft, "registration", "") or "").strip().upper()
+    return re.sub(
+        r"[^A-Z0-9]", "", str(_get(aircraft, "registration", "") or "").upper()
+    )
 
 
 def _crew_user_id(member):

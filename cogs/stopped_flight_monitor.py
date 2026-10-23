@@ -1300,7 +1300,6 @@ class StoppedFlightMonitor(commands.Cog):
                 retry_candidates.append(candidate)
             await asyncio.sleep(0.5)
         if retry_candidates:
-            await asyncio.sleep(5 * 60)
             for index, candidate in enumerate(retry_candidates):
                 try:
                     incident_state = await model.get_incident_state(
