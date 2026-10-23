@@ -577,6 +577,11 @@ class StoppedFlightMonitor(commands.Cog):
                     registration,
                     status_text,
                 )
+            log.info(
+                "Posted aircraft status changes for %s aircraft to channel %s.",
+                len(chunk),
+                STATUS_LOG_CHANNEL_ID,
+            )
             await asyncio.sleep(0.5)
         return positions
 
