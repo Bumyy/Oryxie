@@ -82,12 +82,10 @@ def _get(obj, key, default=None):
 
 
 def _aircraft_model(aircraft):
-    registration = _normalize_registration(
-        _get(aircraft, "registration", "") or ""
-    )
+    registration = str(_get(aircraft, "registration", "") or "").strip().upper()
     # Use the explicit fleet mapping for the registrations whose API model
     # metadata is missing or incorrect.
-    if registration in {"JA742J", "PTLBN", "A7BAJ", "A7BAB", "GZBKC", "A7APE"}:
+    if registration in {"JA-742J", "PT-LBN", "A7-BAJ", "A7BAB", "G-ZBKC", "A7-APE"}:
         return AIRCRAFT_MODELS[registration]
 
     for key in (
@@ -103,23 +101,21 @@ def _aircraft_model(aircraft):
         if value and str(value).strip():
             return str(value).strip()
 
+    registration = str(
+        _get(aircraft, "registration", "") or ""
+    ).strip().upper()
+
     return AIRCRAFT_MODELS.get(registration, "")
 
 
 def _aircraft_category(aircraft):
-    registration = _normalize_registration(
+    registration = str(
         _get(aircraft, "registration", "") or ""
-    )
+    ).strip().upper()
     if is_cargo_registration(registration):
         return "Cargo"
 
     model = _aircraft_model(aircraft).lower().replace(" ", "")
-
-    # Strip manufacturer prefixes so "boeing777-300er" becomes "777-300er"
-    for manufacturer in ("boeing", "airbus", "embraer", "bombardier", "mcdonnell", "douglas"):
-        if model.startswith(manufacturer):
-            model = model[len(manufacturer):]
-            break
 
     if model.startswith("a") and len(model) > 1 and model[1].isdigit():
         return "Airbus"
