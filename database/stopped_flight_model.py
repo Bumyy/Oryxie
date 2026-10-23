@@ -36,6 +36,7 @@ class StoppedFlightModel:
             "if_stopped_flight_incidents",
             "if_stopped_flight_dm_events",
             "if_aircraft_route_availability",
+            "if_aircraft_status_logs",
         ):
             if not await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
                 raise RuntimeError(
