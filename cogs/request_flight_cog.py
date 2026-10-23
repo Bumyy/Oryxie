@@ -152,15 +152,31 @@ def _aircraft_model(aircraft):
     return AIRCRAFT_MODELS.get(_registration(aircraft), "")
 
 
+# Explicit overrides for the registrations that were recently changed.
+# Keep airline and hub resolution local so the shared lookup cannot silently
+# fall back to Qatar Airways / OTHH for these aircraft.
+AIRCRAFT_HUB_OVERRIDES = {
+    "JA-742J": ("RJTT",),
+    "PT-LBN": ("SCEL", "SBGR", "SPJC"),
+    "A7-BAJ": ("OTHH",),
+    "A7BAB": ("OTHH",),
+    "G-ZBKC": ("EGLL",),
+    "A7-APE": ("OTHH",),
+}
+
+
 def _airline_name(aircraft):
     registration = _registration(aircraft)
-    if registration == "PT-LBN":
-        return "LATAM"
+    if registration in AIRCRAFT_AIRLINES:
+        return AIRCRAFT_AIRLINES[registration]
     return airline_name_for_registration(registration)
 
 
 def _aircraft_hubs(aircraft):
-    return hubs_for_registration(_registration(aircraft))
+    registration = _registration(aircraft)
+    if registration in AIRCRAFT_HUB_OVERRIDES:
+        return AIRCRAFT_HUB_OVERRIDES[registration]
+    return hubs_for_registration(registration)
 
 
 def _aircraft_hub(aircraft):
