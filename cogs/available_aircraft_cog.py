@@ -82,6 +82,12 @@ def _get(obj, key, default=None):
 
 
 def _aircraft_model(aircraft):
+    registration = str(_get(aircraft, "registration", "") or "").strip().upper()
+    # Use the explicit fleet mapping for the registrations whose API model
+    # metadata is missing or incorrect.
+    if registration in {"JA-742J", "PT-LBN", "A7-BAJ", "A7BAB", "G-ZBKC", "A7-APE"}:
+        return AIRCRAFT_MODELS[registration]
+
     for key in (
         "model",
         "aircraft_name",

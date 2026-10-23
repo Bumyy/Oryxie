@@ -130,6 +130,12 @@ def _crew_user_id(member):
 
 
 def _aircraft_model(aircraft):
+    registration = str(_get(aircraft, "registration", "") or "").strip().upper()
+    # Use the explicit fleet mapping for the registrations whose API model
+    # metadata is missing or incorrect.
+    if registration in {"JA-742J", "PT-LBN", "A7-BAJ", "A7BAB", "G-ZBKC", "A7-APE"}:
+        return AIRCRAFT_MODELS[registration]
+
     for key in (
         "model",
         "aircraft_name",
@@ -147,7 +153,10 @@ def _aircraft_model(aircraft):
 
 
 def _airline_name(aircraft):
-    return airline_name_for_registration(_registration(aircraft))
+    registration = _registration(aircraft)
+    if registration == "PT-LBN":
+        return "LATAM"
+    return airline_name_for_registration(registration)
 
 
 def _aircraft_hubs(aircraft):
