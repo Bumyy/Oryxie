@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
+DM_RETRY_MINUTES = 5
 ARRIVED_STATUS = 11
 UNAVAILABLE_STATUSES = {9, 11}
 NEXT_LEG_READY_STATUSES = {1, 2, 3, 4, 8}
@@ -54,7 +55,7 @@ def _crew_user_ids(schedule):
     return user_ids
 
 
-def _arrival_candidates(schedules, observed_statuses):
+def _arrival_candidates(schedules, observed_statuses, failed_arrival_ids):
     by_aircraft = {}
     for schedule in schedules:
         aircraft_id = str(_get(schedule, "aircraft_id", "") or "")
@@ -66,11 +67,13 @@ def _arrival_candidates(schedules, observed_statuses):
         aircraft_schedules.sort(key=_sequence)
         for index, arrived in enumerate(aircraft_schedules[:-1]):
             route_id = str(_get(arrived, "id", "") or "")
-            old_status = observed_statuses.get(route_id)
             if (
                 not route_id
-                or old_status == ARRIVED_STATUS
                 or _status(arrived) != ARRIVED_STATUS
+                or (
+                    observed_statuses.get(route_id) == ARRIVED_STATUS
+                    and route_id not in failed_arrival_ids
+                )
             ):
                 continue
 
@@ -200,6 +203,14 @@ class RouteReadyNotifications(commands.Cog):
             str(row["schedule_id"]): int(row["last_status"])
             for row in state_rows or []
         }
+        failed_events = await db.fetch_all(
+            "SELECT DISTINCT arrival_schedule_id "
+            "FROM if_route_ready_dm_events "
+            "WHERE delivery_status = 'failed'"
+        )
+        failed_arrival_ids = {
+            str(row["arrival_schedule_id"]) for row in failed_events or []
+        }
         schedules_by_id = {
             str(_get(schedule, "id")): schedule
             for schedule in schedules
@@ -235,7 +246,11 @@ class RouteReadyNotifications(commands.Cog):
                     (route_id, current_status),
                 )
 
-        candidates = _arrival_candidates(schedules, observed_statuses)
+        candidates = _arrival_candidates(
+            schedules,
+            observed_statuses,
+            failed_arrival_ids,
+        )
         positions = {}
         for aircraft_id, arrived, next_route, if_user_ids in candidates:
             position = positions.get(aircraft_id)
@@ -264,6 +279,7 @@ class RouteReadyNotifications(commands.Cog):
             takeoff_window_hours = 6 if airport in hubs else 12
             airport_type = "hub" if airport in hubs else "non-hub"
             attempted_delivery = False
+            all_recipients_delivered = True
             delivered_recipients = []
             failed_recipients = []
 
@@ -274,7 +290,10 @@ class RouteReadyNotifications(commands.Cog):
                     if_user_id,
                 )
                 existing_event = await db.fetch_one(
-                    "SELECT delivery_status FROM if_route_ready_dm_events "
+                    "SELECT delivery_status, "
+                    "created_at > DATE_SUB(CURRENT_TIMESTAMP, "
+                    f"INTERVAL {DM_RETRY_MINUTES} MINUTE) AS retry_pending "
+                    "FROM if_route_ready_dm_events "
                     "WHERE event_key = %s",
                     (event_key,),
                 )
@@ -284,7 +303,13 @@ class RouteReadyNotifications(commands.Cog):
                 ):
                     attempted_delivery = True
                     continue
+                if existing_event:
+                    if existing_event["retry_pending"]:
+                        all_recipients_delivered = False
+                        continue
 
+                delivery_status = "failed"
+                discord_user_id = ""
                 try:
                     pilot = await pilots_model.get_pilot_by_ifuserid(if_user_id)
                 except Exception:
@@ -298,86 +323,86 @@ class RouteReadyNotifications(commands.Cog):
                         f"IF user `{if_user_id}`: pilot lookup failed."
                     )
                     attempted_delivery = True
-                    continue
-                discord_user_id = str(
-                    (pilot or {}).get("discordid") or ""
-                ).strip()
-                if not discord_user_id.isdigit():
-                    log.warning(
-                        "No Discord account is linked to Infinite Flight user %s "
-                        "on next schedule %s.",
-                        if_user_id,
-                        next_schedule_id,
-                    )
-                    failed_recipients.append(
-                        f"IF user `{if_user_id}`: no valid Discord account is linked."
-                    )
-                    attempted_delivery = True
-                    continue
-
-                try:
-                    user = self.bot.get_user(int(discord_user_id))
-                    if user is None:
-                        user = await self.bot.fetch_user(int(discord_user_id))
-                    await user.send(
-                        f"🛬 **Aircraft {registration} is ready for your next flight.**\n"
-                        f"It is parked at **{airport}** for your scheduled flight "
-                        f"**{next_callsign}**: {airport} → {next_destination}.\n"
-                        f"Please take off within **{takeoff_window_hours} hours** "
-                        f"({airport_type} airport)."
-                    )
-                    delivery_status = "delivered"
-                    delivered_recipients.append(
-                        f"<@{discord_user_id}> "
-                        f"({(pilot or {}).get('callsign') or 'Pilot'})"
-                    )
-                    log.info(
-                        "Sent route-ready DM to pilot %s (%s) for %s on schedule %s; "
-                        "takeoff window is %s hours from %s.",
-                        if_user_id,
-                        discord_user_id,
-                        registration,
-                        next_schedule_id,
-                        takeoff_window_hours,
-                        airport,
-                    )
-                except discord.Forbidden:
-                    delivery_status = "failed"
-                    failed_recipients.append(
-                        f"<@{discord_user_id}> "
-                        f"({(pilot or {}).get('callsign') or 'Pilot'}): "
-                        "Discord rejected the DM."
-                    )
-                    log.warning(
-                        "Cannot DM pilot %s (%s) about aircraft %s at %s; "
-                        "their Discord DMs may be disabled.",
-                        if_user_id,
-                        discord_user_id,
-                        registration,
-                        airport,
-                    )
-                except discord.HTTPException:
-                    delivery_status = "failed"
-                    failed_recipients.append(
-                        f"<@{discord_user_id}> "
-                        f"({(pilot or {}).get('callsign') or 'Pilot'}): "
-                        "Discord could not deliver the DM."
-                    )
-                    log.exception(
-                        "Discord failed to deliver route-ready DM to pilot %s.",
-                        if_user_id,
-                    )
-                except Exception:
-                    delivery_status = "failed"
-                    failed_recipients.append(
-                        f"<@{discord_user_id}> "
-                        f"({(pilot or {}).get('callsign') or 'Pilot'}): "
-                        "an unexpected error prevented DM delivery."
-                    )
-                    log.exception(
-                        "Unexpected error sending route-ready DM to pilot %s.",
-                        if_user_id,
-                    )
+                    all_recipients_delivered = False
+                else:
+                    discord_user_id = str(
+                        (pilot or {}).get("discordid") or ""
+                    ).strip()
+                    if not discord_user_id.isdigit():
+                        log.warning(
+                            "No Discord account is linked to Infinite Flight user %s "
+                            "on next schedule %s.",
+                            if_user_id,
+                            next_schedule_id,
+                        )
+                        failed_recipients.append(
+                            f"IF user `{if_user_id}`: no valid Discord account is linked."
+                        )
+                        attempted_delivery = True
+                        all_recipients_delivered = False
+                    else:
+                        try:
+                            user = self.bot.get_user(int(discord_user_id))
+                            if user is None:
+                                user = await self.bot.fetch_user(int(discord_user_id))
+                            await user.send(
+                                f"🛬 **Aircraft {registration} is ready for your next flight.**\n"
+                                f"It is parked at **{airport}** for your scheduled flight "
+                                f"**{next_callsign}**: {airport} → {next_destination}.\n"
+                                f"Please take off within **{takeoff_window_hours} hours** "
+                                f"({airport_type} airport)."
+                            )
+                            delivery_status = "delivered"
+                            delivered_recipients.append(
+                                f"<@{discord_user_id}> "
+                                f"({(pilot or {}).get('callsign') or 'Pilot'})"
+                            )
+                            log.info(
+                                "Sent route-ready DM to pilot %s (%s) for %s on schedule %s; "
+                                "takeoff window is %s hours from %s.",
+                                if_user_id,
+                                discord_user_id,
+                                registration,
+                                next_schedule_id,
+                                takeoff_window_hours,
+                                airport,
+                            )
+                        except discord.Forbidden:
+                            failed_recipients.append(
+                                f"<@{discord_user_id}> "
+                                f"({(pilot or {}).get('callsign') or 'Pilot'}): "
+                                "Discord rejected the DM."
+                            )
+                            log.warning(
+                                "Cannot DM pilot %s (%s) about aircraft %s at %s; "
+                                "their Discord DMs may be disabled.",
+                                if_user_id,
+                                discord_user_id,
+                                registration,
+                                airport,
+                            )
+                        except discord.HTTPException:
+                            failed_recipients.append(
+                                f"<@{discord_user_id}> "
+                                f"({(pilot or {}).get('callsign') or 'Pilot'}): "
+                                "Discord could not deliver the DM."
+                            )
+                            log.exception(
+                                "Discord failed to deliver route-ready DM to pilot %s.",
+                                if_user_id,
+                            )
+                        except Exception:
+                            failed_recipients.append(
+                                f"<@{discord_user_id}> "
+                                f"({(pilot or {}).get('callsign') or 'Pilot'}): "
+                                "an unexpected error prevented DM delivery."
+                            )
+                            log.exception(
+                                "Unexpected error sending route-ready DM to pilot %s.",
+                                if_user_id,
+                            )
+                        if delivery_status != "delivered":
+                            all_recipients_delivered = False
 
                 try:
                     await db.execute(
@@ -388,7 +413,8 @@ class RouteReadyNotifications(commands.Cog):
                         VALUES (%s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             discord_user_id = VALUES(discord_user_id),
-                            delivery_status = VALUES(delivery_status)
+                            delivery_status = VALUES(delivery_status),
+                            created_at = CURRENT_TIMESTAMP
                         """,
                         (
                             event_key,
@@ -419,7 +445,7 @@ class RouteReadyNotifications(commands.Cog):
                     failed_recipients=failed_recipients,
                 )
 
-            if attempted_delivery:
+            if attempted_delivery and all_recipients_delivered:
                 await db.execute(
                     """
                     INSERT INTO if_route_ready_schedule_state

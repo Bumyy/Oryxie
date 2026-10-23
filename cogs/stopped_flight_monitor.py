@@ -16,15 +16,23 @@ log = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
-STAFF_CHANNEL_ID = int(os.getenv("STOPPED_FLIGHT_STAFF_CHANNEL_ID", "0") or 0)
+STAFF_CHANNEL_ID = int(
+    os.getenv(
+        "STOPPED_FLIGHT_STAFF_CHANNEL_ID",
+        str(DM_LOG_CHANNEL_ID),
+    )
+    or DM_LOG_CHANNEL_ID
+)
 STATUS_LOG_CHANNEL_ID = int(
-    os.getenv("AIRCRAFT_STATUS_LOG_CHANNEL_ID", "0") or 0
+    os.getenv("AIRCRAFT_STATUS_LOG_CHANNEL_ID", str(DM_LOG_CHANNEL_ID))
+    or DM_LOG_CHANNEL_ID
 )
 FLEET_ROLE_ID = int(
     os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "1484645309983490119") or 0
 )
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
-    os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", "0") or 0
+    os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", str(DM_LOG_CHANNEL_ID))
+    or DM_LOG_CHANNEL_ID
 )
 ROUTE_EXHAUSTION_ROLE_ID = int(
     os.getenv("ROUTE_EXHAUSTION_ROLE_ID", "0") or 0
@@ -239,6 +247,7 @@ class StoppedFlightMonitor(commands.Cog):
         self._registered_views = set()
         self._activity_cache = {}
         self._warned_status_logging_disabled = False
+        self._warned_route_exhaustion_role_disabled = False
         self.monitor_stopped_flights.start()
 
     def cog_unload(self):
@@ -338,11 +347,18 @@ class StoppedFlightMonitor(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _send_route_exhaustion_alerts(self, client, model):
-        if not ROUTE_EXHAUSTION_CHANNEL_ID or not ROUTE_EXHAUSTION_ROLE_ID:
-            log.error(
-                "Route exhaustion alerts require channel and role IDs."
-            )
+        if not ROUTE_EXHAUSTION_CHANNEL_ID:
+            log.error("Route exhaustion alerts require a channel ID.")
             return
+        if (
+            not ROUTE_EXHAUSTION_ROLE_ID
+            and not self._warned_route_exhaustion_role_disabled
+        ):
+            log.warning(
+                "ROUTE_EXHAUSTION_ROLE_ID is not configured; route-exhaustion "
+                "alerts will be posted without a role mention."
+            )
+            self._warned_route_exhaustion_role_disabled = True
         pending = await model.list_pending_route_exhaustion_alerts()
         for aircraft in pending:
             try:
@@ -377,10 +393,17 @@ class StoppedFlightMonitor(commands.Cog):
                         ROUTE_EXHAUSTION_CHANNEL_ID
                     )
                 await channel.send(
-                    f"<@&{ROUTE_EXHAUSTION_ROLE_ID}> **Scheduled routes finished "
+                    (
+                        f"<@&{ROUTE_EXHAUSTION_ROLE_ID}> "
+                        if ROUTE_EXHAUSTION_ROLE_ID
+                        else ""
+                    )
+                    + f"**Scheduled routes finished "
                     f"for {aircraft['registration']} · ({demand_label}).** "
                     "Please add more routes.",
-                    allowed_mentions=discord.AllowedMentions(roles=True),
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=bool(ROUTE_EXHAUSTION_ROLE_ID)
+                    ),
                 )
                 await model.mark_route_exhaustion_alert_sent(
                     aircraft["aircraft_id"]

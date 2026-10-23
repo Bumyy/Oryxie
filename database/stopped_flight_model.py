@@ -64,6 +64,16 @@ class StoppedFlightModel:
                     "ALTER TABLE if_stopped_flight_incidents "
                     f"ADD COLUMN {column_name} {column_definition}"
                 )
+                if not await self.db.fetch_one(
+                    "SHOW COLUMNS FROM if_stopped_flight_incidents LIKE %s",
+                    (column_name,),
+                ):
+                    raise RuntimeError(
+                        "Could not add required column "
+                        f"{column_name} to if_stopped_flight_incidents; "
+                        "apply database/migrate_stopped_flight_eta_warning_columns.sql "
+                        "with a database account that can ALTER TABLE."
+                    )
 
     async def try_start_eta_warning_attempt(
         self,

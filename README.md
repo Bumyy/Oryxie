@@ -133,6 +133,10 @@ Before enabling this feature in a deployment, apply
 [`database/route_ready_notifications_mysql_schema.sql`](./database/route_ready_notifications_mysql_schema.sql)
 to the bot database. Route-ready messages require the pilot's Discord account
 to be linked and their DMs to be open.
+Failed route-ready DMs are retried after five minutes while the aircraft remains
+parked and the next-leg assignment is still present. If a previous bot version
+recorded the arrival before delivery succeeded, pending failures are still
+retried after this update is deployed.
 
 Stopped-flight, route-ready, and Oryxpace task-notification DMs are reported to
 channel `1562428318043602965`, including delivery status and recipient. If the
@@ -165,6 +169,19 @@ Flight aircraft flight-history records: **High Demand** means at least 3
 timestamped flight records in the last 7 days; otherwise it is **Low Demand**.
 Records without usable timestamps are reported as **Demand unknown** rather
 than being incorrectly counted as zero.
+
+For an existing database, apply
+[`database/stopped_flight_monitor_mysql_schema.sql`](./database/stopped_flight_monitor_mysql_schema.sql)
+before enabling stopped-flight monitoring. If the incidents table was created
+before ETA warning retries were added, run
+[`database/migrate_stopped_flight_eta_warning_columns.sql`](./database/migrate_stopped_flight_eta_warning_columns.sql)
+once against the bot database, then restart the bot. The migration requires an
+account with `ALTER TABLE` permission. DM delivery reports, aircraft status
+messages, stopped-flight staff alerts, and route-exhaustion/demand alerts post
+to staff channel `1562428318043602965` by default. Monitoring messages can use
+different channels when their corresponding channel ID environment variables
+are set; DM delivery reports always go to `1562428318043602965`. Route-exhaustion
+alerts mention a role only when `ROUTE_EXHAUSTION_ROLE_ID` is configured.
 
 Use `/available-aircraft` without a registration to browse claimable routes, or
 pass a registration to search the full fleet. Registration search ignores
