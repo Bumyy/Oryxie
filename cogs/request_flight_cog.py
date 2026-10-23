@@ -29,6 +29,12 @@ MAX_BOOKED_AIRCRAFT = 2
 SCHEDULES_PER_SCAN = 3
 VIEW_TIMEOUT_SECONDS = 180
 AIRCRAFT_MODELS = {
+    "JA-742J": "777-300ER",
+    "PT-LBN": "A321neo",
+    "A7-BAJ": "777-300ER",
+    "A7BAB": "777-300ER",
+    "G-ZBKC": "787-9",
+    "A7-APE": "A380-800",
     "A7-ANN": "A350-1000",
     "A7-APC": "A380-800",
     "A7-BAE": "777-300ER",
@@ -68,6 +74,12 @@ AIRCRAFT_MODELS = {
     "IF-KSKI": "787-9",
 }
 AIRCRAFT_AIRLINES = {
+    "JA-742J": "JAL",
+    "PT-LBN": "LATAM",
+    "A7-BAJ": "Qatar Airways",
+    "A7BAB": "Qatar Airways",
+    "G-ZBKC": "British Airways",
+    "A7-APE": "Qatar Airways",
     "B-LRO": "Cathay Pacific",
     "EC-ORE": "Iberia",
     "IF-KSKI": "British Airways",
