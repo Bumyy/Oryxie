@@ -2,13 +2,17 @@
 """Public command showing Qatari Virtual aircraft with claimable scheduled routes in Live Mode."""
 
 import asyncio
+from difflib import SequenceMatcher
 import logging
 import os
+import re
 import time
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from cogs.airline_hubs import RETIRED_REGISTRATIONS, is_cargo_registration
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +97,12 @@ def _aircraft_model(aircraft):
 
 
 def _aircraft_category(aircraft):
+    registration = str(
+        _get(aircraft, "registration", "") or ""
+    ).strip().upper()
+    if is_cargo_registration(registration):
+        return "Cargo"
+
     model = _aircraft_model(aircraft).lower().replace(" ", "")
 
     if model.startswith("a") and len(model) > 1 and model[1].isdigit():
@@ -104,6 +114,75 @@ def _aircraft_category(aircraft):
         return "Boeing"
 
     return "Other"
+
+
+def _available_fleet(fleet, include_retired=False):
+    if include_retired:
+        return fleet
+    return [
+        aircraft
+        for aircraft in fleet
+        if str(_get(aircraft, "registration", "") or "").strip().upper()
+        not in RETIRED_REGISTRATIONS
+    ]
+
+
+def _normalize_registration(value):
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _registration_search_aliases(aircraft):
+    registration = _normalize_registration(_get(aircraft, "registration", ""))
+    aliases = {registration}
+
+    if registration.startswith("A7"):
+        aliases.add("A" + registration[2:])
+    if registration.startswith("IF"):
+        aliases.add(registration[2:])
+    if registration.startswith("IFA"):
+        aliases.add(registration[3:])
+
+    return {alias for alias in aliases if alias}
+
+
+def _match_aircraft_registration(fleet, query):
+    normalized_query = _normalize_registration(query)
+    if len(normalized_query) < 3:
+        return None, []
+
+    exact_matches = [
+        aircraft
+        for aircraft in fleet
+        if normalized_query in _registration_search_aliases(aircraft)
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0], []
+    if len(exact_matches) > 1:
+        return None, exact_matches
+
+    scored = []
+    for aircraft in fleet:
+        aliases = _registration_search_aliases(aircraft)
+        if not aliases:
+            continue
+        best_score = max(
+            SequenceMatcher(None, normalized_query, alias).ratio()
+            for alias in aliases
+        )
+        if best_score >= 0.72:
+            scored.append((best_score, aircraft))
+
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            str(_get(item[1], "registration", "")).upper(),
+        )
+    )
+    if scored and (
+        len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.12
+    ):
+        return scored[0][1], []
+    return None, [aircraft for _, aircraft in scored[:5]]
 
 
 def _state_label(position):
@@ -432,14 +511,14 @@ class AvailableAircraftCog(commands.Cog):
     async def cog_load(self):
         self.bot.add_view(AvailabilityView(self, []))
 
-    async def _get_fleet(self, client):
+    async def _get_fleet(self, client, include_retired=False):
         now = time.monotonic()
 
         if (
             self._fleet is not None
             and now - self._fleet_at < FLEET_CACHE_SECONDS
         ):
-            return self._fleet
+            return _available_fleet(self._fleet, include_retired)
 
         async with self._fleet_lock:
             now = time.monotonic()
@@ -448,7 +527,7 @@ class AvailableAircraftCog(commands.Cog):
                 self._fleet is not None
                 and now - self._fleet_at < FLEET_CACHE_SECONDS
             ):
-                return self._fleet
+                return _available_fleet(self._fleet, include_retired)
 
             fleet = await client.list_organization_aircraft(ORG_ID)
 
@@ -458,7 +537,7 @@ class AvailableAircraftCog(commands.Cog):
             )
             self._fleet_at = time.monotonic()
 
-            return self._fleet
+            return _available_fleet(self._fleet, include_retired)
 
     async def _get_organization_schedules(self, client):
         schedules = []
@@ -601,17 +680,114 @@ class AvailableAircraftCog(commands.Cog):
             rows.sort(key=lambda row: row[0].upper())
             return rows, failed_count
 
+    async def search_availability(self, query):
+        if not ORG_ID:
+            raise RuntimeError("IF_ORGANIZATION_ID is not configured")
+
+        manager = getattr(self.bot, "if_live_manager", None)
+        if manager is None:
+            raise RuntimeError(
+                "Infinite Flight Live manager is not initialized"
+            )
+
+        async with await manager.get_client(TOKEN_OWNER_ID) as client:
+            fleet = list(
+                await self._get_fleet(client, include_retired=True)
+            )
+            known_registrations = {
+                str(_get(aircraft, "registration", "") or "").strip().upper()
+                for aircraft in fleet
+            }
+            fleet.extend(
+                {
+                    "id": f"retired:{registration}",
+                    "registration": registration,
+                }
+                for registration in sorted(RETIRED_REGISTRATIONS - known_registrations)
+            )
+            aircraft, suggestions = _match_aircraft_registration(fleet, query)
+            if aircraft is None:
+                return None, suggestions
+
+            schedules = await self._get_organization_schedules(client)
+
+        aircraft_id = str(
+            _get(aircraft, "id", "") or _get(aircraft, "aircraft_id", "")
+        )
+        aircraft_schedules = [
+            schedule
+            for schedule in schedules
+            if str(_get(schedule, "aircraft_id", "") or "") == aircraft_id
+        ]
+        row = self._availability_row(aircraft, aircraft_schedules)
+        return (aircraft, row), []
+
     @app_commands.command(
         name="available-aircraft",
         description="Show aircraft with an unassigned scheduled route.",
     )
+    @app_commands.describe(
+        registration=(
+            "Search by registration, e.g. IF-FXQK or A7BFC; punctuation is optional."
+        )
+    )
     async def available_aircraft(
         self,
         interaction: discord.Interaction,
+        registration: str = None,
     ):
         await interaction.response.defer(thinking=True)
 
         try:
+            if registration:
+                result, suggestions = await self.search_availability(registration)
+                if result is None:
+                    if suggestions:
+                        suggestion_text = ", ".join(
+                            str(_get(item, "registration", "Unknown"))
+                            for item in suggestions
+                        )
+                        message = (
+                            f"I couldn't uniquely match **{registration}**. "
+                            f"Did you mean: {suggestion_text}?"
+                        )
+                    else:
+                        message = (
+                            f"No organization aircraft matched **{registration}**. "
+                            "Try a short form, such as `FXQK`, or use the "
+                            "full registration."
+                        )
+                    await interaction.followup.send(message, ephemeral=True)
+                    return
+
+                aircraft, row = result
+                aircraft_registration = str(
+                    _get(aircraft, "registration", "Unknown") or "Unknown"
+                )
+                if row is None:
+                    if aircraft_registration.upper() in RETIRED_REGISTRATIONS:
+                        await interaction.followup.send(
+                            f"**{aircraft_registration}** is retired and cannot be "
+                            "claimed.",
+                            ephemeral=True,
+                        )
+                        return
+                    await interaction.followup.send(
+                        f"**{aircraft_registration}** is in the organization fleet, "
+                        "but it has no currently claimable scheduled route.",
+                        ephemeral=True,
+                    )
+                    return
+
+                view = AvailabilityView(self, [row])
+                await interaction.followup.send(
+                    content=f"Registration search: **{aircraft_registration}**",
+                    embed=view.make_embed(),
+                    view=view,
+                    ephemeral=True,
+                )
+                return
+
             rows, failed_count = await self.collect_availability()
 
             view = AvailabilityView(

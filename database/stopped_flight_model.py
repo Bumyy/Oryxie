@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import Optional
 
 from .manager import DatabaseManager
@@ -16,6 +17,8 @@ class StoppedFlightModel:
         "stopped_since",
         "lifecycle",
         "eta_warning_sent",
+        "eta_warning_attempts",
+        "eta_warning_last_attempt_at",
         "one_hour_sent",
         "two_hour_sent",
         "three_hour_sent",
@@ -32,12 +35,171 @@ class StoppedFlightModel:
         for table_name in (
             "if_stopped_flight_incidents",
             "if_stopped_flight_dm_events",
+            "if_aircraft_route_availability",
         ):
             if not await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
                 raise RuntimeError(
                     f"Required table {table_name} is missing; apply "
                     "database/stopped_flight_monitor_mysql_schema.sql"
                 )
+        await self._ensure_eta_warning_columns()
+
+    async def _ensure_eta_warning_columns(self) -> None:
+        columns = (
+            (
+                "eta_warning_attempts",
+                "TINYINT UNSIGNED NOT NULL DEFAULT 0",
+            ),
+            (
+                "eta_warning_last_attempt_at",
+                "DATETIME NULL",
+            ),
+        )
+        for column_name, column_definition in columns:
+            if not await self.db.fetch_one(
+                "SHOW COLUMNS FROM if_stopped_flight_incidents LIKE %s",
+                (column_name,),
+            ):
+                await self.db.execute(
+                    "ALTER TABLE if_stopped_flight_incidents "
+                    f"ADD COLUMN {column_name} {column_definition}"
+                )
+                if not await self.db.fetch_one(
+                    "SHOW COLUMNS FROM if_stopped_flight_incidents LIKE %s",
+                    (column_name,),
+                ):
+                    raise RuntimeError(
+                        "Could not add required column "
+                        f"{column_name} to if_stopped_flight_incidents; "
+                        "apply database/migrate_stopped_flight_eta_warning_columns.sql "
+                        "with a database account that can ALTER TABLE."
+                    )
+
+    async def try_start_eta_warning_attempt(
+        self,
+        schedule_id: str,
+        attempted_at,
+        retry_after_minutes: int = 5,
+        max_attempts: int = 2,
+    ) -> bool:
+        retry_cutoff = attempted_at - timedelta(minutes=retry_after_minutes)
+        changed = await self.db.execute(
+            """
+            UPDATE if_stopped_flight_incidents
+            SET eta_warning_attempts = eta_warning_attempts + 1,
+                eta_warning_last_attempt_at = %s
+            WHERE schedule_id = %s
+              AND eta_warning_sent = 0
+              AND eta_warning_attempts < %s
+              AND (
+                  eta_warning_last_attempt_at IS NULL
+                  OR eta_warning_last_attempt_at <= %s
+              )
+            """,
+            (
+                attempted_at,
+                str(schedule_id),
+                int(max_attempts),
+                retry_cutoff,
+            ),
+        )
+        return bool(changed)
+
+    async def has_aircraft_status_table(self) -> bool:
+        return bool(
+            await self.db.fetch_one(
+                "SHOW TABLES LIKE %s",
+                ("if_aircraft_status_logs",),
+            )
+        )
+
+    async def get_aircraft_statuses(self) -> dict[str, str]:
+        rows = await self.db.fetch_all(
+            "SELECT aircraft_id, status_text FROM if_aircraft_status_logs"
+        )
+        return {
+            str(row["aircraft_id"]): str(row["status_text"])
+            for row in rows or []
+        }
+
+    async def set_aircraft_status(
+        self,
+        aircraft_id: str,
+        registration: str,
+        status_text: str,
+    ) -> int:
+        return await self.db.execute(
+            """
+            INSERT INTO if_aircraft_status_logs
+                (aircraft_id, registration, status_text)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                registration = VALUES(registration),
+                status_text = VALUES(status_text)
+            """,
+            (str(aircraft_id), registration, status_text),
+        )
+
+    async def sync_route_availability(
+        self,
+        aircraft_id: str,
+        registration: str,
+        has_active_routes: bool,
+    ) -> None:
+        existing = await self.db.fetch_one(
+            "SELECT has_active_routes FROM if_aircraft_route_availability "
+            "WHERE aircraft_id = %s",
+            (str(aircraft_id),),
+        )
+        active_value = int(has_active_routes)
+        if existing is None:
+            await self.db.execute(
+                """
+                INSERT IGNORE INTO if_aircraft_route_availability
+                    (aircraft_id, registration, has_active_routes, alert_sent)
+                VALUES (%s, %s, %s, 1)
+                """,
+                (str(aircraft_id), registration, active_value),
+            )
+            return
+
+        if has_active_routes:
+            await self.db.execute(
+                """
+                UPDATE if_aircraft_route_availability
+                SET registration = %s, has_active_routes = 1, alert_sent = 1
+                WHERE aircraft_id = %s
+                """,
+                (registration, str(aircraft_id)),
+            )
+        elif bool(existing["has_active_routes"]):
+            await self.db.execute(
+                """
+                UPDATE if_aircraft_route_availability
+                SET registration = %s, has_active_routes = 0, alert_sent = 0
+                WHERE aircraft_id = %s AND has_active_routes = 1
+                """,
+                (registration, str(aircraft_id)),
+            )
+
+    async def list_pending_route_exhaustion_alerts(self) -> list[dict]:
+        return await self.db.fetch_all(
+            """
+            SELECT aircraft_id, registration
+            FROM if_aircraft_route_availability
+            WHERE has_active_routes = 0 AND alert_sent = 0
+            """
+        )
+
+    async def mark_route_exhaustion_alert_sent(self, aircraft_id: str) -> int:
+        return await self.db.execute(
+            """
+            UPDATE if_aircraft_route_availability
+            SET alert_sent = 1
+            WHERE aircraft_id = %s AND has_active_routes = 0
+            """,
+            (str(aircraft_id),),
+        )
 
     async def get_incident(self, schedule_id: str) -> Optional[dict]:
         return await self.db.fetch_one(
@@ -128,6 +290,7 @@ class StoppedFlightModel:
         schedule_id: str,
         delivered_only: bool = False,
         with_message_ids: bool = False,
+        recovery_only: bool = False,
     ) -> list[dict]:
         fields = "if_user_id, channel_id, message_id" if with_message_ids else "if_user_id"
         query = (
@@ -137,6 +300,8 @@ class StoppedFlightModel:
         args = [str(schedule_id)]
         if delivered_only:
             query += " AND delivery_status = 'delivered'"
+        if recovery_only:
+            query += " AND wave > 0"
         if with_message_ids:
             query += " AND channel_id IS NOT NULL AND message_id IS NOT NULL"
         return await self.db.fetch_all(query, tuple(args))

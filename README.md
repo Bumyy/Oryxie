@@ -122,6 +122,82 @@ python bot.py
 
 ---
 
+## Route-Ready Pilot DMs
+
+The bot sends a direct message to assigned next-leg pilots after it detects that
+the aircraft has landed and is parked at the next route's origin. The message
+includes the route and takeoff deadline: **6 hours at an airline hub** or
+**12 hours at a non-hub airport**. The route-ready cog is loaded automatically.
+
+Before enabling this feature in a deployment, apply
+[`database/route_ready_notifications_mysql_schema.sql`](./database/route_ready_notifications_mysql_schema.sql)
+to the bot database. Route-ready messages require the pilot's Discord account
+to be linked and their DMs to be open.
+Failed route-ready DMs are retried after five minutes while the aircraft remains
+parked and the next-leg assignment is still present. If a previous bot version
+recorded the arrival before delivery succeeded, pending failures are still
+retried after this update is deployed.
+
+Stopped-flight, route-ready, and Oryxpace task-notification DMs are reported to
+channel `1562428318043602965`, including delivery status and recipient. If the
+bot cannot post to that channel, the failure is written to bot logs. Other bot
+messages posted in channels or as interaction responses are not DMs and are not
+included in these reports.
+
+The 30-minute arrival warning is attempted at most twice: once when the pilot
+is within range, then once more after five minutes if delivery failed and the
+aircraft is still within 30 minutes of arrival. The retry report is marked as
+the final attempt. The pilot's Discord account must be linked to their Infinite
+Flight user ID in the pilot database. Pilot identity lookups prioritize the
+linked Discord ID over the nickname, and a linked active pilot's stored
+callsign is synchronized from a valid Discord nickname change unless that
+callsign already belongs to another pilot. This preserves the Discord and
+Infinite Flight account links when callsigns change; it does not create a
+missing account link.
+
+Stopped-flight recovery-wave reports include the number of Fleet-role members
+found, linked active pilot records, recent-activity matches, and failed activity
+checks, and eligible pilots selected. Recovery offers go to all eligible,
+non-bot Fleet-role pilots with active linked pilot records and recent flight
+activity; pilots who already received an offer for that incident are skipped.
+Failed recovery-wave and crew-removal DMs are retried once after five minutes;
+if the retry fails, no further attempt is made for that pilot in that
+notification.
+
+Route-exhaustion alerts also include an estimated demand label based on Infinite
+Flight aircraft flight-history records: **High Demand** means at least 3
+timestamped flight records in the last 7 days; otherwise it is **Low Demand**.
+Records without usable timestamps are reported as **Demand unknown** rather
+than being incorrectly counted as zero.
+
+For an existing database, apply
+[`database/stopped_flight_monitor_mysql_schema.sql`](./database/stopped_flight_monitor_mysql_schema.sql)
+before enabling stopped-flight monitoring. If the incidents table was created
+before ETA warning retries were added, run
+[`database/migrate_stopped_flight_eta_warning_columns.sql`](./database/migrate_stopped_flight_eta_warning_columns.sql)
+once against the bot database, then restart the bot. The migration requires an
+account with `ALTER TABLE` permission. DM delivery reports, aircraft status
+messages, stopped-flight staff alerts, and route-exhaustion/demand alerts post
+to staff channel `1562428318043602965` by default. Monitoring messages can use
+different channels when their corresponding channel ID environment variables
+are set; DM delivery reports always go to `1562428318043602965`. Route-exhaustion
+alerts mention a role only when `ROUTE_EXHAUSTION_ROLE_ID` is configured.
+
+Use `/available-aircraft` without a registration to browse claimable routes, or
+pass a registration to search the full fleet. Registration search ignores
+spaces and punctuation, recognizes common short forms (for example `FXQK` for
+`IF-FXQK`), and suggests close matches. You can also search using a full
+registration such as `A7BFC`. A matched aircraft with no claimable route is
+reported as such.
+
+The `/request-flight` menu has a **Cargo** category for A7BFA (777F). Cargo
+bookings allow up to two connected legs at a time, without requiring a hub
+return; another cargo booking is available after the currently assigned legs
+are complete. **Retired** shows A7BFC (777F) and posts a public tribute instead
+of assigning the retired aircraft.
+
+---
+
 ## Summary
 
 - Clone repo → Switch to `dev` branch

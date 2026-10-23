@@ -85,7 +85,10 @@ class PilotsModel:
         Returns:
             A dictionary of the pilot's data if found, otherwise None.
         """
-        query = "SELECT discordid FROM pilots WHERE ifuserid = %s"
+        query = (
+            "SELECT callsign, name, discordid, ifuserid "
+            "FROM pilots WHERE ifuserid = %s"
+        )
         args = (ifuserid,)
         return await self.db.fetch_one(query, args)
 
@@ -198,6 +201,38 @@ class PilotsModel:
         query = "SELECT id, callsign, discordid, ifuserid, ifc FROM pilots WHERE discordid = %s AND status = 1"
         args = (discord_id,)
         return await self.db.fetch_one(query, args)
+
+    async def sync_callsign_by_discord_id(
+        self,
+        discord_id: str,
+        callsign: str,
+    ) -> str:
+        """Update an active pilot's callsign without changing its linked IDs."""
+        pilot = await self.get_pilot_by_discord_id(str(discord_id))
+        if not pilot:
+            return "not_linked"
+
+        normalized_callsign = str(callsign).strip().upper()
+        if not normalized_callsign:
+            return "invalid_callsign"
+        if str(pilot.get("callsign") or "").upper() == normalized_callsign:
+            return "unchanged"
+
+        existing = await self.get_pilot_by_callsign_any_status(
+            normalized_callsign
+        )
+        if existing and str(existing.get("id")) != str(pilot["id"]):
+            return "callsign_conflict"
+
+        affected = await self.db.execute(
+            """
+            UPDATE pilots
+            SET callsign = %s
+            WHERE id = %s AND discordid = %s AND status = 1
+            """,
+            (normalized_callsign, pilot["id"], str(discord_id)),
+        )
+        return "updated" if affected else "not_updated"
         
     async def identify_pilot(self, discord_user) -> Dict:
         """
@@ -211,12 +246,39 @@ class PilotsModel:
         """
         import re
         
-        # Method 1: Try to extract callsign from nickname
+        # Discord ID is stable when members change their callsign or nickname.
+        pilot_data = await self.get_pilot_by_discord_id(str(discord_user.id))
+        if pilot_data:
+            callsign_match = re.search(
+                r'QRV\d{3,}', discord_user.display_name, re.IGNORECASE
+            )
+            if callsign_match:
+                extracted_callsign = callsign_match.group(0).upper()
+                sync_result = await self.sync_callsign_by_discord_id(
+                    str(discord_user.id),
+                    extracted_callsign,
+                )
+                if sync_result == "updated":
+                    pilot_data = await self.get_pilot_by_discord_id(
+                        str(discord_user.id)
+                    )
+                elif sync_result == "callsign_conflict":
+                    pilot_data["callsign_sync_conflict"] = extracted_callsign
+            return {
+                'success': True,
+                'pilot_data': pilot_data,
+                'method': 'discord_id_lookup',
+            }
+
+        # Fall back to a callsign only when it is not linked to someone else.
         callsign_match = re.search(r'QRV\d{3,}', discord_user.display_name, re.IGNORECASE)
         if callsign_match:
             extracted_callsign = callsign_match.group(0).upper()
             pilot_data = await self.get_pilot_by_callsign(extracted_callsign)
-            if pilot_data:
+            linked_discord_id = str(
+                (pilot_data or {}).get("discordid") or ""
+            )
+            if pilot_data and linked_discord_id in ("", str(discord_user.id)):
                 return {
                     'success': True,
                     'pilot_data': pilot_data,

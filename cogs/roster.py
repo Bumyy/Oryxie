@@ -1,12 +1,51 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import logging
 import re
+
+log = logging.getLogger(__name__)
 
 class Roster(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.callsign_pattern = re.compile(r"(QRV\d{3})")
+        self.callsign_pattern = re.compile(r"(QRV\d{3,})", re.IGNORECASE)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if before.nick == after.nick or after.bot or not after.nick:
+            return
+
+        match = self.callsign_pattern.search(after.nick)
+        if not match:
+            return
+
+        try:
+            result = await self.bot.pilots_model.sync_callsign_by_discord_id(
+                str(after.id),
+                match.group(1),
+            )
+        except Exception:
+            log.exception(
+                "Could not sync pilot callsign after Discord nickname change "
+                "for member %s.",
+                after.id,
+            )
+            return
+
+        if result == "updated":
+            log.info(
+                "Updated active pilot callsign to %s using linked Discord ID %s.",
+                match.group(1),
+                after.id,
+            )
+        elif result == "callsign_conflict":
+            log.warning(
+                "Could not update callsign to %s for Discord member %s: "
+                "that callsign is already assigned to another pilot record.",
+                match.group(1),
+                after.id,
+            )
 
     @app_commands.command(name="sync_discord_ids", description="Syncs Discord IDs to the pilot roster based on nicknames.")
     async def sync_discord_ids(self, interaction: discord.Interaction):
