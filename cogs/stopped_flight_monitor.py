@@ -872,20 +872,12 @@ class StoppedFlightMonitor(commands.Cog):
                     f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})."
                 )
         if delivered_recipients or failed_recipients:
-            retry_note = (
-                f"This was attempt {attempt_number}/{MAX_ETA_WARNING_ATTEMPTS}; "
-                f"the bot will retry once in {ETA_WARNING_RETRY_MINUTES} minutes "
-                "if the aircraft is still within 30 minutes of arrival."
-                if attempt_number < MAX_ETA_WARNING_ATTEMPTS
-                else "This was the final attempt; no further arrival-warning retry will be made."
-            )
             await self._send_dm_recipient_report(
                 row,
                 f"30-minute arrival warning · attempt {attempt_number}/"
                 f"{MAX_ETA_WARNING_ATTEMPTS}",
                 delivered_recipients,
                 failed_recipients=failed_recipients,
-                notes=[retry_note],
             )
         return sent_any
 
@@ -1431,8 +1423,6 @@ class StoppedFlightMonitor(commands.Cog):
                 "**Not delivered / follow-up needed:**\n"
                 + "\n".join(f"• {item}" for item in failed_recipients)
             )
-        if notes:
-            sections.append("\n".join(f"ℹ️ {item}" for item in notes))
         await post_dm_report(
             self.bot,
             (

@@ -192,6 +192,12 @@ def _aircraft_category(aircraft):
 
     model = _aircraft_model(aircraft).lower().replace(" ", "")
 
+    # Strip manufacturer prefixes so "boeing777-300er" becomes "777-300er"
+    for manufacturer in ("boeing", "airbus", "embraer", "bombardier", "mcdonnell", "douglas"):
+        if model.startswith(manufacturer):
+            model = model[len(manufacturer):]
+            break
+
     if model.startswith("a") and len(model) > 1 and model[1].isdigit():
         return "Airbus"
 
