@@ -29,6 +29,12 @@ GREEN_MAX_FLIGHTS_AHEAD = 0
 YELLOW_MAX_FLIGHTS_AHEAD = 2
 
 AIRCRAFT_MODELS = {
+    "JA-742J": "777-300ER",
+    "PT-LBN": "A321neo",
+    "A7-BAJ": "777-300ER",
+    "A7BAB": "777-300ER",
+    "G-ZBKC": "787-9",
+    "A7-APE": "A380-800",
     "A7-ANN": "A350-1000",
     "A7-APC": "A380-800",
     "A7-BAE": "777-300ER",
