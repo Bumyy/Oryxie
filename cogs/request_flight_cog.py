@@ -118,9 +118,7 @@ def _get(obj, key, default=None):
 
 
 def _registration(aircraft):
-    return re.sub(
-        r"[^A-Z0-9]", "", str(_get(aircraft, "registration", "") or "").upper()
-    )
+    return str(_get(aircraft, "registration", "") or "").strip().upper()
 
 
 def _crew_user_id(member):
@@ -193,12 +191,6 @@ def _aircraft_category(aircraft):
         return "Retired"
 
     model = _aircraft_model(aircraft).lower().replace(" ", "")
-
-    # Strip manufacturer prefixes so "boeing777-300er" becomes "777-300er"
-    for manufacturer in ("boeing", "airbus", "embraer", "bombardier", "mcdonnell", "douglas"):
-        if model.startswith(manufacturer):
-            model = model[len(manufacturer):]
-            break
 
     if model.startswith("a") and len(model) > 1 and model[1].isdigit():
         return "Airbus"
