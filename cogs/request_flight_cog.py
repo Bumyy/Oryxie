@@ -52,8 +52,6 @@ AIRCRAFT_MODELS = {
     "A7AEE": "A330-300",
     "A7-BCD": "787-8",
     "A7ADS": "A321-200",
-    "A7BFC": "777F",
-    "A7BFA": "777F",
     "A7-AOA": "A350-1000",
     "A7-AOH": "A350-1000",
     "A7-BAA": "777-300ER",
@@ -68,6 +66,27 @@ AIRCRAFT_MODELS = {
     "IF-MPSK": "A321neo",
     "IF-SKJK": "777-300ER",
     "IF-KSKI": "787-9",
+}
+AIRCRAFT_AIRLINES = {
+    "B-LRO": "Cathay Pacific",
+    "EC-ORE": "Iberia",
+    "IF-KSKI": "British Airways",
+    "IF-MPSK": "LATAM",
+    "IF-FXQK": "JAL",
+    "VH-ZNF": "Qantas",
+    "N762AN": "American Airlines",
+    "N302NY": "American Airlines",
+}
+
+AIRLINE_HUBS = {
+    "Qatar Airways": "OTHH",
+    "Cathay Pacific": "VHHH",
+    "Iberia": "LEMD",
+    "British Airways": "EGLL",
+    "LATAM": ("SCEL", "SBGR", "SPJC"),
+    "JAL": "RJTT",
+    "Qantas": "YSSY",
+    "American Airlines": "KDFW",
 }
 
 RULES = (
