@@ -1453,12 +1453,31 @@ class StoppedFlightMonitor(commands.Cog):
         role_member_count = 0
         linked_pilot_count = 0
         recent_activity_count = 0
+        exclusion_counts = {
+            "missing_link": 0,
+            "already_contacted": 0,
+            "no_recent_flights": 0,
+            "activity_check_failed": 0,
+        }
+        exclusion_examples = {reason: [] for reason in exclusion_counts}
+
+        def record_exclusion(reason, member, pilot=None):
+            exclusion_counts[reason] += 1
+            if len(exclusion_examples[reason]) >= 5:
+                return
+            callsign = (pilot or {}).get("callsign")
+            identity = f"{member.display_name}"
+            if callsign and str(callsign).casefold() not in identity.casefold():
+                identity += f" ({callsign})"
+            exclusion_examples[reason].append(identity)
+
         for member in role.members:
             if member.bot:
                 continue
             role_member_count += 1
             pilot = by_discord.get(str(member.id))
             if not pilot:
+                record_exclusion("missing_link", member)
                 continue
             nickname = str(member.nick or "")
             callsign_match = re.search(r"QRV\d{3,}", nickname, re.IGNORECASE)
@@ -1483,6 +1502,7 @@ class StoppedFlightMonitor(commands.Cog):
             linked_pilot_count += 1
             if_user_id = str(pilot["ifuserid"])
             if if_user_id in contacted:
+                record_exclusion("already_contacted", member, pilot)
                 continue
 
             had_cached_score = if_user_id in self._activity_cache
@@ -1494,6 +1514,7 @@ class StoppedFlightMonitor(commands.Cog):
                     pilot.get("callsign", if_user_id),
                 )
                 activity_check_failures += 1
+                record_exclusion("activity_check_failed", member, pilot)
                 continue
             if flight_count:
                 candidates.append(
@@ -1506,6 +1527,8 @@ class StoppedFlightMonitor(commands.Cog):
                 )
                 if flight_count:
                     recent_activity_count += 1
+            else:
+                record_exclusion("no_recent_flights", member, pilot)
             if not had_cached_score:
                 await asyncio.sleep(1.05)
 
@@ -1633,6 +1656,20 @@ class StoppedFlightMonitor(commands.Cog):
                 f"{len(selected)} eligible pilots selected."
             )
         ]
+        exclusion_labels = {
+            "missing_link": "no active linked pilot record",
+            "already_contacted": "already received this recovery flight DM",
+            "no_recent_flights": "no Live flights in the 3-day activity window",
+            "activity_check_failed": "Live activity check failed",
+        }
+        for reason, count in exclusion_counts.items():
+            if not count:
+                continue
+            examples = ", ".join(exclusion_examples[reason])
+            detail = f"{count} {exclusion_labels[reason]}"
+            if examples:
+                detail += f" (e.g. {examples})"
+            diagnostic_notes.append(detail + ".")
         await self._send_dm_recipient_report(
             row,
             wave_labels.get(wave, f"Wave {wave}"),
@@ -1663,6 +1700,11 @@ class StoppedFlightMonitor(commands.Cog):
             sections.append(
                 "**Not delivered:**\n"
                 + "\n".join(f"• {item}" for item in failed_recipients)
+            )
+        if notes:
+            sections.append(
+                "**Selection / delivery notes:**\n"
+                + "\n".join(f"• {item}" for item in notes)
             )
         await post_dm_report(
             self.bot,

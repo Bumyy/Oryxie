@@ -135,6 +135,26 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
         bot.get_channel.assert_called_once_with(DM_LOG_CHANNEL_ID)
         channel.send.assert_awaited_once()
 
+    async def test_dm_report_helper_splits_reports_over_discord_limit(self):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        bot = MagicMock()
+        bot.get_channel.return_value = channel
+        content = "DM delivery report\n" + ("x" * 4500)
+
+        posted = await post_dm_report(
+            bot,
+            content,
+            MagicMock(),
+            "large test DM",
+        )
+
+        self.assertTrue(posted)
+        chunks = [call.args[0] for call in channel.send.await_args_list]
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 2000 for chunk in chunks))
+        self.assertEqual("".join(chunks), content)
+
 
 if __name__ == "__main__":
     unittest.main()

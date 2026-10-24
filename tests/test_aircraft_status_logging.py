@@ -317,6 +317,35 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.statuses["aircraft-1"], "PARKED AT OTHH")
         self.assertEqual(model.updates, [])
 
+    async def test_stopped_flight_dm_report_includes_selection_diagnostics(self):
+        cog, _ = self.make_cog(MagicMock())
+        report_poster = AsyncMock(return_value=True)
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7QRV",
+            "callsign": "QRV004",
+            "origin_icao": "OTHH",
+            "destination_icao": "EGLL",
+        }
+
+        with patch(
+            "cogs.stopped_flight_monitor.post_dm_report",
+            report_poster,
+        ):
+            await cog._send_dm_recipient_report(
+                row,
+                "1-hour recovery alert",
+                [],
+                notes=[
+                    "Liam_Edris (QRV042): no Live flights in the 3-day activity window."
+                ],
+            )
+
+        report_content = report_poster.await_args.args[1]
+        self.assertIn("Selection / delivery notes", report_content)
+        self.assertIn("Liam_Edris (QRV042)", report_content)
+        self.assertIn("3-day activity window", report_content)
+
 
 if __name__ == "__main__":
     unittest.main()
