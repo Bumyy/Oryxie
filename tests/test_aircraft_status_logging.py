@@ -39,6 +39,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.flight = {
             "status": 6,
             "sequence": 1,
+            "callsign": "QRV004",
             "destination_icao": "EGLL",
             "origin_icao": "OTHH",
         }
@@ -58,7 +59,38 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             [self.flight],
         )
 
-        self.assertEqual(text, "ENROUTE TO EGLL")
+        self.assertEqual(text, "ENROUTE OTHH → EGLL by QRV004")
+
+    def test_landing_and_parking_are_separate_status_transitions(self):
+        landed = {
+            "status": 11,
+            "sequence": 1,
+            "callsign": "QRV004",
+            "destination_icao": "EGLL",
+            "origin_icao": "OTHH",
+        }
+        position = {
+            "state": 1,
+            "is_on_ground": True,
+            "latitude": 25.0,
+            "longitude": 51.0,
+        }
+
+        landed_text = _aircraft_status_text(
+            MagicMock(),
+            position,
+            [landed],
+            previous_status="ENROUTE OTHH → EGLL by QRV004",
+        )
+        parked_text = _aircraft_status_text(
+            MagicMock(),
+            position,
+            [landed],
+            previous_status=landed_text,
+        )
+
+        self.assertEqual(landed_text, "LANDED OTHH → EGLL by QRV004")
+        self.assertEqual(parked_text, "PARKED")
 
     async def test_enroute_transition_posts_and_persists_once(self):
         channel = MagicMock()
@@ -87,17 +119,22 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
 
         bot.get_channel.assert_called_once_with(DM_LOG_CHANNEL_ID)
         channel.send.assert_awaited_once()
-        self.assertIn("ENROUTE TO EGLL", channel.send.await_args.args[0])
+        self.assertIn(
+            "ENROUTE OTHH → EGLL by QRV004",
+            channel.send.await_args.args[0],
+        )
         self.assertEqual(
             model.updates,
-            [("aircraft-1", "A7QRV", "ENROUTE TO EGLL")],
+            [("aircraft-1", "A7QRV", "ENROUTE OTHH → EGLL by QRV004")],
         )
 
     async def test_unchanged_status_does_not_post_again(self):
         channel = MagicMock()
         channel.send = AsyncMock()
         cog, _ = self.make_cog(channel)
-        model = AircraftStatusModel({"aircraft-1": "ENROUTE TO EGLL"})
+        model = AircraftStatusModel(
+            {"aircraft-1": "ENROUTE OTHH → EGLL by QRV004"}
+        )
         client = MagicMock()
         client.get_aircraft_position = AsyncMock(return_value=self.position)
 

@@ -28,53 +28,6 @@ PAGE_SIZE = 10
 GREEN_MAX_FLIGHTS_AHEAD = 0
 YELLOW_MAX_FLIGHTS_AHEAD = 2
 
-AIRCRAFT_MODELS = {
-    "JA-742J": "777-300ER",
-    "PT-LBN": "A321neo",
-    "A7-BAJ": "777-300ER",
-    "A7BAB": "777-300ER",
-    "G-ZBKC": "787-9",
-    "A7-APE": "A380-800",
-    "A7-ANN": "A350-1000",
-    "A7-APC": "A380-800",
-    "A7-BAE": "777-300ER",
-    "A7-ALR": "A350-900",
-    "A7-DAC": "A350-900",
-    "A7-BCA": "787-8",
-    "A7BBA": "777-200LR",
-    "A7BAG": "777-300ER",
-    "A7-ANG": "A350-1000",
-    "A7BCC": "787-8",
-    "A7DAB": "A350-900",
-    "A7-AOB": "A350-1000",
-    "A7BAF": "777-300ER",
-    "A7BAB": "777-300ER",
-    "A7BCB": "787-8",
-    "A7DAA": "A350-900",
-    "A7AED": "A330-300",
-    "A7-BAH": "777-300ER",
-    "A7APD": "A380-800",
-    "A7-BBB": "777-200LR",
-    "A7AEE": "A330-300",
-    "A7-BCD": "787-8",
-    "A7ADS": "A321-200",
-    "A7-AOA": "A350-1000",
-    "A7-AOH": "A350-1000",
-    "A7-BAA": "777-300ER",
-    "B-LRO": "A350-900",
-    "EC-ORE": "A321neo",
-    "A7-BAC": "777-300ER",
-    "A7-BAI": "777-300ER",
-    "N302NY": "A321neo",
-    "N762AN": "777-200ER",
-    "VH-ZNF": "787-9",
-    "IF-FXQK": "777-300ER",
-    "IF-MPSK": "A321neo",
-    "IF-SKJK": "777-300ER",
-    "IF-KSKI": "787-9",
-}
-
-
 def _get(obj, key, default=None):
     if isinstance(obj, dict):
         return obj.get(key, default)
@@ -82,12 +35,6 @@ def _get(obj, key, default=None):
 
 
 def _aircraft_model(aircraft):
-    registration = str(_get(aircraft, "registration", "") or "").strip().upper()
-    # Use the explicit fleet mapping for the registrations whose API model
-    # metadata is missing or incorrect.
-    if registration in {"JA-742J", "PT-LBN", "A7-BAJ", "A7BAB", "G-ZBKC", "A7-APE"}:
-        return AIRCRAFT_MODELS[registration]
-
     for key in (
         "model",
         "aircraft_name",
@@ -100,12 +47,7 @@ def _aircraft_model(aircraft):
         value = _get(aircraft, key)
         if value and str(value).strip():
             return str(value).strip()
-
-    registration = str(
-        _get(aircraft, "registration", "") or ""
-    ).strip().upper()
-
-    return AIRCRAFT_MODELS.get(registration, "")
+    return ""
 
 
 def _aircraft_category(aircraft):
@@ -113,14 +55,16 @@ def _aircraft_category(aircraft):
         _get(aircraft, "registration", "") or ""
     ).strip().upper()
     if is_cargo_registration(registration):
-        return "Cargo"
+        return "Qatar Cargo"
 
-    model = _aircraft_model(aircraft).lower().replace(" ", "")
+    model = re.sub(r"[^a-z0-9]", "", _aircraft_model(aircraft).lower())
 
-    if model.startswith("a") and len(model) > 1 and model[1].isdigit():
+    if model.startswith("airbus") or (
+        model.startswith("a") and len(model) > 1 and model[1].isdigit()
+    ):
         return "Airbus"
 
-    if model.startswith(
+    if model.startswith("boeing") or model.startswith(
         ("777", "787", "737", "747", "757", "767", "717", "727")
     ):
         return "Boeing"
@@ -542,11 +486,18 @@ class AvailableAircraftCog(commands.Cog):
                 return _available_fleet(self._fleet, include_retired)
 
             fleet = await client.list_organization_aircraft(ORG_ID)
-
             self._fleet = sorted(
                 list(fleet or []),
                 key=lambda item: str(_get(item, "registration", "")),
             )
+            fleet_service = getattr(self.bot, "fleet_service", None)
+            if fleet_service is not None:
+                try:
+                    await fleet_service.enrich_fleet(self._fleet)
+                except Exception:
+                    log.exception(
+                        "Could not enrich aircraft availability with VA database models."
+                    )
             self._fleet_at = time.monotonic()
 
             return _available_fleet(self._fleet, include_retired)
@@ -595,10 +546,10 @@ class AvailableAircraftCog(commands.Cog):
         route = schedules[claim_index]
         origin = _get(route, "origin_icao") or "???"
         destination = _get(route, "destination_icao") or "???"
-        model = AIRCRAFT_MODELS.get(
-            registration.strip().upper(),
-            _aircraft_model(aircraft) or "Model unknown",
-        )
+        model = _aircraft_model(aircraft) or "Model unknown"
+        livery_name = _get(aircraft, "livery_name")
+        if livery_name and str(livery_name).casefold() not in model.casefold():
+            model = f"{model} · {livery_name}"
         assigned_before = sum(
             1
             for item in schedules[:claim_index]

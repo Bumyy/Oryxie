@@ -163,54 +163,50 @@ class MyBot(commands.Bot):
             print("WARNING: Could not load aircraft names from the API. Aircraft will show as 'Unknown'.")
             
         print("Loading extensions...")
-        try:
-            await self.load_extension('cogs.pingpong')
-          #  await self.load_extension('cogs.pireps') 
-            await self.load_extension('cogs.roster')
-            await self.load_extension('cogs.training')
-            await self.load_extension('cogs.cargo_training')
-            await self.load_extension('cogs.utils')
-            await self.load_extension('cogs.embed_creator')
-            await self.load_extension('cogs.flight_generator_pdf')
-          #  await self.load_extension('cogs.shop_cog')
-            await self.load_extension('cogs.mission')
-            await self.load_extension('cogs.gate_assignment')
-            await self.load_extension('cogs.database_audit')
-            await self.load_extension('cogs.callsign_finder')
-            await self.load_extension('cogs.flight_poll_system')
-            await self.load_extension('cogs.ticket_system')
-            await self.load_extension('cogs.pirep_validator')
-            await self.load_extension('cogs.message_cleaner')
-           #  await self.load_extension('cogs.special_events')
-          # await self.load_extension('cogs.gift_box')
-          #   await self.load_extension('cogs.activity_check')
-            await self.load_extension('cogs.rank_management')
-            await self.load_extension('cogs.mission_dispatcher')
-           # await self.load_extension('cogs.dossier')
-            await self.load_extension('cogs.checklist_cog')
-            await self.load_extension('cogs.flight_board_cog')
-          #  await self.load_extension('cogs.auto_pirep_cog')
-            await self.load_extension('cogs.monthly_stats')
-            await self.load_extension('cogs.fleet_pirep_cog')
-            await self.load_extension('cogs.ascaris_cog')
-            await self.load_extension('cogs.leaderboard')
-          #  await self.load_extension('cogs.hajj_operations')
-            await self.load_extension('cogs.notification_cog')
-          # Infinite Flight Live flight requests
-            await self.load_extension('cogs.request_flight_cog')
-            await self.load_extension('cogs.available_aircraft_cog')
-            await self.load_extension("cogs.remove_assignment_cog")
-            await self.load_extension("cogs.stopped_flight_monitor")
-            await self.load_extension("cogs.route_ready_notifications")
-            #await self.load_extension('cogs.live_flights')
-            #await self.load_extension('cogs.remainder')
-           # await self.load_extension('cogs.ayush')
-            
-            
-            print("All cogs loaded.")
-        except Exception as e:
-            print(f"Failed to load one or more cogs: {e}")
-            logging.error(f"Failed to load one or more cogs: {e}")
+        extensions = (
+            "cogs.pingpong",
+            "cogs.roster",
+            "cogs.training",
+            "cogs.cargo_training",
+            "cogs.utils",
+            "cogs.embed_creator",
+            "cogs.flight_generator_pdf",
+            "cogs.mission",
+            "cogs.gate_assignment",
+            "cogs.database_audit",
+            "cogs.callsign_finder",
+            "cogs.flight_poll_system",
+            "cogs.ticket_system",
+            "cogs.pirep_validator",
+            "cogs.message_cleaner",
+            "cogs.rank_management",
+            "cogs.mission_dispatcher",
+            "cogs.checklist_cog",
+            "cogs.flight_board_cog",
+            "cogs.monthly_stats",
+            "cogs.fleet_pirep_cog",
+            "cogs.ascaris_cog",
+            "cogs.leaderboard",
+            "cogs.notification_cog",
+            "cogs.request_flight_cog",
+            "cogs.available_aircraft_cog",
+            "cogs.remove_assignment_cog",
+            "cogs.stopped_flight_monitor",
+            "cogs.route_ready_notifications",
+        )
+        loaded_extensions = []
+        for extension in extensions:
+            try:
+                await self.load_extension(extension)
+                loaded_extensions.append(extension)
+            except Exception:
+                logging.exception("Failed to load extension %s", extension)
+
+        logging.info(
+            "Loaded %s of %s configured extensions.",
+            len(loaded_extensions),
+            len(extensions),
+        )
 
     async def on_ready(self):
         """

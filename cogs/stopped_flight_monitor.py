@@ -41,8 +41,7 @@ TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
 STOPPED_POSITION_STATE = 4
 IN_FLIGHT_SCHEDULE_STATUS = 6
-ETA_WARNING_RETRY_MINUTES = 5
-MAX_ETA_WARNING_ATTEMPTS = 2
+MAX_ETA_WARNING_ATTEMPTS = 1
 FLIGHT_HISTORY_DAYS = 3
 DEMAND_HISTORY_DAYS = 7
 HIGH_DEMAND_FLIGHT_THRESHOLD = 3
@@ -169,7 +168,7 @@ def _nearest_airport_icao(bot, position):
     return nearest_icao if nearest_distance <= 25 else None
 
 
-def _aircraft_status_text(bot, position, schedules):
+def _aircraft_status_text(bot, position, schedules, previous_status=None):
     try:
         state = int(_get(position, "state", -1))
     except (TypeError, ValueError):
@@ -187,31 +186,38 @@ def _aircraft_status_text(bot, position, schedules):
         (schedule for schedule in active_schedules if _status(schedule) == 6),
         None,
     )
+    completed_flight = next(
+        (
+            schedule
+            for schedule in reversed(sorted(schedules or [], key=_sequence))
+            if _status(schedule) == 11
+        ),
+        None,
+    )
     taxiing_flight = next(
         (schedule for schedule in active_schedules if _status(schedule) == 10),
         None,
     )
-    destination = str(
-        _get(current_flight, "destination_icao", "") or ""
-    ).strip().upper()
-    taxiing_destination = str(
-        _get(taxiing_flight, "destination_icao", "") or ""
-    ).strip().upper()
-
     if state == 5:
         return "MAINTENANCE"
     if state == STOPPED_POSITION_STATE and not on_ground:
-        return f"STOPPED IN AIR · ENROUTE TO {destination}" if destination else "STOPPED IN AIR"
-    if taxiing_flight:
         return (
-            f"TAXIING TO {taxiing_destination}"
-            if taxiing_destination
-            else "TAXIING"
+            _schedule_status_text("STOPPED IN AIR", current_flight)
+            if current_flight
+            else "STOPPED IN AIR"
         )
+    if taxiing_flight:
+        return _schedule_status_text("TAXIING", taxiing_flight)
     if not on_ground or state == 2:
-        return f"ENROUTE TO {destination}" if destination else "ENROUTE"
+        return _schedule_status_text("ENROUTE", current_flight)
 
     airport = _nearest_airport_icao(bot, position)
+    if previous_status and previous_status.startswith(("ENROUTE", "TAXIING")):
+        landed_flight = current_flight or completed_flight
+        if landed_flight:
+            return _schedule_status_text("LANDED", landed_flight)
+    if previous_status and previous_status.startswith("LANDED"):
+        return f"PARKED AT {airport}" if airport else "PARKED"
     if airport:
         return f"PARKED AT {airport}"
     if active_schedules:
@@ -221,6 +227,23 @@ def _aircraft_status_text(bot, position, schedules):
         if origin:
             return f"PARKED AT {origin}"
     return "PARKED · LOCATION UNKNOWN"
+
+
+def _schedule_status_text(status, schedule):
+    if not schedule:
+        return status
+    origin = str(_get(schedule, "origin_icao", "") or "").strip().upper()
+    destination = str(
+        _get(schedule, "destination_icao", "") or ""
+    ).strip().upper()
+    callsign = str(_get(schedule, "callsign", "") or "").strip()
+    route = " → ".join(value for value in (origin, destination) if value)
+    details = " ".join(
+        value
+        for value in (route, f"by {callsign}" if callsign else "")
+        if value
+    )
+    return f"{status} {details}".strip()
 
 
 class StoppedFlightClaimView(discord.ui.View):
@@ -521,6 +544,7 @@ class StoppedFlightMonitor(commands.Cog):
                     self.bot,
                     position,
                     schedules_by_aircraft.get(aircraft_id, []),
+                    previous_status=previous_statuses.get(aircraft_id),
                 ),
             )
 
@@ -730,16 +754,14 @@ class StoppedFlightMonitor(commands.Cog):
                 attempt_started = await model.try_start_eta_warning_attempt(
                     schedule_id,
                     _utcnow(),
-                    retry_after_minutes=ETA_WARNING_RETRY_MINUTES,
+                    retry_after_minutes=0,
                     max_attempts=MAX_ETA_WARNING_ATTEMPTS,
                 )
                 if attempt_started:
-                    attempt_number = int(row.get("eta_warning_attempts") or 0) + 1
                     sent = await self._send_eta_warning(
                         row,
                         crew_ids,
                         eta,
-                        attempt_number,
                     )
                     if sent:
                         await model.update_incident(
@@ -813,7 +835,7 @@ class StoppedFlightMonitor(commands.Cog):
                 expected_lifecycle="available",
             )
 
-    async def _send_eta_warning(self, row, if_user_ids, eta, attempt_number):
+    async def _send_eta_warning(self, row, if_user_ids, eta):
         sent_any = False
         delivered_recipients = []
         failed_recipients = []
@@ -874,8 +896,7 @@ class StoppedFlightMonitor(commands.Cog):
         if delivered_recipients or failed_recipients:
             await self._send_dm_recipient_report(
                 row,
-                f"30-minute arrival warning · attempt {attempt_number}/"
-                f"{MAX_ETA_WARNING_ATTEMPTS}",
+                "30-minute arrival warning",
                 delivered_recipients,
                 failed_recipients=failed_recipients,
             )
@@ -1004,30 +1025,15 @@ class StoppedFlightMonitor(commands.Cog):
             user = self.bot.get_user(int(discord_id))
             if user is None:
                 user = await self.bot.fetch_user(int(discord_id))
-            message = None
-            for attempt in range(2):
-                try:
-                    message = await user.send(
-                        f"⚠️ Your assignment on "
-                        f"**{row['registration']} · {row['callsign']}** "
-                        f"({row['origin_icao']} → {row['destination_icao']}) was "
-                        "removed because the aircraft remained stopped in the air "
-                        "for one hour. Do not request this stopped route again. "
-                        "You may fly this aircraft after this flight is complete "
-                        "and a Live Admin adds new routes."
-                    )
-                    break
-                except (discord.Forbidden, discord.HTTPException):
-                    if attempt == 0:
-                        log.warning(
-                            "Stopped-flight crew notice DM failed for IF user %s; "
-                            "retrying once in five minutes.",
-                            if_user_id,
-                            exc_info=True,
-                        )
-                        await asyncio.sleep(5 * 60)
-                        continue
-                    raise
+            message = await user.send(
+                f"⚠️ Your assignment on "
+                f"**{row['registration']} · {row['callsign']}** "
+                f"({row['origin_icao']} → {row['destination_icao']}) was "
+                "removed because the aircraft remained stopped in the air "
+                "for one hour. Do not request this stopped route again. "
+                "You may fly this aircraft after this flight is complete "
+                "and a Live Admin adds new routes."
+            )
             await self._record_dm_event_safely(
                 model,
                 schedule_id=row["schedule_id"],
@@ -1040,13 +1046,13 @@ class StoppedFlightMonitor(commands.Cog):
             return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
         except (discord.Forbidden, discord.HTTPException):
             log.exception(
-                "Stopped-flight crew notice DM failed after two attempts for "
+                "Stopped-flight crew notice DM failed after one attempt for "
                 "IF user %s.",
                 if_user_id,
             )
             failed_recipients.append(
                 f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'}) "
-                "could not be DM'd after two attempts five minutes apart."
+                "could not be DM'd; Discord rejected the message."
             )
         except Exception:
             log.exception(
@@ -1197,9 +1203,6 @@ class StoppedFlightMonitor(commands.Cog):
         selected = candidates
         delivered_recipients = []
         failed_recipients = []
-        retry_candidates = []
-        retry_succeeded = 0
-        retry_failed = 0
         for candidate in selected:
             try:
                 incident_state = await model.get_incident_state(row["schedule_id"])
@@ -1275,7 +1278,6 @@ class StoppedFlightMonitor(commands.Cog):
                     f"<@{member.id}> ({candidate['pilot'].get('callsign') or 'Pilot'}) "
                     "could not be DM'd; Discord rejected the message."
                 )
-                retry_candidates.append(candidate)
                 await self._record_dm_event_safely(
                     model,
                     schedule_id=row["schedule_id"],
@@ -1297,79 +1299,16 @@ class StoppedFlightMonitor(commands.Cog):
                     f"<@{member.id}> "
                     f"({candidate['pilot'].get('callsign') or 'Pilot'})."
                 )
-                retry_candidates.append(candidate)
-            await asyncio.sleep(0.5)
-        if retry_candidates:
-            for index, candidate in enumerate(retry_candidates):
-                try:
-                    incident_state = await model.get_incident_state(
-                        row["schedule_id"]
-                    )
-                except Exception:
-                    log.exception(
-                        "Could not verify recovery status before retrying DMs for %s",
-                        row["schedule_id"],
-                    )
-                    incident_state = None
-                if not incident_state or incident_state["lifecycle"] != "available":
-                    retry_failed += len(retry_candidates) - index
-                    failed_recipients.append(
-                        "Remaining failed DM retries were skipped because the "
-                        "recovery flight was claimed or its status could not be "
-                        "verified."
-                    )
-                    break
-
-                member = candidate["member"]
-                recipient = (
-                    f"<@{member.id}> "
-                    f"({candidate['pilot'].get('callsign') or 'Pilot'})"
+                await self._record_dm_event_safely(
+                    model,
+                    schedule_id=row["schedule_id"],
+                    if_user_id=candidate["if_user_id"],
+                    discord_user_id=str(member.id),
+                    wave=wave,
+                    flight_count_7d=candidate["flight_count"],
+                    delivery_status="failed",
                 )
-                try:
-                    message = await member.send(
-                        f"🚨 **Stopped flight available now**\n"
-                        f"**{row['registration']} · {row['callsign']}**\n"
-                        f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
-                        "The aircraft has been stopped in the air for at least one "
-                        "hour and the previous crew was removed. Claiming this recovery "
-                        "flight does **not** count toward your normal two-aircraft "
-                        "booking limit.",
-                        view=self._claim_view(str(row["schedule_id"])),
-                    )
-                    delivered_recipients.append(recipient)
-                    retry_succeeded += 1
-                    failed_recipients = [
-                        item for item in failed_recipients if recipient not in item
-                    ]
-                    await self._record_dm_event_safely(
-                        model,
-                        schedule_id=row["schedule_id"],
-                        if_user_id=candidate["if_user_id"],
-                        discord_user_id=str(member.id),
-                        wave=wave,
-                        flight_count_7d=candidate["flight_count"],
-                        channel_id=str(message.channel.id),
-                        message_id=str(message.id),
-                        delivery_status="delivered",
-                    )
-                except (discord.Forbidden, discord.HTTPException):
-                    retry_failed += 1
-                    log.warning(
-                        "Stopped-flight recovery DM retry failed for pilot %s "
-                        "and schedule %s; stopping after the second attempt.",
-                        member.id,
-                        row["schedule_id"],
-                        exc_info=True,
-                    )
-                except Exception:
-                    retry_failed += 1
-                    log.exception(
-                        "Unexpected error retrying stopped-flight DM for "
-                        "pilot %s and schedule %s; stopping after the second attempt.",
-                        member.id,
-                        row["schedule_id"],
-                    )
-                await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)
         wave_labels = {
             1: "1-hour recovery alert",
             2: "2-hour follow-up",
@@ -1385,12 +1324,6 @@ class StoppedFlightMonitor(commands.Cog):
                 f"{len(selected)} eligible pilots selected."
             )
         ]
-        if retry_candidates:
-            diagnostic_notes.append(
-                f"Failed DMs were retried once after five minutes: "
-                f"{retry_succeeded} recovered, {retry_failed} still failed or "
-                "were skipped; no further retries will be made in this wave."
-            )
         await self._send_dm_recipient_report(
             row,
             wave_labels.get(wave, f"Wave {wave}"),
@@ -1419,7 +1352,7 @@ class StoppedFlightMonitor(commands.Cog):
         sections = [recipient_list]
         if failed_recipients:
             sections.append(
-                "**Not delivered / follow-up needed:**\n"
+                "**Not delivered:**\n"
                 + "\n".join(f"• {item}" for item in failed_recipients)
             )
         await post_dm_report(

@@ -16,12 +16,6 @@ class RouteReadyDatabase:
         ]
 
     async def fetch_all(self, query, args=None):
-        if "FROM if_route_ready_dm_events" in query:
-            return [
-                {"arrival_schedule_id": event["arrival_schedule_id"]}
-                for event in self.events.values()
-                if event["delivery_status"] == "failed"
-            ]
         return self.states
 
     async def fetch_one(self, query, args=None):
@@ -32,7 +26,6 @@ class RouteReadyDatabase:
             event_key, arrived_id, next_id, if_user_id, discord_id, status = args
             self.events[event_key] = {
                 "delivery_status": status,
-                "retry_pending": False,
                 "arrival_schedule_id": arrived_id,
                 "next_schedule_id": next_id,
                 "if_user_id": if_user_id,
@@ -61,25 +54,20 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
             "crew": [{"userId": "if-pilot"}],
         }
 
-    def test_candidates_include_arrival_with_a_failed_delivery(self):
+    def test_arrival_is_not_selected_again_after_failed_delivery(self):
         candidates = _arrival_candidates(
             [self.arrived, self.next_route],
             {"arrived": 11},
-            {"arrived"},
         )
 
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0][0], "aircraft")
+        self.assertEqual(candidates, [])
 
-    async def test_failed_route_ready_dm_is_reported_retried_and_not_resent(self):
+    async def test_failed_route_ready_dm_is_reported_and_not_retried(self):
         channel = MagicMock()
         channel.send = AsyncMock()
         user = MagicMock()
         user.send = AsyncMock(
-            side_effect=[
-                discord.Forbidden(MagicMock(), "DM disabled"),
-                MagicMock(),
-            ]
+            side_effect=discord.Forbidden(MagicMock(), "DM disabled")
         )
         bot = MagicMock()
         bot.get_channel.return_value = channel
@@ -109,11 +97,11 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
                 {"aircraft": "A7QRV"},
             )
 
-        self.assertEqual(user.send.await_count, 2)
-        self.assertGreaterEqual(channel.send.await_count, 2)
+        self.assertEqual(user.send.await_count, 1)
+        self.assertEqual(channel.send.await_count, 1)
         self.assertTrue(
             any(
-                "Not delivered / follow-up needed" in str(call.args[0])
+                "**Not delivered:**" in str(call.args[0])
                 for call in channel.send.await_args_list
                 if call.args
             )
@@ -124,6 +112,10 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
                 for call in channel.send.await_args_list
                 if call.args
             )
+        )
+        self.assertNotIn(
+            "retry",
+            str(channel.send.await_args.args[0]).casefold(),
         )
 
     async def test_dm_report_helper_posts_to_configured_staff_channel(self):

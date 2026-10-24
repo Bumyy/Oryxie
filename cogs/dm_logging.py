@@ -1,7 +1,20 @@
+import logging
+import os
+
 import discord
 
 
-DM_LOG_CHANNEL_ID = 1562428318043602965
+log = logging.getLogger(__name__)
+_configured_channel_id = os.getenv("STOPPED_FLIGHT_DM_LOG_CHANNEL_ID", "").strip()
+if _configured_channel_id and (
+    not _configured_channel_id.isdigit() or int(_configured_channel_id) <= 0
+):
+    log.error(
+        "STOPPED_FLIGHT_DM_LOG_CHANNEL_ID must be a positive numeric channel ID."
+    )
+    _configured_channel_id = ""
+
+DM_LOG_CHANNEL_ID = int(_configured_channel_id or "1562428318043602965")
 
 
 async def post_dm_report(bot, content, logger, context):
