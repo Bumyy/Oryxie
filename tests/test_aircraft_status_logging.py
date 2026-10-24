@@ -189,6 +189,17 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             "by <@123456789> (QRV004)",
         )
 
+    def test_parked_status_does_not_repeat_the_at_prefix(self):
+        self.assertEqual(
+            _status_log_line(
+                "A7ADS",
+                "PARKED AT ORNI",
+                None,
+                {"discordid": "123456789", "callsign": "QRV100"},
+            ),
+            "• **A7ADS** — Parked at ORNI by <@123456789> (QRV100)",
+        )
+
     async def test_unchanged_status_does_not_post_again(self):
         channel = MagicMock()
         channel.send = AsyncMock()

@@ -46,7 +46,7 @@ IN_FLIGHT_SCHEDULE_STATUS = 6
 MAX_ETA_WARNING_ATTEMPTS = 1
 FLIGHT_HISTORY_DAYS = 3
 DEMAND_HISTORY_DAYS = 7
-HIGH_DEMAND_FLIGHT_THRESHOLD = 3
+MAX_DEMAND_COUNT_BEFORE_CAPPING = 11
 MAX_DEMAND_HISTORY_PAGES = 5
 FLIGHT_HISTORY_PAGE_SIZE = 25
 MAX_FLIGHT_HISTORY_PAGES = 20
@@ -325,9 +325,12 @@ def _status_log_line(registration, status_text, schedule, pilot):
     elif status == "ENROUTE":
         description = "Enroute"
     elif status == "PARKED":
-        description = f"Parked{f' at {location}' if location.startswith('AT ') else ''}"
-        if location.startswith("·"):
+        if location.startswith("AT "):
+            description = f"Parked at {location[3:].strip()}"
+        elif location.startswith("·"):
             description = "Parked · Location unknown"
+        else:
+            description = "Parked"
     elif status_text.startswith("STOPPED IN AIR"):
         description = "Stopped in air"
     else:
@@ -349,6 +352,16 @@ def _status_log_line(registration, status_text, schedule, pilot):
             description += f" by {callsign}"
 
     return f"• **{registration}** — {description}"
+
+
+def _demand_level(flight_count):
+    if flight_count <= 3:
+        return "Low"
+    if flight_count <= 5:
+        return "Medium"
+    if flight_count <= 8:
+        return "High"
+    return "Very High"
 
 
 def _recent_schedule_flight_count(schedules, cutoff):
@@ -532,14 +545,15 @@ class StoppedFlightMonitor(commands.Cog):
                     if recent_flights is None:
                         demand_label = "Demand unknown"
                     else:
-                        demand_level = (
-                            "High"
-                            if recent_flights >= HIGH_DEMAND_FLIGHT_THRESHOLD
-                            else "Low"
-                        )
+                        demand_level = _demand_level(recent_flights)
                         flight_word = "flight" if recent_flights == 1 else "flights"
+                        flight_count_label = (
+                            "11+"
+                            if recent_flights >= MAX_DEMAND_COUNT_BEFORE_CAPPING
+                            else str(recent_flights)
+                        )
                         demand_label = (
-                            f"{demand_level} Demand · {recent_flights} "
+                            f"{demand_level} Demand · {flight_count_label} "
                             f"{flight_word} in 7 days"
                         )
                 except Exception:
@@ -615,15 +629,15 @@ class StoppedFlightMonitor(commands.Cog):
                         older_flight_found = True
                         continue
                     count += 1
-                    if count >= HIGH_DEMAND_FLIGHT_THRESHOLD:
-                        return count
+                    if count >= MAX_DEMAND_COUNT_BEFORE_CAPPING:
+                        return MAX_DEMAND_COUNT_BEFORE_CAPPING
 
                 if older_flight_found or page_number >= int(
                     _get(page, "total_pages", 0) or 0
                 ):
                     if (
                         unparseable_flight_found
-                        and count < HIGH_DEMAND_FLIGHT_THRESHOLD
+                        and count < MAX_DEMAND_COUNT_BEFORE_CAPPING
                     ):
                         raise RuntimeError(
                             f"Could not determine whether all flights occurred within "
