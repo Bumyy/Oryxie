@@ -54,6 +54,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         cog = StoppedFlightMonitor.__new__(StoppedFlightMonitor)
         cog.bot = bot
         cog._warned_status_logging_disabled = False
+        cog._status_log_initialized = True
         return cog, bot
 
     def test_in_flight_status_includes_destination(self):
@@ -145,11 +146,12 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             [("aircraft-1", "A7QRV", "ENROUTE OTHH → EGLL by QRV004")],
         )
 
-    async def test_initial_status_poll_silently_sets_a_baseline(self):
+    async def test_startup_poll_silently_replaces_stale_status_baseline(self):
         channel = MagicMock()
         channel.send = AsyncMock()
         cog, _ = self.make_cog(channel)
-        model = AircraftStatusModel({})
+        cog._status_log_initialized = False
+        model = AircraftStatusModel({"aircraft-1": "PARKED AT OLD AIRPORT"})
         client = MagicMock()
         client.get_aircraft_position = AsyncMock(return_value=self.position)
 
@@ -169,6 +171,11 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             model.statuses["aircraft-1"],
             "ENROUTE OTHH → EGLL by QRV004",
         )
+        self.assertEqual(
+            model.updates,
+            [("aircraft-1", "A7QRV", "ENROUTE OTHH → EGLL by QRV004")],
+        )
+        self.assertTrue(cog._status_log_initialized)
 
     def test_status_line_uses_route_and_pilot_mention_not_flight_number(self):
         landed_flight = {

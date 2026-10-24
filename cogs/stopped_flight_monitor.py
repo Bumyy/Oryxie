@@ -462,6 +462,7 @@ class StoppedFlightMonitor(commands.Cog):
         self._activity_cache = {}
         self._warned_status_logging_disabled = False
         self._warned_route_exhaustion_role_disabled = False
+        self._status_log_initialized = False
         self.monitor_stopped_flights.start()
 
     def cog_unload(self):
@@ -745,6 +746,11 @@ class StoppedFlightMonitor(commands.Cog):
         previous_statuses = await model.get_aircraft_statuses()
         current_statuses = {}
         positions = {}
+        expected_aircraft_ids = {
+            str(_get(aircraft, "id") or "")
+            for aircraft in fleet or []
+            if _get(aircraft, "id")
+        }
         for aircraft in fleet or []:
             aircraft_id = str(_get(aircraft, "id") or "")
             if not aircraft_id:
@@ -770,6 +776,29 @@ class StoppedFlightMonitor(commands.Cog):
                     previous_status=previous_statuses.get(aircraft_id),
                 ),
             )
+
+        if not getattr(self, "_status_log_initialized", False):
+            for aircraft_id, (registration, status_text) in current_statuses.items():
+                await model.set_aircraft_status(
+                    aircraft_id,
+                    registration,
+                    status_text,
+                )
+            if expected_aircraft_ids.issubset(current_statuses):
+                self._status_log_initialized = True
+                log.info(
+                    "Established the initial aircraft status baseline for %s aircraft; "
+                    "startup status messages were suppressed.",
+                    len(current_statuses),
+                )
+            else:
+                log.warning(
+                    "Aircraft status baseline is incomplete (%s of %s positions); "
+                    "status notifications remain suppressed until a complete poll.",
+                    len(current_statuses),
+                    len(expected_aircraft_ids),
+                )
+            return positions
 
         initial_statuses = [
             (aircraft_id, registration, status_text)
