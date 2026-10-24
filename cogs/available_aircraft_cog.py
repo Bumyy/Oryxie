@@ -112,18 +112,12 @@ def _aircraft_category(aircraft):
     registration = str(
         _get(aircraft, "registration", "") or ""
     ).strip().upper()
-
     if is_cargo_registration(registration):
         return "Cargo"
 
-    if registration in RETIRED_REGISTRATIONS:
-        return "Retired"
+    model = _aircraft_model(aircraft).lower().replace(" ", "")
 
-    # Use the manually maintained aircraft list only.
-    model = AIRCRAFT_MODELS.get(registration, "")
-    model = model.upper().replace(" ", "").replace("-", "")
-
-    if model.startswith("A") and len(model) > 1 and model[1].isdigit():
+    if model.startswith("a") and len(model) > 1 and model[1].isdigit():
         return "Airbus"
 
     if model.startswith(
