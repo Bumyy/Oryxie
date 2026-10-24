@@ -1089,7 +1089,7 @@ class StoppedFlightMonitor(commands.Cog):
         if elapsed >= timedelta(hours=2) and not row["two_hour_sent"]:
             wave_sent = True
             try:
-                await self._send_pilot_wave(model, row, wave=2)
+                wave_sent = await self._send_pilot_wave(model, row, wave=2)
             except Exception as exc:
                 wave_sent = False
                 log.exception(
@@ -1114,7 +1114,7 @@ class StoppedFlightMonitor(commands.Cog):
         if elapsed >= timedelta(hours=3) and not row["three_hour_sent"]:
             wave_sent = True
             try:
-                await self._send_pilot_wave(model, row, wave=3)
+                wave_sent = await self._send_pilot_wave(model, row, wave=3)
             except Exception as exc:
                 wave_sent = False
                 log.exception(
@@ -1175,7 +1175,7 @@ class StoppedFlightMonitor(commands.Cog):
                 if user is None:
                     user = await self.bot.fetch_user(int(discord_id))
                 await user.send(
-                    f"🛬 **{row['callsign']} is within about 30 minutes of "
+                    f"🛬 **{row['registration']} is within about 30 minutes of "
                     f"{row['destination_icao']}** (estimated {max(1, round(eta))} min). "
                     "If the aircraft is stopped in the air, it will be unassigned "
                     "after one hour stopped."
@@ -1670,19 +1670,27 @@ class StoppedFlightMonitor(commands.Cog):
             if examples:
                 detail += f" (e.g. {examples})"
             diagnostic_notes.append(detail + ".")
-        await self._send_dm_recipient_report(
+        report_posted = await self._send_dm_recipient_report(
             row,
             wave_labels.get(wave, f"Wave {wave}"),
             delivered_recipients,
             failed_recipients=failed_recipients,
             notes=diagnostic_notes,
         )
+        if not report_posted:
+            log.error(
+                "Staff report for stopped-flight wave %s on schedule %s "
+                "could not be posted; the wave will be retried.",
+                wave,
+                row["schedule_id"],
+            )
         log.info(
             "Stopped-flight wave %s for schedule %s sent to %s eligible pilots.",
             wave,
             row["schedule_id"],
             len(delivered_recipients),
         )
+        return report_posted
 
     async def _send_dm_recipient_report(
         self,
@@ -1706,7 +1714,7 @@ class StoppedFlightMonitor(commands.Cog):
                 "**Selection / delivery notes:**\n"
                 + "\n".join(f"• {item}" for item in notes)
             )
-        await post_dm_report(
+        return await post_dm_report(
             self.bot,
             (
                 f"📨 **Stopped-flight DM report · {event_label}**\n"

@@ -346,6 +346,59 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Liam_Edris (QRV042)", report_content)
         self.assertIn("3-day activity window", report_content)
 
+    async def test_eta_warning_uses_aircraft_registration_not_flight_number(self):
+        cog, bot = self.make_cog(MagicMock())
+        user = MagicMock()
+        user.send = AsyncMock()
+        bot.get_user.return_value = user
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "XXX1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+
+        with patch(
+            "cogs.stopped_flight_monitor.post_dm_report",
+            new_callable=AsyncMock,
+        ):
+            sent = await cog._send_eta_warning(row, ["if-user-1"], 25)
+
+        self.assertTrue(sent)
+        message = user.send.await_args.args[0]
+        self.assertIn("A7BAB is within about 30 minutes of OTHH", message)
+        self.assertNotIn("XXX1302", message)
+
+    async def test_recovery_wave_returns_false_when_staff_report_fails(self):
+        cog, bot = self.make_cog(MagicMock())
+        cog._activity_cache = {}
+        role = MagicMock()
+        role.members = []
+        guild = MagicMock()
+        guild.get_role.return_value = role
+        bot.get_guild.return_value = guild
+        model = MagicMock()
+        model.get_dm_events = AsyncMock(return_value=[])
+        model.get_active_pilots = AsyncMock(return_value=[])
+        report_poster = AsyncMock(return_value=False)
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "XXX1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+
+        with patch(
+            "cogs.stopped_flight_monitor.post_dm_report",
+            report_poster,
+        ):
+            report_posted = await cog._send_pilot_wave(model, row, wave=2)
+
+        self.assertFalse(report_posted)
+        report_poster.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()
