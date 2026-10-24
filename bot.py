@@ -35,6 +35,7 @@ from services.checklist_pdf_service import ChecklistPDFService
 from services.simbrief_service import SimBriefService
 from services.flight_board_service import FlightBoardService
 from services.pirep_filing_service import PirepFilingService
+from services.fleet_service import FleetService
 
 load_dotenv()
 
@@ -80,6 +81,7 @@ class MyBot(commands.Bot):
         self.simbrief_service: SimBriefService = None
         self.flight_board_service: FlightBoardService = None
         self.pirep_filing_service: PirepFilingService = None
+        self.fleet_service: FleetService = None
 
     async def setup_hook(self):
         """
@@ -115,6 +117,7 @@ class MyBot(commands.Bot):
         self.simbrief_service = SimBriefService()
         self.flight_board_service = FlightBoardService(self)
         self.pirep_filing_service = PirepFilingService(self)
+        self.fleet_service = FleetService(self)
         self.auto_pirep_service = None  # Lazy loaded in cog
         print("DatabaseManager, FlightData, and Services instances created.")
         

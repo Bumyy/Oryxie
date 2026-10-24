@@ -230,6 +230,18 @@ class AircraftModel:
         query = "SELECT * FROM aircraft WHERE ifaircraftid = %s"
         return await self.db.fetch_one(query, (if_aircraft_id,))
     
+    async def get_aircraft_by_if_any_id(self, if_id: str) -> Optional[Dict]:
+        """
+        Get aircraft by matching an IF content identifier against either
+        the ifaircraftid or ifliveryid column.
+        """
+        query = (
+            "SELECT * FROM aircraft "
+            "WHERE (ifaircraftid = %s OR ifliveryid = %s) AND status = 1 "
+            "LIMIT 1"
+        )
+        return await self.db.fetch_one(query, (if_id, if_id))
+
     async def get_aircraft_by_if_ids(self, if_aircraft_id: str, if_livery_id: str) -> Optional[Dict]:
         """
         Get aircraft details by BOTH Infinite Flight aircraft UUID AND livery UUID.
