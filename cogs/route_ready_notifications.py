@@ -54,7 +54,14 @@ def _crew_user_ids(schedule):
     return user_ids
 
 
-def _arrival_candidates(schedules, observed_statuses):
+def _arrival_candidates(
+    schedules,
+    observed_statuses,
+    retryable_arrival_ids=None,
+):
+    retryable_arrival_ids = {
+        str(schedule_id) for schedule_id in retryable_arrival_ids or ()
+    }
     by_aircraft = {}
     for schedule in schedules:
         aircraft_id = str(_get(schedule, "aircraft_id", "") or "")
@@ -69,7 +76,10 @@ def _arrival_candidates(schedules, observed_statuses):
             if (
                 not route_id
                 or _status(arrived) != ARRIVED_STATUS
-                or observed_statuses.get(route_id) == ARRIVED_STATUS
+                or (
+                    observed_statuses.get(route_id) == ARRIVED_STATUS
+                    and route_id not in retryable_arrival_ids
+                )
             ):
                 continue
 
@@ -199,6 +209,15 @@ class RouteReadyNotifications(commands.Cog):
             str(row["schedule_id"]): int(row["last_status"])
             for row in state_rows or []
         }
+        failed_event_rows = await db.fetch_all(
+            "SELECT DISTINCT arrival_schedule_id "
+            "FROM if_route_ready_dm_events "
+            "WHERE delivery_status IN ('failed', 'failed_final')"
+        )
+        retryable_arrival_ids = {
+            str(row["arrival_schedule_id"])
+            for row in failed_event_rows or []
+        }
         schedules_by_id = {
             str(_get(schedule, "id")): schedule
             for schedule in schedules
@@ -234,7 +253,11 @@ class RouteReadyNotifications(commands.Cog):
                     (route_id, current_status),
                 )
 
-        candidates = _arrival_candidates(schedules, observed_statuses)
+        candidates = _arrival_candidates(
+            schedules,
+            observed_statuses,
+            retryable_arrival_ids,
+        )
         positions = {}
         for aircraft_id, arrived, next_route, if_user_ids in candidates:
             position = positions.get(aircraft_id)
@@ -263,6 +286,7 @@ class RouteReadyNotifications(commands.Cog):
             takeoff_window_hours = 6 if airport in hubs else 12
             airport_type = "hub" if airport in hubs else "non-hub"
             attempted_delivery = False
+            retry_pending = False
             delivered_recipients = []
             failed_recipients = []
 
@@ -273,15 +297,42 @@ class RouteReadyNotifications(commands.Cog):
                     if_user_id,
                 )
                 existing_event = await db.fetch_one(
-                    "SELECT delivery_status FROM if_route_ready_dm_events "
+                    "SELECT delivery_status, discord_user_id "
+                    "FROM if_route_ready_dm_events "
                     "WHERE event_key = %s",
                     (event_key,),
                 )
                 if existing_event:
-                    attempted_delivery = True
-                    continue
+                    existing_status = existing_event.get("delivery_status")
+                    if existing_status == "delivered":
+                        discord_user_id = str(
+                            existing_event.get("discord_user_id") or ""
+                        )
+                        delivered_recipients.append(
+                            f"<@{discord_user_id}>" if discord_user_id else
+                            f"IF user `{if_user_id}`"
+                        )
+                        attempted_delivery = True
+                        continue
+                    if existing_status == "failed_final":
+                        discord_user_id = str(
+                            existing_event.get("discord_user_id") or ""
+                        )
+                        failed_recipients.append(
+                            f"<@{discord_user_id}>: prior DM attempts failed."
+                            if discord_user_id
+                            else f"IF user `{if_user_id}`: prior DM attempts failed."
+                        )
+                        attempted_delivery = True
+                        continue
+                    if existing_status != "failed":
+                        attempted_delivery = True
+                        continue
+                    is_retry = True
+                else:
+                    is_retry = False
 
-                delivery_status = "failed"
+                delivery_status = "failed_final" if is_retry else "failed"
                 discord_user_id = ""
                 try:
                     pilot = await pilots_model.get_pilot_by_ifuserid(if_user_id)
@@ -295,7 +346,6 @@ class RouteReadyNotifications(commands.Cog):
                     failed_recipients.append(
                         f"IF user `{if_user_id}`: pilot lookup failed."
                     )
-                    attempted_delivery = True
                 else:
                     discord_user_id = str(
                         (pilot or {}).get("discordid") or ""
@@ -310,7 +360,6 @@ class RouteReadyNotifications(commands.Cog):
                         failed_recipients.append(
                             f"IF user `{if_user_id}`: no valid Discord account is linked."
                         )
-                        attempted_delivery = True
                     else:
                         try:
                             user = self.bot.get_user(int(discord_user_id))
@@ -400,10 +449,14 @@ class RouteReadyNotifications(commands.Cog):
                         if_user_id,
                         next_schedule_id,
                     )
-                attempted_delivery = True
+                if delivery_status == "failed":
+                    retry_pending = True
+                else:
+                    attempted_delivery = True
 
+            report_posted = True
             if delivered_recipients or failed_recipients:
-                await self._send_dm_recipient_report(
+                report_posted = await self._send_dm_recipient_report(
                     registration=registration,
                     callsign=next_callsign,
                     origin=airport,
@@ -413,7 +466,18 @@ class RouteReadyNotifications(commands.Cog):
                     failed_recipients=failed_recipients,
                 )
 
-            if attempted_delivery:
+            if report_posted and failed_recipients:
+                await db.execute(
+                    """
+                    UPDATE if_route_ready_dm_events
+                    SET delivery_status = 'failed_reported'
+                    WHERE arrival_schedule_id = %s
+                      AND delivery_status = 'failed_final'
+                    """,
+                    (arrived_schedule_id,),
+                )
+
+            if attempted_delivery and not retry_pending and report_posted:
                 await db.execute(
                     """
                     INSERT INTO if_route_ready_schedule_state
@@ -448,7 +512,7 @@ class RouteReadyNotifications(commands.Cog):
                 + "\n".join(f"• {recipient}" for recipient in failed_recipients)
             )
 
-        await post_dm_report(
+        return await post_dm_report(
             self.bot,
             (
                 f"📨 **Route-ready DM report**\n"

@@ -16,6 +16,12 @@ class RouteReadyDatabase:
         ]
 
     async def fetch_all(self, query, args=None):
+        if "delivery_status IN ('failed', 'failed_final')" in query:
+            return [
+                {"arrival_schedule_id": event["arrival_schedule_id"]}
+                for event in self.events.values()
+                if event["delivery_status"] in {"failed", "failed_final"}
+            ]
         return self.states
 
     async def fetch_one(self, query, args=None):
@@ -31,6 +37,19 @@ class RouteReadyDatabase:
                 "if_user_id": if_user_id,
                 "discord_user_id": discord_id,
             }
+        elif "INSERT INTO if_route_ready_schedule_state" in query:
+            schedule_id, last_status = args
+            for row in self.states:
+                if row["schedule_id"] == schedule_id:
+                    row["last_status"] = last_status
+        elif "SET delivery_status = 'failed_reported'" in query:
+            arrival_id = args[0]
+            for event in self.events.values():
+                if (
+                    event["arrival_schedule_id"] == arrival_id
+                    and event["delivery_status"] == "failed_final"
+                ):
+                    event["delivery_status"] = "failed_reported"
         return 1
 
 
@@ -62,7 +81,7 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(candidates, [])
 
-    async def test_failed_route_ready_dm_is_reported_and_not_retried(self):
+    async def test_failed_route_ready_dm_gets_one_retry_then_stops(self):
         channel = MagicMock()
         channel.send = AsyncMock()
         user = MagicMock()
@@ -97,8 +116,8 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
                 {"aircraft": "A7QRV"},
             )
 
-        self.assertEqual(user.send.await_count, 1)
-        self.assertEqual(channel.send.await_count, 1)
+        self.assertEqual(user.send.await_count, 2)
+        self.assertEqual(channel.send.await_count, 2)
         self.assertTrue(
             any(
                 "**Not delivered:**" in str(call.args[0])
@@ -113,9 +132,95 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
                 if call.args
             )
         )
-        self.assertNotIn(
-            "retry",
-            str(channel.send.await_args.args[0]).casefold(),
+        self.assertEqual(
+            db.events[next(iter(db.events))]["delivery_status"],
+            "failed_reported",
+        )
+
+    async def test_route_ready_dm_retry_can_recover_transient_failure(self):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        user = MagicMock()
+        user.send = AsyncMock(
+            side_effect=[
+                discord.HTTPException(MagicMock(), "Temporary failure"),
+                MagicMock(),
+            ]
+        )
+        bot = MagicMock()
+        bot.get_channel.return_value = channel
+        bot.get_user.return_value = user
+        bot.pilots_model = MagicMock()
+        bot.pilots_model.get_pilot_by_ifuserid = AsyncMock(
+            return_value={"discordid": "12345", "callsign": "QRV123"}
+        )
+
+        cog = RouteReadyNotifications.__new__(RouteReadyNotifications)
+        cog.bot = bot
+        db = RouteReadyDatabase()
+        client = MagicMock()
+        client.get_aircraft_position = AsyncMock(
+            return_value={"is_on_ground": True}
+        )
+        schedules = [self.arrived, self.next_route]
+
+        for _ in range(3):
+            await cog._process_schedules(
+                client,
+                db,
+                bot.pilots_model,
+                schedules,
+                {"aircraft": "A7QRV"},
+            )
+
+        self.assertEqual(user.send.await_count, 2)
+        self.assertEqual(channel.send.await_count, 2)
+        self.assertEqual(
+            db.events[next(iter(db.events))]["delivery_status"],
+            "delivered",
+        )
+
+    async def test_route_ready_report_retries_without_duplicating_delivered_dm(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(
+            side_effect=[
+                discord.Forbidden(MagicMock(), "Missing permissions"),
+                MagicMock(),
+            ]
+        )
+        user = MagicMock()
+        user.send = AsyncMock()
+        bot = MagicMock()
+        bot.get_channel.return_value = channel
+        bot.get_user.return_value = user
+        bot.pilots_model = MagicMock()
+        bot.pilots_model.get_pilot_by_ifuserid = AsyncMock(
+            return_value={"discordid": "12345", "callsign": "QRV123"}
+        )
+
+        cog = RouteReadyNotifications.__new__(RouteReadyNotifications)
+        cog.bot = bot
+        db = RouteReadyDatabase()
+        client = MagicMock()
+        client.get_aircraft_position = AsyncMock(
+            return_value={"is_on_ground": True}
+        )
+        schedules = [self.arrived, self.next_route]
+
+        for _ in range(3):
+            await cog._process_schedules(
+                client,
+                db,
+                bot.pilots_model,
+                schedules,
+                {"aircraft": "A7QRV"},
+            )
+
+        self.assertEqual(user.send.await_count, 1)
+        self.assertEqual(channel.send.await_count, 2)
+        self.assertEqual(
+            db.events[next(iter(db.events))]["delivery_status"],
+            "delivered",
         )
 
     async def test_dm_report_helper_posts_to_configured_staff_channel(self):

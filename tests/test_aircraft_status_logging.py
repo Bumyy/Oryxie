@@ -243,6 +243,49 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             "by <@123456789> (QRV136)",
         )
 
+    def test_landing_at_airport_other_than_destination_is_marked_diverted(self):
+        bot = MagicMock()
+        bot.flightdata.airports_db = {
+            "EGCC": {"latitude_deg": 0, "longitude_deg": 0},
+        }
+        position = {
+            "state": 1,
+            "is_on_ground": True,
+            "latitude": 0,
+            "longitude": 0,
+        }
+        route = {
+            "status": 6,
+            "sequence": 1,
+            "origin_icao": "OTHH",
+            "destination_icao": "YPPH",
+            "callsign": "QRV226",
+        }
+        previous_status = "ENROUTE OTHH → YPPH by QRV226"
+
+        landed_status = _aircraft_status_text(
+            bot,
+            position,
+            [route],
+            previous_status=previous_status,
+        )
+        line = _status_log_line(
+            "A7BAF",
+            landed_status,
+            route,
+            {"discordid": "123456789", "callsign": "QRV226"},
+        )
+
+        self.assertEqual(
+            landed_status,
+            "LANDED AT EGCC (DIVERTED) · OTHH → YPPH by QRV226",
+        )
+        self.assertEqual(
+            line,
+            "• **A7BAF** — Landed at EGCC (DIVERTED), Route: "
+            "OTHH -> YPPH by <@123456789> (QRV226)",
+        )
+
     def test_parked_status_does_not_repeat_the_at_prefix(self):
         for status_text in ("PARKED AT ORNI", "PARKED AT AT KSFO"):
             with self.subTest(status_text=status_text):
@@ -370,6 +413,69 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         message = user.send.await_args.args[0]
         self.assertIn("A7BAB is within about 30 minutes of OTHH", message)
         self.assertNotIn("XXX1302", message)
+
+    async def test_eta_warning_attempt_does_not_abort_schedule_processing(self):
+        cog, bot = self.make_cog(MagicMock())
+        row = {
+            "schedule_id": "schedule-1",
+            "aircraft_id": "aircraft-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "original_crew_json": '["if-user-1"]',
+            "stopped_since": None,
+            "lifecycle": "monitoring",
+            "eta_warning_sent": False,
+            "eta_warning_attempts": 1,
+            "one_hour_sent": False,
+            "two_hour_sent": False,
+            "three_hour_sent": False,
+            "four_hour_sent": False,
+        }
+        model = MagicMock()
+        model.get_incident = AsyncMock(return_value=row)
+        model.update_incident = AsyncMock()
+        model.try_start_eta_warning_attempt = AsyncMock(return_value=True)
+        client = MagicMock()
+        cog._send_eta_warning = AsyncMock(return_value=True)
+        schedule = {
+            "id": "schedule-1",
+            "aircraft_id": "aircraft-1",
+            "status": 6,
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "crew": [{"userId": "if-user-1"}],
+        }
+        position = {
+            "state": 2,
+            "is_on_ground": False,
+        }
+
+        with patch(
+            "cogs.stopped_flight_monitor._eta_minutes",
+            return_value=25,
+        ):
+            await cog._process_schedule(
+                client,
+                model,
+                schedule,
+                position,
+                "A7BAB",
+            )
+
+        cog._send_eta_warning.assert_awaited_once_with(
+            row,
+            ["if-user-1"],
+            25,
+        )
+        self.assertTrue(
+            any(
+                call.args[1] == {"eta_warning_sent": 1}
+                for call in model.update_incident.await_args_list
+            )
+        )
 
     async def test_recovery_wave_returns_false_when_staff_report_fails(self):
         cog, bot = self.make_cog(MagicMock())

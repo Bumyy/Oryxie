@@ -273,7 +273,15 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
                 if value
             )
             landed_at = airport or destination
-            location = f" AT {landed_at}" if landed_at else ""
+            diverted = bool(
+                landed_at
+                and destination
+                and landed_at != destination.upper()
+            ) or _status(landed_flight) == 7
+            diversion_label = " (DIVERTED)" if diverted else ""
+            location = (
+                f" AT {landed_at}{diversion_label}" if landed_at else ""
+            )
             return f"LANDED{location} · {details}".strip(" ·")
     if previous_status and previous_status.startswith("LANDED"):
         return f"PARKED AT {airport}" if airport else "PARKED"
@@ -1087,7 +1095,6 @@ class StoppedFlightMonitor(commands.Cog):
                         await model.update_incident(
                             schedule_id, {"eta_warning_sent": 1}
                         )
-                    row["eta_warning_attempts"] = attempt_number
 
         stopped_since = _parse_utc(row.get("stopped_since"))
         if stopped_since is None:
