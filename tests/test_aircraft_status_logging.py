@@ -7,6 +7,7 @@ from cogs.dm_logging import DM_LOG_CHANNEL_ID
 from cogs.stopped_flight_monitor import (
     StoppedFlightMonitor,
     _aircraft_status_text,
+    _status_log_line,
 )
 
 
@@ -47,6 +48,9 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
     def make_cog(self, channel):
         bot = MagicMock()
         bot.get_channel.return_value = channel
+        bot.pilots_model.get_pilot_by_ifuserid = AsyncMock(
+            return_value={"discordid": "123456789", "callsign": "QRV004"}
+        )
         cog = StoppedFlightMonitor.__new__(StoppedFlightMonitor)
         cog.bot = bot
         cog._warned_status_logging_disabled = False
@@ -93,6 +97,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parked_text, "PARKED")
 
     async def test_enroute_transition_posts_and_persists_once(self):
+        self.flight["crew"] = [{"userId": "if-user"}]
         channel = MagicMock()
         channel.send = AsyncMock()
         cog, bot = self.make_cog(channel)
@@ -120,12 +125,68 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         bot.get_channel.assert_called_once_with(DM_LOG_CHANNEL_ID)
         channel.send.assert_awaited_once()
         self.assertIn(
-            "ENROUTE OTHH → EGLL by QRV004",
+            "Enroute, Route: OTHH -> EGLL by <@123456789> (QRV004)",
             channel.send.await_args.args[0],
+        )
+        self.assertNotIn("Aircraft status updates", channel.send.await_args.args[0])
+        self.assertNotIn("✈️", channel.send.await_args.args[0])
+        channel.send.assert_awaited_once()
+        self.assertTrue(
+            channel.send.await_args.kwargs["allowed_mentions"].users
+        )
+        bot.pilots_model.get_pilot_by_ifuserid.assert_awaited_once_with(
+            "if-user"
         )
         self.assertEqual(
             model.updates,
             [("aircraft-1", "A7QRV", "ENROUTE OTHH → EGLL by QRV004")],
+        )
+
+    async def test_initial_status_poll_silently_sets_a_baseline(self):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        cog, _ = self.make_cog(channel)
+        model = AircraftStatusModel({})
+        client = MagicMock()
+        client.get_aircraft_position = AsyncMock(return_value=self.position)
+
+        with patch(
+            "cogs.stopped_flight_monitor.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await cog._log_fleet_status_changes(
+                client,
+                model,
+                [self.aircraft],
+                {"aircraft-1": [self.flight]},
+            )
+
+        channel.send.assert_not_awaited()
+        self.assertEqual(
+            model.statuses["aircraft-1"],
+            "ENROUTE OTHH → EGLL by QRV004",
+        )
+
+    def test_status_line_uses_route_and_pilot_mention_not_flight_number(self):
+        landed_flight = {
+            "status": 11,
+            "origin_icao": "KJFK",
+            "destination_icao": "KLAX",
+            "callsign": "AA123",
+        }
+        pilot = {"discordid": "123456789", "callsign": "QRV004"}
+
+        line = _status_log_line(
+            "A7BFA",
+            "LANDED KJFK → KLAX by AA123",
+            landed_flight,
+            pilot,
+        )
+
+        self.assertEqual(
+            line,
+            "• **A7BFA** — Landed at KLAX, Route: KJFK -> KLAX "
+            "by <@123456789> (QRV004)",
         )
 
     async def test_unchanged_status_does_not_post_again(self):

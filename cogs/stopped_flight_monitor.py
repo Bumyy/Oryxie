@@ -7,9 +7,11 @@ import math
 import os
 from datetime import datetime, timedelta, timezone
 
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 
+from api.if_live_manager import IFLiveError
 from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
 
 log = logging.getLogger(__name__)
@@ -105,6 +107,38 @@ def _parse_utc(value):
         return None
 
 
+def _flight_timestamp(flight):
+    for key in (
+        "created",
+        "created_at",
+        "createdAt",
+        "start_time",
+        "startTime",
+        "started_at",
+        "startedAt",
+        "actual_departure_utc",
+        "actualDepartureUtc",
+        "actual_arrival_utc",
+        "actualArrivalUtc",
+        "departure_time",
+        "departureTime",
+        "arrival_time",
+        "arrivalTime",
+        "flight_start_time",
+        "flightStartTime",
+        "flight_end_time",
+        "flightEndTime",
+        "timestamp",
+        "date",
+        "dateTime",
+        "flightDate",
+    ):
+        timestamp = _parse_utc(_get(flight, key))
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
 def _distance_nm(lat1, lon1, lat2, lon2):
     radius_nm = 3440.065
     lat1, lon1, lat2, lon2 = map(math.radians, (lat1, lon1, lat2, lon2))
@@ -182,18 +216,8 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
         ),
         key=_sequence,
     )
-    current_flight = next(
-        (schedule for schedule in active_schedules if _status(schedule) == 6),
-        None,
-    )
-    completed_flight = next(
-        (
-            schedule
-            for schedule in reversed(sorted(schedules or [], key=_sequence))
-            if _status(schedule) == 11
-        ),
-        None,
-    )
+    current_flight = _status_schedule("ENROUTE", schedules)
+    completed_flight = _status_schedule("LANDED", schedules)
     taxiing_flight = next(
         (schedule for schedule in active_schedules if _status(schedule) == 10),
         None,
@@ -229,6 +253,52 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
     return "PARKED · LOCATION UNKNOWN"
 
 
+def _status_schedule(status_text, schedules):
+    ordered_schedules = sorted(schedules or [], key=_sequence)
+    if status_text.startswith("LANDED"):
+        return next(
+            (
+                schedule
+                for schedule in reversed(ordered_schedules)
+                if _status(schedule) == 11
+            ),
+            None,
+        )
+
+    if not status_text.startswith(
+        ("ENROUTE", "STOPPED IN AIR", "TAXIING")
+    ):
+        return None
+
+    preferred_statuses = (
+        (10, 6, 7)
+        if status_text.startswith("TAXIING")
+        else (6, 7, 10)
+    )
+    for preferred_status in preferred_statuses:
+        schedule = next(
+            (
+                item
+                for item in ordered_schedules
+                if _status(item) == preferred_status
+            ),
+            None,
+        )
+        if schedule:
+            return schedule
+
+    return next(
+        (
+            schedule
+            for schedule in reversed(ordered_schedules)
+            if _status(schedule) not in {8, 9, 11}
+            and _get(schedule, "origin_icao")
+            and _get(schedule, "destination_icao")
+        ),
+        None,
+    )
+
+
 def _schedule_status_text(status, schedule):
     if not schedule:
         return status
@@ -244,6 +314,62 @@ def _schedule_status_text(status, schedule):
         if value
     )
     return f"{status} {details}".strip()
+
+
+def _status_log_line(registration, status_text, schedule, pilot):
+    status, _, location = status_text.partition(" ")
+    if status == "LANDED":
+        landed_at = _get(schedule, "destination_icao") or location.split(" → ")[-1]
+        landed_at = str(landed_at).split(" by ", 1)[0].strip().upper()
+        description = f"Landed at {landed_at}"
+    elif status == "ENROUTE":
+        description = "Enroute"
+    elif status == "PARKED":
+        description = f"Parked{f' at {location}' if location.startswith('AT ') else ''}"
+        if location.startswith("·"):
+            description = "Parked · Location unknown"
+    elif status_text.startswith("STOPPED IN AIR"):
+        description = "Stopped in air"
+    else:
+        description = status.replace("_", " ").title()
+
+    origin = str(_get(schedule, "origin_icao") or "").strip().upper()
+    destination = str(_get(schedule, "destination_icao") or "").strip().upper()
+    if origin and destination:
+        description += f", Route: {origin} -> {destination}"
+
+    if pilot:
+        discord_id = str(pilot.get("discordid") or "").strip()
+        callsign = str(pilot.get("callsign") or "").strip()
+        if discord_id:
+            description += f" by <@{discord_id}>"
+            if callsign:
+                description += f" ({callsign})"
+        elif callsign:
+            description += f" by {callsign}"
+
+    return f"• **{registration}** — {description}"
+
+
+def _recent_schedule_flight_count(schedules, cutoff):
+    completed_flights = [
+        schedule for schedule in schedules or [] if _status(schedule) == 11
+    ]
+    if not completed_flights:
+        return None
+
+    timestamps = [
+        _parse_utc(
+            _get(schedule, "actual_arrival_utc")
+            or _get(schedule, "actualArrivalUtc")
+            or _get(schedule, "actual_departure_utc")
+            or _get(schedule, "actualDepartureUtc")
+        )
+        for schedule in completed_flights
+    ]
+    if any(timestamp is None for timestamp in timestamps):
+        return None
+    return sum(timestamp >= cutoff for timestamp in timestamps)
 
 
 class StoppedFlightClaimView(discord.ui.View):
@@ -322,7 +448,11 @@ class StoppedFlightMonitor(commands.Cog):
                         registration,
                         has_active_routes,
                     )
-                await self._send_route_exhaustion_alerts(client, model)
+                await self._send_route_exhaustion_alerts(
+                    client,
+                    model,
+                    schedules_by_aircraft,
+                )
                 positions = await self._log_fleet_status_changes(
                     client,
                     model,
@@ -369,7 +499,12 @@ class StoppedFlightMonitor(commands.Cog):
     async def before_monitor_stopped_flights(self):
         await self.bot.wait_until_ready()
 
-    async def _send_route_exhaustion_alerts(self, client, model):
+    async def _send_route_exhaustion_alerts(
+        self,
+        client,
+        model,
+        schedules_by_aircraft=None,
+    ):
         if not ROUTE_EXHAUSTION_CHANNEL_ID:
             log.error("Route exhaustion alerts require a channel ID.")
             return
@@ -389,6 +524,10 @@ class StoppedFlightMonitor(commands.Cog):
                     recent_flights = await self._recent_aircraft_flight_count(
                         client,
                         str(aircraft["aircraft_id"]),
+                        (schedules_by_aircraft or {}).get(
+                            str(aircraft["aircraft_id"]),
+                            [],
+                        ),
                     )
                     if recent_flights is None:
                         demand_label = "Demand unknown"
@@ -437,63 +576,81 @@ class StoppedFlightMonitor(commands.Cog):
                     aircraft["aircraft_id"],
                 )
 
-    async def _recent_aircraft_flight_count(self, client, aircraft_id):
+    async def _recent_aircraft_flight_count(
+        self,
+        client,
+        aircraft_id,
+        schedules=None,
+    ):
         cutoff = _utcnow() - timedelta(days=DEMAND_HISTORY_DAYS)
         count = 0
         unparseable_flight_found = False
-        for page_number in range(1, MAX_DEMAND_HISTORY_PAGES + 1):
-            page = await client.list_aircraft_flights(
-                aircraft_id,
-                page=page_number,
-                page_size=FLIGHT_HISTORY_PAGE_SIZE,
-            )
-            flights = _get(page, "items")
-            if not isinstance(flights, list):
-                raise RuntimeError(
-                    f"Infinite Flight returned invalid flight history for {aircraft_id}"
+        try:
+            for page_number in range(1, MAX_DEMAND_HISTORY_PAGES + 1):
+                page = await client.list_aircraft_flights(
+                    aircraft_id,
+                    page=page_number,
+                    page_size=FLIGHT_HISTORY_PAGE_SIZE,
                 )
-            if not flights:
-                if unparseable_flight_found:
+                flights = _get(page, "items")
+                if not isinstance(flights, list):
                     raise RuntimeError(
-                        f"Infinite Flight returned flight records without usable "
-                        f"timestamps for aircraft {aircraft_id}"
+                        f"Infinite Flight returned invalid flight history for {aircraft_id}"
                     )
-                return count
-
-            older_flight_found = False
-            for flight in flights:
-                created = _parse_utc(
-                    _get(flight, "created")
-                    or _get(flight, "createdAt")
-                    or _get(flight, "startTime")
-                    or _get(flight, "startedAt")
-                    or _get(flight, "timestamp")
-                    or _get(flight, "date")
-                )
-                if created is None:
-                    unparseable_flight_found = True
-                    continue
-                if created < cutoff:
-                    older_flight_found = True
-                    continue
-                count += 1
-                if count >= HIGH_DEMAND_FLIGHT_THRESHOLD:
+                if not flights:
+                    if unparseable_flight_found:
+                        raise RuntimeError(
+                            f"Infinite Flight returned flight records without usable "
+                            f"timestamps for aircraft {aircraft_id}"
+                        )
                     return count
 
-            if older_flight_found or page_number >= int(
-                _get(page, "total_pages", 0) or 0
-            ):
-                if unparseable_flight_found and count < HIGH_DEMAND_FLIGHT_THRESHOLD:
-                    raise RuntimeError(
-                        f"Could not determine whether all flights occurred within "
-                        f"the last {DEMAND_HISTORY_DAYS} days for aircraft {aircraft_id}"
-                    )
-                return count
+                older_flight_found = False
+                for flight in flights:
+                    created = _flight_timestamp(flight)
+                    if created is None:
+                        unparseable_flight_found = True
+                        continue
+                    if created < cutoff:
+                        older_flight_found = True
+                        continue
+                    count += 1
+                    if count >= HIGH_DEMAND_FLIGHT_THRESHOLD:
+                        return count
 
-        raise RuntimeError(
-            f"Could not determine seven-day flight count for aircraft {aircraft_id} "
-            f"within {MAX_DEMAND_HISTORY_PAGES} pages"
-        )
+                if older_flight_found or page_number >= int(
+                    _get(page, "total_pages", 0) or 0
+                ):
+                    if (
+                        unparseable_flight_found
+                        and count < HIGH_DEMAND_FLIGHT_THRESHOLD
+                    ):
+                        raise RuntimeError(
+                            f"Could not determine whether all flights occurred within "
+                            f"the last {DEMAND_HISTORY_DAYS} days for aircraft {aircraft_id}"
+                        )
+                    return count
+
+            raise RuntimeError(
+                f"Could not determine seven-day flight count for aircraft {aircraft_id} "
+                f"within {MAX_DEMAND_HISTORY_PAGES} pages"
+            )
+        except (
+            IFLiveError,
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            RuntimeError,
+        ) as exc:
+            schedule_count = _recent_schedule_flight_count(schedules, cutoff)
+            if schedule_count is not None:
+                log.warning(
+                    "Using completed schedule history for demand on aircraft %s "
+                    "because flight history was unavailable: %s",
+                    aircraft_id,
+                    exc,
+                )
+                return schedule_count
+            raise
 
     async def _log_fleet_status_changes(
         self,
@@ -548,10 +705,23 @@ class StoppedFlightMonitor(commands.Cog):
                 ),
             )
 
+        initial_statuses = [
+            (aircraft_id, registration, status_text)
+            for aircraft_id, (registration, status_text) in current_statuses.items()
+            if aircraft_id not in previous_statuses
+        ]
+        for aircraft_id, registration, status_text in initial_statuses:
+            await model.set_aircraft_status(
+                aircraft_id,
+                registration,
+                status_text,
+            )
+
         changed = [
             (aircraft_id, registration, status_text)
             for aircraft_id, (registration, status_text) in current_statuses.items()
-            if previous_statuses.get(aircraft_id) != status_text
+            if aircraft_id in previous_statuses
+            and previous_statuses[aircraft_id] != status_text
         ]
         if not changed:
             return positions
@@ -566,17 +736,61 @@ class StoppedFlightMonitor(commands.Cog):
                     STATUS_LOG_CHANNEL_ID,
                 )
                 return positions
-        header = "✈️ **Aircraft status updates**"
+        pilot_cache = {}
+        rendered_lines = {}
+        for aircraft_id, registration, status_text in changed:
+            schedule = _status_schedule(
+                status_text,
+                schedules_by_aircraft.get(aircraft_id, []),
+            )
+            crew = _crew_members(schedule) if schedule else []
+            pilot = None
+            if_user_ids = list(
+                dict.fromkeys(
+                    if_user_id
+                    for if_user_id in (
+                        *(_crew_user_id(member) for member in crew),
+                        str(_get(positions[aircraft_id], "last_pilot_id") or "").strip(),
+                    )
+                    if if_user_id
+                )
+            )
+            for if_user_id in if_user_ids:
+                if if_user_id not in pilot_cache:
+                    try:
+                        pilot_cache[if_user_id] = (
+                            await self.bot.pilots_model.get_pilot_by_ifuserid(
+                                if_user_id
+                            )
+                        )
+                    except Exception:
+                        log.exception(
+                            "Could not resolve pilot %s for aircraft status log.",
+                            if_user_id,
+                        )
+                        pilot_cache[if_user_id] = None
+                candidate = pilot_cache[if_user_id]
+                if candidate:
+                    pilot = candidate
+                    if candidate.get("discordid"):
+                        break
+            rendered_lines[aircraft_id] = _status_log_line(
+                registration,
+                status_text,
+                schedule,
+                pilot,
+            )
+
         chunks = []
         current_entries = []
-        current_length = len(header)
+        current_length = 0
         for entry in changed:
             aircraft_id, registration, status_text = entry
-            line = f"• **{registration}** — {status_text}"
+            line = rendered_lines[aircraft_id]
             if current_entries and current_length + len(line) + 1 > 1800:
                 chunks.append(current_entries)
                 current_entries = []
-                current_length = len(header)
+                current_length = 0
             current_entries.append(entry)
             current_length += len(line) + 1
         if current_entries:
@@ -584,14 +798,14 @@ class StoppedFlightMonitor(commands.Cog):
 
         for chunk in chunks:
             content = "\n".join(
-                [header]
-                + [
-                    f"• **{registration}** — {status_text}"
-                    for _, registration, status_text in chunk
-                ]
+                rendered_lines[aircraft_id]
+                for aircraft_id, _, _ in chunk
             )
             try:
-                await channel.send(content)
+                await channel.send(
+                    content,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
             except discord.HTTPException:
                 log.exception("Could not post aircraft status updates.")
                 break
