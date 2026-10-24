@@ -109,21 +109,27 @@ def _aircraft_model(aircraft):
 
 
 def _aircraft_category(aircraft):
-    registration = str(
-        _get(aircraft, "registration", "") or ""
-    ).strip().upper()
+    registration = _registration(aircraft)
+
     if is_cargo_registration(registration):
         return "Cargo"
 
-    model = _aircraft_model(aircraft).lower().replace(" ", "")
+    if registration in RETIRED_REGISTRATIONS:
+        return "Retired"
 
-    if model.startswith("a") and len(model) > 1 and model[1].isdigit():
+    # Categorize using the manually maintained fleet mapping only.
+    model = AIRCRAFT_MODELS.get(registration, "")
+    model = model.upper().replace(" ", "").replace("-", "")
+
+    if model.startswith("A") and len(model) > 1 and model[1].isdigit():
         return "Airbus"
 
     if model.startswith(
         ("777", "787", "737", "747", "757", "767", "717", "727")
     ):
         return "Boeing"
+
+    return "Other"
 
     return "Other"
 
