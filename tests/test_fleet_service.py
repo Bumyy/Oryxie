@@ -48,7 +48,34 @@ class FleetServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Airbus A380-800", _model_label(fleet[1]))
         aircraft_model.get_all_aircraft.assert_awaited_once()
 
-    async def test_unmatched_ids_do_not_restore_registration_model_lists(self):
+    async def test_registration_models_classify_the_three_unmatched_aircraft(self):
+        aircraft_model = SimpleNamespace(
+            get_all_aircraft=AsyncMock(return_value=[])
+        )
+        bot = SimpleNamespace(aircraft_model=aircraft_model, aircraft_name_map={})
+        service = FleetService(bot)
+        fleet = [
+            SimpleNamespace(aircraft_id="unmapped-1", registration="A7-BAJ"),
+            SimpleNamespace(aircraft_id="unmapped-2", registration="A7BAG"),
+            SimpleNamespace(aircraft_id="unmapped-3", registration="N762AN"),
+        ]
+
+        await service.enrich_fleet(fleet)
+
+        self.assertEqual(
+            [aircraft.model for aircraft in fleet],
+            ["777-300ER", "777-300ER", "777-200ER"],
+        )
+        self.assertEqual(
+            [availability_category(aircraft) for aircraft in fleet],
+            ["Boeing", "Boeing", "Boeing"],
+        )
+        self.assertEqual(
+            [request_category(aircraft) for aircraft in fleet],
+            ["Boeing", "Boeing", "Boeing"],
+        )
+
+    async def test_unmatched_ids_and_registrations_remain_unknown(self):
         aircraft_model = SimpleNamespace(
             get_all_aircraft=AsyncMock(return_value=[])
         )
@@ -56,7 +83,7 @@ class FleetServiceTests(unittest.IsolatedAsyncioTestCase):
         service = FleetService(bot)
         aircraft = SimpleNamespace(
             aircraft_id="unmapped-type",
-            registration="A7-BAJ",
+            registration="UNMAPPED",
         )
 
         await service.enrich_fleet([aircraft])

@@ -2,6 +2,8 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from services.aircraft_classifier import load_aircraft_models
+
 log = logging.getLogger(__name__)
 
 
@@ -69,15 +71,25 @@ class FleetService:
     async def enrich_fleet(self, fleet: List[Any]) -> List[Any]:
         fleet_map = await self.get_fleet_db_map(fleet)
         catalog = getattr(self.bot, "aircraft_name_map", {})
+        registration_models = load_aircraft_models()
         missing_models = 0
 
         for aircraft in fleet or []:
             aircraft_id = self._aircraft_id(aircraft)
             db_aircraft = fleet_map.get(str(aircraft_id)) if aircraft_id else None
             catalog_name = catalog.get(str(aircraft_id)) if aircraft_id else None
+            registration = (
+                aircraft.get("registration")
+                if isinstance(aircraft, dict)
+                else getattr(aircraft, "registration", None)
+            )
+            registration_model = registration_models.get(
+                str(registration or "").strip().upper()
+            )
             model_name = (
                 (db_aircraft or {}).get("name")
                 or catalog_name
+                or registration_model
                 or ""
             )
             livery_name = (db_aircraft or {}).get("liveryname") or ""
