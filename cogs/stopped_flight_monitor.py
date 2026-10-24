@@ -11,7 +11,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from api.if_live_manager import IFLiveError
+from api.if_live_manager import IFLiveError, ScheduledFlightStatus
 from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
 
 log = logging.getLogger(__name__)
@@ -62,6 +62,17 @@ def _status(schedule):
         return int(_get(schedule, "status"))
     except (TypeError, ValueError):
         return None
+
+
+def _has_active_routes(schedules):
+    terminal_statuses = {
+        int(ScheduledFlightStatus.CANCELLED),
+        int(ScheduledFlightStatus.ARRIVED),
+    }
+    return any(
+        _status(schedule) not in terminal_statuses
+        for schedule in schedules or []
+    )
 
 
 def _sequence(schedule):
@@ -505,9 +516,8 @@ class StoppedFlightMonitor(commands.Cog):
                             schedule
                         )
                 for aircraft_id, registration in registrations.items():
-                    has_active_routes = any(
-                        _status(schedule) not in {8, 9, 11}
-                        for schedule in schedules_by_aircraft.get(aircraft_id, [])
+                    has_active_routes = _has_active_routes(
+                        schedules_by_aircraft.get(aircraft_id, [])
                     )
                     await model.sync_route_availability(
                         aircraft_id,

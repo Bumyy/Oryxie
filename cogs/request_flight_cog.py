@@ -243,7 +243,7 @@ def _route_status(route):
 
 
 def _is_unavailable_status(route):
-    return _route_status(route) in {8, 9, 11}
+    return _route_status(route) in {9, 11}
 
 
 def _is_return_leg(previous, route):

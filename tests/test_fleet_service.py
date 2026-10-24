@@ -2,16 +2,46 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from cogs.available_aircraft_cog import _aircraft_category as availability_category
+from cogs.available_aircraft_cog import (
+    _active_schedules as availability_active_schedules,
+    _aircraft_category as availability_category,
+)
 from cogs.request_flight_cog import (
+    _active_schedules as request_active_schedules,
     _aircraft_category as request_category,
     _airline_name,
     _model_label,
 )
+from cogs.stopped_flight_monitor import _has_active_routes
 from services.fleet_service import FleetService
 
 
 class FleetServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_delayed_routes_remain_active_for_availability_and_exhaustion(self):
+        delayed_route = {
+            "id": "delayed",
+            "status": 8,
+            "sequence": 1,
+            "crew": [],
+        }
+        arrived_route = {
+            "id": "arrived",
+            "status": 11,
+            "sequence": 2,
+            "crew": [],
+        }
+
+        self.assertEqual(
+            availability_active_schedules([delayed_route]),
+            [delayed_route],
+        )
+        self.assertEqual(
+            request_active_schedules([delayed_route]),
+            [delayed_route],
+        )
+        self.assertTrue(_has_active_routes([delayed_route]))
+        self.assertFalse(_has_active_routes([arrived_route]))
+
     async def test_enriches_fleet_from_aircraft_and_livery_database_ids(self):
         aircraft_model = SimpleNamespace(
             get_all_aircraft=AsyncMock(
