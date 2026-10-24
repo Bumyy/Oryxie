@@ -12,7 +12,11 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from api.if_live_manager import IFLiveError, ScheduledFlightStatus
+from api.if_live_manager import (
+    IFLiveError,
+    PersistentFlightCrewMemberRole,
+    ScheduledFlightStatus,
+)
 from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
 
 log = logging.getLogger(__name__)
@@ -33,6 +37,7 @@ STATUS_LOG_CHANNEL_ID = int(
 FLEET_ROLE_ID = int(
     os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "1484645309983490119") or 0
 )
+EXECUTIVE_ROLE_ID = 1090751678564810913
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", str(DM_LOG_CHANNEL_ID))
     or DM_LOG_CHANNEL_ID
@@ -90,6 +95,14 @@ def _crew_members(schedule):
 def _crew_user_id(member):
     value = _get(member, "userId") or _get(member, "user_id")
     return str(value).strip() if value else ""
+
+
+def _crew_role(member):
+    value = _get(member, "role")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _utcnow():
@@ -493,10 +506,10 @@ class StoppedFlightMonitor(commands.Cog):
         if not ORG_ID:
             log.error("IF_ORGANIZATION_ID is not configured; stopped-flight monitoring is disabled.")
             return
-        if not all((GUILD_ID, STAFF_CHANNEL_ID, FLEET_ROLE_ID)):
+        if not all((GUILD_ID, STAFF_CHANNEL_ID, FLEET_ROLE_ID, EXECUTIVE_ROLE_ID)):
             log.error(
                 "Stopped-flight monitoring requires guild, staff, and "
-                "fleet-role IDs."
+                "fleet and Executive role IDs."
             )
             return
         model = getattr(self.bot, "stopped_flight_model", None)
@@ -981,9 +994,18 @@ class StoppedFlightMonitor(commands.Cog):
             row = await model.get_incident(schedule_id)
         if row is None or row["lifecycle"] in {"claimed", "completed", "resumed"}:
             return
-        if row["lifecycle"] == "available" and crew_ids:
+        original_ids = json.loads(row["original_crew_json"] or "[]")
+        executive_ids = set(
+            await self._executive_crew_ids(original_ids)
+        ) if row["lifecycle"] in {"available", "claiming"} else set()
+        if row["lifecycle"] == "available" and set(crew_ids) - executive_ids:
             claimant_discord_id = ""
-            pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(crew_ids[0])
+            claimant_if_id = next(
+                if_user_id
+                for if_user_id in crew_ids
+                if if_user_id not in executive_ids
+            )
+            pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(claimant_if_id)
             if pilot:
                 claimant_discord_id = str(pilot.get("discordid") or "")
             await model.update_incident(
@@ -998,7 +1020,7 @@ class StoppedFlightMonitor(commands.Cog):
             )
             return
         if row["lifecycle"] == "claiming":
-            if crew_ids:
+            if set(crew_ids) - executive_ids:
                 await model.update_incident(
                     schedule_id,
                     {"lifecycle": "claimed"},
@@ -1234,7 +1256,13 @@ class StoppedFlightMonitor(commands.Cog):
         original_ids = json.loads(row["original_crew_json"] or "[]")
         current_ids = {_crew_user_id(member) for member in _crew_members(schedule)}
         try:
-            for if_user_id in original_ids:
+            executive_ids = await self._executive_crew_ids(original_ids)
+            removable_ids = [
+                if_user_id
+                for if_user_id in original_ids
+                if if_user_id not in executive_ids
+            ]
+            for if_user_id in removable_ids:
                 if if_user_id in current_ids:
                     await client.remove_crew(schedule_id, if_user_id)
             refreshed_schedules = await client.list_aircraft_schedules(
@@ -1252,9 +1280,9 @@ class StoppedFlightMonitor(commands.Cog):
                 _crew_user_id(member)
                 for member in _crew_members(refreshed)
             } if refreshed else set()
-            if not refreshed or remaining.intersection(original_ids):
+            if not refreshed or remaining.intersection(removable_ids):
                 raise RuntimeError(
-                    "Infinite Flight did not confirm removal of the original crew"
+                    "Infinite Flight did not confirm removal of the non-Executive crew"
                 )
         except Exception:
             log.exception("Could not unassign crew from stopped flight %s", schedule_id)
@@ -1277,7 +1305,7 @@ class StoppedFlightMonitor(commands.Cog):
         row = await model.get_incident(schedule_id)
         delivered_recipients = []
         failed_recipients = []
-        for if_user_id in original_ids:
+        for if_user_id in removable_ids:
             try:
                 recipient = await self._notify_unassigned_pilot(
                     model,
@@ -1299,11 +1327,49 @@ class StoppedFlightMonitor(commands.Cog):
                 recipient = None
             if recipient:
                 delivered_recipients.append(recipient)
+        if delivered_recipients or failed_recipients or removable_ids:
+            await self._send_dm_recipient_report(
+                row,
+                "1-hour crew removal notice",
+                delivered_recipients,
+                failed_recipients=failed_recipients,
+                notes=[
+                    f"{len(removable_ids)} non-Executive crew member(s) "
+                    "were eligible for removal notices."
+                ],
+            )
+        executive_recipients = []
+        executive_failures = []
+        for if_user_id in sorted(set(executive_ids).intersection(current_ids)):
+            try:
+                recipient = await self._notify_executive_pilot(
+                    model,
+                    row,
+                    if_user_id,
+                    executive_failures,
+                )
+            except Exception:
+                log.exception(
+                    "Could not process the Executive warning DM for IF user %s "
+                    "on schedule %s",
+                    if_user_id,
+                    schedule_id,
+                )
+                executive_failures.append(
+                    f"An unexpected error prevented the Executive warning for "
+                    f"IF user `{if_user_id}`."
+                )
+                recipient = None
+            if recipient:
+                executive_recipients.append(recipient)
         await self._send_dm_recipient_report(
             row,
-            "1-hour crew removal notice",
-            delivered_recipients,
-            failed_recipients=failed_recipients,
+            "1-hour Executive warning",
+            executive_recipients,
+            failed_recipients=executive_failures,
+            notes=[
+                "Executive crew members remain assigned and were not removed."
+            ],
         )
         try:
             await self._send_pilot_wave(model, row, wave=1)
@@ -1319,6 +1385,107 @@ class StoppedFlightMonitor(commands.Cog):
                 ],
             )
         return row
+
+    async def _executive_crew_ids(self, if_user_ids, required=True):
+        if not if_user_ids:
+            return set()
+        guild = self.bot.get_guild(GUILD_ID)
+        role = guild.get_role(EXECUTIVE_ROLE_ID) if guild else None
+        if guild is None or role is None:
+            if not required:
+                return set()
+            raise RuntimeError(
+                "The configured guild or Executive role is unavailable"
+            )
+        executive_ids = set()
+        for if_user_id in if_user_ids:
+            pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(
+                str(if_user_id)
+            )
+            discord_id = str((pilot or {}).get("discordid") or "")
+            if not discord_id:
+                continue
+            member = guild.get_member(int(discord_id))
+            if member is None:
+                try:
+                    member = await guild.fetch_member(int(discord_id))
+                except discord.NotFound:
+                    continue
+            if member is None:
+                continue
+            if role in member.roles:
+                executive_ids.add(str(if_user_id))
+        return executive_ids
+
+    async def _notify_executive_pilot(
+        self,
+        model,
+        row,
+        if_user_id,
+        failed_recipients=None,
+    ):
+        failed_recipients = failed_recipients if failed_recipients is not None else []
+        try:
+            pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
+        except Exception:
+            log.exception(
+                "Could not look up Executive for stopped-flight warning DM, IF user %s",
+                if_user_id,
+            )
+            failed_recipients.append(
+                f"Could not look up the Executive linked to IF user `{if_user_id}`."
+            )
+            return None
+        discord_id = str((pilot or {}).get("discordid") or "")
+        if not discord_id.isdigit():
+            failed_recipients.append(
+                f"No valid Discord account is linked to the Executive "
+                f"(IF user `{if_user_id}`)."
+            )
+            return None
+        try:
+            user = self.bot.get_user(int(discord_id))
+            if user is None:
+                user = await self.bot.fetch_user(int(discord_id))
+            message = await user.send(
+                f"⚠️ **Stopped-flight notice · {row['registration']}**\n"
+                f"Flight: **{row['callsign']}** "
+                f"({row['origin_icao']} → {row['destination_icao']})\n"
+                "The aircraft has been stopped in the air for one hour. "
+                "Because you hold the Executive role, you will remain assigned; "
+                "the bot will not unassign you. Non-Executive crew will be removed, "
+                "and eligible recovery pilots will be notified."
+            )
+            await self._record_dm_event_safely(
+                model,
+                schedule_id=row["schedule_id"],
+                if_user_id=if_user_id,
+                discord_user_id=discord_id,
+                wave=0,
+                channel_id=str(message.channel.id),
+                message_id=str(message.id),
+            )
+            return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Stopped-flight Executive warning DM failed for IF user %s.",
+                if_user_id,
+            )
+            failed_recipients.append(
+                f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'}) "
+                "could not be DM'd; Discord rejected the message."
+            )
+        except Exception:
+            log.exception(
+                "Unexpected error sending stopped-flight Executive warning "
+                "to IF user %s",
+                if_user_id,
+            )
+            failed_recipients.append(
+                f"An unexpected error prevented the Executive warning for "
+                f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})."
+            )
+        return None
 
     async def _notify_unassigned_pilot(
         self,
@@ -1450,11 +1617,17 @@ class StoppedFlightMonitor(commands.Cog):
 
     async def _send_pilot_wave(self, model, row, wave):
         guild = self.bot.get_guild(GUILD_ID)
-        role = guild.get_role(FLEET_ROLE_ID) if guild else None
-        if guild is None or role is None:
+        fleet_role = guild.get_role(FLEET_ROLE_ID) if guild else None
+        if guild is None or fleet_role is None:
             raise RuntimeError(
-                "Cannot send stopped-flight wave: configured guild or fleet role is unavailable"
+                "Cannot send stopped-flight wave: configured guild or fleet "
+                "role is unavailable"
             )
+        original_ids = json.loads(row.get("original_crew_json") or "[]")
+        executive_crew_ids = await self._executive_crew_ids(
+            original_ids,
+            required=False,
+        )
         contacted_rows = await model.get_dm_events(
             row["schedule_id"],
             delivered_only=True,
@@ -1477,6 +1650,7 @@ class StoppedFlightMonitor(commands.Cog):
             "already_contacted": 0,
             "no_recent_flights": 0,
             "activity_check_failed": 0,
+            "assigned_executive": 0,
         }
         exclusion_examples = {reason: [] for reason in exclusion_counts}
 
@@ -1490,7 +1664,7 @@ class StoppedFlightMonitor(commands.Cog):
                 identity += f" ({callsign})"
             exclusion_examples[reason].append(identity)
 
-        for member in role.members:
+        for member in fleet_role.members:
             if member.bot:
                 continue
             role_member_count += 1
@@ -1520,6 +1694,9 @@ class StoppedFlightMonitor(commands.Cog):
                         )
             linked_pilot_count += 1
             if_user_id = str(pilot["ifuserid"])
+            if if_user_id in executive_crew_ids:
+                record_exclusion("assigned_executive", member, pilot)
+                continue
             if if_user_id in contacted:
                 record_exclusion("already_contacted", member, pilot)
                 continue
@@ -1571,12 +1748,20 @@ class StoppedFlightMonitor(commands.Cog):
                 break
             member = candidate["member"]
             try:
+                retained_executive_text = (
+                    "Non-Executive crew were removed; an Executive remains "
+                    "assigned. "
+                    if executive_crew_ids
+                    else "The previous crew was removed. "
+                )
                 message = await member.send(
                     f"🚨 **Stopped flight available now**\n"
                     f"**{row['registration']} · {row['callsign']}**\n"
                     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
                     "The aircraft has been stopped in the air for at least one "
-                    "hour and the previous crew was removed. Claiming this recovery "
+                    "hour. "
+                    f"{retained_executive_text}"
+                    "Claiming this recovery "
                     "flight does **not** count toward your normal two-aircraft "
                     "booking limit. Flight hours for this flight will be split "
                     "50/50 between you and the original assigned pilot.",
@@ -1620,7 +1805,7 @@ class StoppedFlightMonitor(commands.Cog):
                     break
             except (discord.Forbidden, discord.HTTPException):
                 log.warning(
-                    "Could not DM fleet-role pilot %s about stopped flight %s; "
+                    "Could not DM recovery pilot %s about stopped flight %s; "
                     "continuing to the next eligible pilot.",
                     member.id,
                     row["schedule_id"],
@@ -1681,6 +1866,7 @@ class StoppedFlightMonitor(commands.Cog):
             "already_contacted": "already received this recovery flight DM",
             "no_recent_flights": "no Live flights in the 3-day activity window",
             "activity_check_failed": "Live activity check failed",
+            "assigned_executive": "Executive remains assigned to this flight",
         }
         for reason, count in exclusion_counts.items():
             if not count:
@@ -1755,7 +1941,8 @@ class StoppedFlightMonitor(commands.Cog):
             f"🛑 **Stopped flight unresolved for {hours} hours**\n"
             f"Aircraft: **{row['registration']}** · Flight: **{row['callsign']}**\n"
             f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
-            "The assigned pilot was removed after one hour; no fleet pilot has claimed it."
+            "Non-Executive crew were removed after one hour; no recovery pilot "
+            "has claimed the flight."
         )
 
     def _claim_view(self, schedule_id):
@@ -1822,8 +2009,8 @@ class StoppedFlightMonitor(commands.Cog):
                     member = await guild.fetch_member(interaction.user.id)
                 except discord.HTTPException:
                     return None
-        role = guild.get_role(FLEET_ROLE_ID)
-        return member if role and role in member.roles else None
+        fleet_role = guild.get_role(FLEET_ROLE_ID)
+        return member if fleet_role and fleet_role in member.roles else None
 
     async def claim_stopped_flight(self, interaction, schedule_id):
         member = await self._claim_member(interaction)
@@ -1870,16 +2057,32 @@ class StoppedFlightMonitor(commands.Cog):
                     ),
                     None,
                 )
+                current_crew = _crew_members(current) if current else []
+                used_roles = {
+                    _crew_role(crew)
+                    for crew in current_crew
+                }
+                assignment_role = next(
+                    (
+                        int(role)
+                        for role in (
+                            PersistentFlightCrewMemberRole.CAPTAIN,
+                            PersistentFlightCrewMemberRole.FIRST_OFFICER,
+                        )
+                        if int(role) not in used_roles
+                    ),
+                    None,
+                )
                 if (
                     not current
                     or _status(current) != IN_FLIGHT_SCHEDULE_STATUS
                     or _get(position, "is_on_ground", True)
                     or int(_get(position, "state", -1)) != STOPPED_POSITION_STATE
-                    or _crew_members(current)
+                    or assignment_role is None
                 ):
                     raise RuntimeError("The stopped flight is no longer claimable")
                 result = await client.assign_crew(
-                    str(schedule_id), str(pilot["ifuserid"]), 0
+                    str(schedule_id), str(pilot["ifuserid"]), assignment_role
                 )
                 assigned = any(
                     _crew_user_id(crew) == str(pilot["ifuserid"])
