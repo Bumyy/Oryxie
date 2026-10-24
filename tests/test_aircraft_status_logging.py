@@ -93,7 +93,10 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             previous_status=landed_text,
         )
 
-        self.assertEqual(landed_text, "LANDED OTHH → EGLL by QRV004")
+        self.assertEqual(
+            landed_text,
+            "LANDED AT EGLL · OTHH → EGLL by QRV004",
+        )
         self.assertEqual(parked_text, "PARKED")
 
     async def test_enroute_transition_posts_and_persists_once(self):
@@ -189,16 +192,66 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             "by <@123456789> (QRV004)",
         )
 
-    def test_parked_status_does_not_repeat_the_at_prefix(self):
-        self.assertEqual(
-            _status_log_line(
-                "A7ADS",
-                "PARKED AT ORNI",
-                None,
-                {"discordid": "123456789", "callsign": "QRV100"},
-            ),
-            "• **A7ADS** — Parked at ORNI by <@123456789> (QRV100)",
+    def test_landed_airport_uses_observed_position_not_schedule_destination(self):
+        bot = MagicMock()
+        bot.flightdata.airports_db = {
+            "KSFO": {"latitude_deg": 0, "longitude_deg": 0},
+        }
+        position = {
+            "state": 1,
+            "is_on_ground": True,
+            "latitude": 0,
+            "longitude": 0,
+        }
+        previous_status = "ENROUTE OTHH → KSFO by QRV136"
+        stale_completed_schedule = {
+            "status": 11,
+            "sequence": 1,
+            "origin_icao": "OTHH",
+            "destination_icao": "OTHH",
+            "callsign": "QRV135",
+        }
+
+        landed_status = _aircraft_status_text(
+            bot,
+            position,
+            [stale_completed_schedule],
+            previous_status=previous_status,
         )
+        line = _status_log_line(
+            "A7-ANN",
+            landed_status,
+            stale_completed_schedule,
+            {"discordid": "123456789", "callsign": "QRV136"},
+        )
+
+        self.assertEqual(
+            landed_status,
+            "LANDED AT KSFO · OTHH → KSFO by QRV136",
+        )
+        self.assertEqual(
+            line,
+            "• **A7-ANN** — Landed at KSFO, Route: OTHH -> KSFO "
+            "by <@123456789> (QRV136)",
+        )
+
+    def test_parked_status_does_not_repeat_the_at_prefix(self):
+        for status_text in ("PARKED AT ORNI", "PARKED AT AT KSFO"):
+            with self.subTest(status_text=status_text):
+                self.assertEqual(
+                    _status_log_line(
+                        "A7ADS",
+                        status_text,
+                        None,
+                        {"discordid": "123456789", "callsign": "QRV100"},
+                    ),
+                    (
+                        "• **A7ADS** — Parked at ORNI by <@123456789> (QRV100)"
+                        if status_text == "PARKED AT ORNI"
+                        else "• **A7ADS** — Parked at KSFO by "
+                        "<@123456789> (QRV100)"
+                    ),
+                )
 
     async def test_unchanged_status_does_not_post_again(self):
         channel = MagicMock()

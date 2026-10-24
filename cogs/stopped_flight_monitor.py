@@ -239,7 +239,30 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
     if previous_status and previous_status.startswith(("ENROUTE", "TAXIING")):
         landed_flight = current_flight or completed_flight
         if landed_flight:
-            return _schedule_status_text("LANDED", landed_flight)
+            previous_route = _route_details_from_status(previous_status)
+            origin = previous_route[0] or str(
+                _get(landed_flight, "origin_icao") or ""
+            ).strip().upper()
+            destination = previous_route[1] or str(
+                _get(landed_flight, "destination_icao") or ""
+            ).strip().upper()
+            callsign = previous_route[2] or str(
+                _get(landed_flight, "callsign") or ""
+            ).strip()
+            route = " → ".join(
+                value for value in (origin, destination) if value
+            )
+            details = " ".join(
+                value
+                for value in (
+                    route,
+                    f"by {callsign}" if callsign else "",
+                )
+                if value
+            )
+            landed_at = airport or destination
+            location = f" AT {landed_at}" if landed_at else ""
+            return f"LANDED{location} · {details}".strip(" ·")
     if previous_status and previous_status.startswith("LANDED"):
         return f"PARKED AT {airport}" if airport else "PARKED"
     if airport:
@@ -299,6 +322,21 @@ def _status_schedule(status_text, schedules):
     )
 
 
+def _route_details_from_status(status_text):
+    _, _, details = str(status_text or "").partition(" ")
+    if " · " in details:
+        details = details.split(" · ", 1)[1]
+    route, separator, callsign = details.partition(" by ")
+    origin, arrow, destination = route.partition(" → ")
+    if not arrow:
+        return "", "", ""
+    return (
+        origin.strip().upper(),
+        destination.strip().upper(),
+        callsign.strip() if separator else "",
+    )
+
+
 def _schedule_status_text(status, schedule):
     if not schedule:
         return status
@@ -319,14 +357,21 @@ def _schedule_status_text(status, schedule):
 def _status_log_line(registration, status_text, schedule, pilot):
     status, _, location = status_text.partition(" ")
     if status == "LANDED":
-        landed_at = _get(schedule, "destination_icao") or location.split(" → ")[-1]
+        landed_at = ""
+        if location.upper().startswith("AT "):
+            landed_at = location[3:].split(" · ", 1)[0].strip()
+        if not landed_at:
+            landed_at = _get(schedule, "destination_icao") or location.split(" → ")[-1]
         landed_at = str(landed_at).split(" by ", 1)[0].strip().upper()
         description = f"Landed at {landed_at}"
     elif status == "ENROUTE":
         description = "Enroute"
     elif status == "PARKED":
         if location.startswith("AT "):
-            description = f"Parked at {location[3:].strip()}"
+            airport = location.strip()
+            while airport.upper().startswith("AT "):
+                airport = airport[3:].strip()
+            description = f"Parked at {airport}" if airport else "Parked"
         elif location.startswith("·"):
             description = "Parked · Location unknown"
         else:
@@ -336,8 +381,15 @@ def _status_log_line(registration, status_text, schedule, pilot):
     else:
         description = status.replace("_", " ").title()
 
-    origin = str(_get(schedule, "origin_icao") or "").strip().upper()
-    destination = str(_get(schedule, "destination_icao") or "").strip().upper()
+    status_origin, status_destination, _ = _route_details_from_status(
+        status_text
+    )
+    origin = status_origin or str(
+        _get(schedule, "origin_icao") or ""
+    ).strip().upper()
+    destination = status_destination or str(
+        _get(schedule, "destination_icao") or ""
+    ).strip().upper()
     if origin and destination:
         description += f", Route: {origin} -> {destination}"
 
