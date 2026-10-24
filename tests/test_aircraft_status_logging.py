@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -398,6 +399,102 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(report_posted)
         report_poster.assert_awaited_once()
+
+    async def test_recovery_wave_dm_explains_half_split_flight_hours(self):
+        cog, bot = self.make_cog(MagicMock())
+        now = datetime.now()
+        member = MagicMock()
+        member.id = 123456789
+        member.bot = False
+        member.display_name = "Recovery Pilot"
+        member.nick = None
+        message = MagicMock()
+        message.channel.id = 123
+        message.id = 456
+        member.send = AsyncMock(return_value=message)
+        role = MagicMock()
+        role.members = [member]
+        guild = MagicMock()
+        guild.get_role.return_value = role
+        bot.get_guild.return_value = guild
+        bot.add_view = MagicMock()
+        cog._registered_views = set()
+        cog._activity_cache = {"if-user-1": (now - timedelta(minutes=1), 1)}
+        model = MagicMock()
+        model.get_dm_events = AsyncMock(return_value=[])
+        model.get_active_pilots = AsyncMock(
+            return_value=[
+                {
+                    "callsign": "QRV042",
+                    "discordid": str(member.id),
+                    "ifuserid": "if-user-1",
+                }
+            ]
+        )
+        model.get_incident_state = AsyncMock(
+            return_value={"lifecycle": "available"}
+        )
+        model.record_dm_event = AsyncMock()
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+
+        with patch(
+            "cogs.stopped_flight_monitor.post_dm_report",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            report_posted = await cog._send_pilot_wave(model, row, wave=1)
+
+        self.assertTrue(report_posted)
+        message_text = member.send.await_args.args[0]
+        self.assertIn(
+            "Flight hours for this flight will be split 50/50 between you "
+            "and the original assigned pilot.",
+            message_text,
+        )
+
+    async def test_crew_removal_dm_explains_next_leg_continuation(self):
+        cog, bot = self.make_cog(MagicMock())
+        user = MagicMock()
+        message = MagicMock()
+        message.channel.id = 123
+        message.id = 456
+        user.send = AsyncMock(return_value=message)
+        bot.get_user.return_value = user
+        model = MagicMock()
+        model.record_dm_event = AsyncMock()
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+
+        recipient = await cog._notify_unassigned_pilot(
+            model,
+            row,
+            "if-user-1",
+        )
+
+        self.assertEqual(recipient, "<@123456789> (QRV004)")
+        message_text = user.send.await_args.args[0]
+        self.assertIn(
+            "Another pilot will land the aircraft, and you can continue "
+            "the next leg if it is booked.",
+            message_text,
+        )
+        self.assertIn(
+            "Flight hours for this flight will be split 50/50 between you "
+            "and the recovery pilot.",
+            message_text,
+        )
+        self.assertNotIn("Live Admin", message_text)
 
 
 if __name__ == "__main__":

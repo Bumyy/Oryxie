@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -1349,9 +1350,10 @@ class StoppedFlightMonitor(commands.Cog):
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']}) was "
                 "removed because the aircraft remained stopped in the air "
-                "for one hour. Do not request this stopped route again. "
-                "You may fly this aircraft after this flight is complete "
-                "and a Live Admin adds new routes."
+                "for one hour. Another pilot will land the aircraft, and "
+                "you can continue the next leg if it is booked. Flight hours "
+                "for this flight will be split 50/50 between you and the "
+                "recovery pilot."
             )
             await self._record_dm_event_safely(
                 model,
@@ -1569,7 +1571,8 @@ class StoppedFlightMonitor(commands.Cog):
                     "The aircraft has been stopped in the air for at least one "
                     "hour and the previous crew was removed. Claiming this recovery "
                     "flight does **not** count toward your normal two-aircraft "
-                    "booking limit.",
+                    "booking limit. Flight hours for this flight will be split "
+                    "50/50 between you and the original assigned pilot.",
                     view=self._claim_view(str(row["schedule_id"])),
                 )
                 delivered_recipients.append(
