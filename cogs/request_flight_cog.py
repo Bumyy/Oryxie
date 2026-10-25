@@ -444,7 +444,7 @@ def _route_ids(routes):
     return [str(_get(route, "id")) for route in routes]
 
 
-def _route_option_label(routes):
+def _route_option_label_chain(routes):
     callsigns = list(dict.fromkeys(
         str(_get(route, "callsign", "") or "").strip()
         for route in routes
@@ -733,7 +733,7 @@ class RouteStartSelect(discord.ui.Select):
             )
             options.append(
                 discord.SelectOption(
-                    label=_route_option_label(routes),
+                    label=_route_option_label_chain(routes),
                     description=(
                         route_kind + _route_chain_description(routes)
                     )[:100],
