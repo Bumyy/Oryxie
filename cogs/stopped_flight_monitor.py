@@ -47,7 +47,8 @@ RECOVERY_PING_ROLE_ID = int(
 )
 RECOVERY_ROLE_SETUP_AUTHORIZED_ROLE_ID = 1090751678564810913
 RECOVERY_OPT_IN_EMOJI_NAME = "qatari"
-RECOVERY_PANEL_FOOTER_PREFIX = "Oryxie recovery role opt-in:"
+RECOVERY_PANEL_TITLE = "Stopped-flight recovery alerts"
+QATAR_MAROON = 0x8A1538
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", str(DM_LOG_CHANNEL_ID))
     or DM_LOG_CHANNEL_ID
@@ -558,15 +559,12 @@ class StoppedFlightMonitor(commands.Cog):
             return
         try:
             embed = discord.Embed(
-                title="Stopped-flight recovery alerts",
+                title=RECOVERY_PANEL_TITLE,
                 description=(
                     f"React with {emoji} to get the recovery alert role "
                     f"({role.mention}). Remove your reaction to opt out."
                 ),
-                color=discord.Color.blue(),
-            )
-            embed.set_footer(
-                text=f"{RECOVERY_PANEL_FOOTER_PREFIX} {guild.id}"
+                color=discord.Color(QATAR_MAROON),
             )
             message = await interaction.channel.send(
                 embed=embed,
@@ -641,8 +639,8 @@ class StoppedFlightMonitor(commands.Cog):
             not bot_user
             or str(message.author.id) != str(bot_user.id)
             or not any(
-                embed.footer.text
-                == f"{RECOVERY_PANEL_FOOTER_PREFIX} {guild.id}"
+                embed.title == RECOVERY_PANEL_TITLE
+                and f"<@&{RECOVERY_PING_ROLE_ID}>" in (embed.description or "")
                 for embed in message.embeds
             )
         ):

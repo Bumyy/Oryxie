@@ -681,9 +681,8 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=999),
             embeds=[
                 SimpleNamespace(
-                    footer=SimpleNamespace(
-                        text="Oryxie recovery role opt-in: 456"
-                    )
+                    title="Stopped-flight recovery alerts",
+                    description="React to receive <@&321> alerts.",
                 )
             ],
         )
@@ -699,18 +698,20 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             reason="Opted in to stopped-flight recovery alerts",
         )
 
-        message.embeds[0].footer.text = "Unrelated message"
+        message.embeds[0].title = "Unrelated message"
         payload.message_id = 790
         await cog.on_raw_reaction_add(payload)
         member.add_roles.assert_awaited_once()
 
         payload.message_id = 789
         member.remove_roles = AsyncMock()
-        await cog.on_raw_reaction_remove(payload)
+        with patch("cogs.stopped_flight_monitor.RECOVERY_PING_ROLE_ID", 321):
+            await cog.on_raw_reaction_remove(payload)
         member.remove_roles.assert_not_awaited()
 
-        message.embeds[0].footer.text = "Oryxie recovery role opt-in: 456"
-        await cog.on_raw_reaction_remove(payload)
+        message.embeds[0].title = "Stopped-flight recovery alerts"
+        with patch("cogs.stopped_flight_monitor.RECOVERY_PING_ROLE_ID", 321):
+            await cog.on_raw_reaction_remove(payload)
         member.remove_roles.assert_awaited_once_with(
             role,
             reason="Opted out of stopped-flight recovery alerts",
