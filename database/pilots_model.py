@@ -104,9 +104,9 @@ class PilotsModel:
         Returns:
             A dictionary of the pilot's data if found, otherwise None.
         """
-        query = "SELECT discordid FROM pilots WHERE ifc LIKE %s"
+        query = "SELECT discordid FROM pilots WHERE LOWER(ifc) LIKE %s"
         
-        pattern = f"%/{username}%"
+        pattern = f"%/{str(username).strip().casefold()}%"
         args = (pattern,)
         return await self.db.fetch_one(query, args)
 
@@ -125,9 +125,9 @@ class PilotsModel:
         query = """
             UPDATE pilots
             SET ifuserid = %s
-            WHERE ifc LIKE %s
+            WHERE LOWER(ifc) LIKE %s
         """
-        pattern = f"%/{username}%"
+        pattern = f"%/{str(username).strip().casefold()}%"
         args = (ifuserid, pattern)
         return await self.db.execute(query, args)
 

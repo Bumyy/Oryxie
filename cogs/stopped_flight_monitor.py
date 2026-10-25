@@ -60,7 +60,8 @@ TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
 STOPPED_POSITION_STATE = 4
 IN_FLIGHT_SCHEDULE_STATUS = 6
-MAX_ETA_WARNING_ATTEMPTS = 1
+MAX_ETA_WARNING_ATTEMPTS = 3
+ETA_WARNING_RETRY_MINUTES = 10
 FLIGHT_HISTORY_DAYS = 3
 MAX_RECOVERY_DM_RECIPIENTS = 5
 DEMAND_HISTORY_DAYS = 7
@@ -1290,7 +1291,7 @@ class StoppedFlightMonitor(commands.Cog):
                 attempt_started = await model.try_start_eta_warning_attempt(
                     schedule_id,
                     _utcnow(),
-                    retry_after_minutes=0,
+                    retry_after_minutes=ETA_WARNING_RETRY_MINUTES,
                     max_attempts=MAX_ETA_WARNING_ATTEMPTS,
                 )
                 if attempt_started:
@@ -1421,14 +1422,43 @@ class StoppedFlightMonitor(commands.Cog):
                 delivered_recipients.append(
                     f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
                 )
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden as exc:
+                if getattr(exc, "code", None) == 50278:
+                    reason = (
+                        "Discord says this account shares no server with the bot. "
+                        "Verify the linked Discord account and make sure it is a "
+                        "member of this server."
+                    )
+                    log.warning(
+                        "Cannot send 30-minute arrival warning to IF user %s "
+                        "(Discord %s): no mutual guild.",
+                        if_user_id,
+                        discord_id,
+                    )
+                else:
+                    reason = (
+                        "Discord rejected the DM. Check the linked account's "
+                        "privacy settings."
+                    )
+                    log.warning(
+                        "Discord rejected 30-minute arrival warning to IF user %s "
+                        "(Discord %s), error code %s.",
+                        if_user_id,
+                        discord_id,
+                        getattr(exc, "code", "unknown"),
+                    )
+                failed_recipients.append(
+                    f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'}): "
+                    f"{reason}"
+                )
+            except discord.HTTPException:
                 log.exception(
                     "Could not send 30-minute arrival warning to IF user %s",
                     if_user_id,
                 )
                 failed_recipients.append(
                     f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'}) "
-                    "could not be DM'd; Discord rejected the message."
+                    "could not be DM'd; Discord failed to deliver the message."
                 )
             except Exception:
                 log.exception(

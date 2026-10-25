@@ -875,11 +875,42 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             ["if-user-1"],
             25,
         )
+        self.assertEqual(
+            model.try_start_eta_warning_attempt.await_args.kwargs,
+            {
+                "retry_after_minutes": 10,
+                "max_attempts": 3,
+            },
+        )
         self.assertTrue(
             any(
                 call.args[1] == {"eta_warning_sent": 1}
                 for call in model.update_incident.await_args_list
             )
+        )
+
+    async def test_eta_warning_reports_no_mutual_guilds_clearly(self):
+        cog, bot = self.make_cog(MagicMock())
+        forbidden = discord.Forbidden(MagicMock(), "No mutual guilds")
+        forbidden.code = 50278
+        user = MagicMock()
+        user.send = AsyncMock(side_effect=forbidden)
+        bot.get_user.return_value = user
+        cog._send_dm_recipient_report = AsyncMock()
+        row = {
+            "registration": "A7-APE",
+            "callsign": "QRV004",
+            "origin_icao": "OTHH",
+            "destination_icao": "EGLL",
+        }
+
+        sent = await cog._send_eta_warning(row, ["if-user"], 25)
+
+        self.assertFalse(sent)
+        report_call = cog._send_dm_recipient_report.await_args
+        self.assertIn("no server with the bot", report_call.kwargs["failed_recipients"][0])
+        bot.pilots_model.get_pilot_by_ifuserid.assert_awaited_once_with(
+            "if-user"
         )
 
     async def test_recovery_wave_returns_false_when_staff_report_fails(self):

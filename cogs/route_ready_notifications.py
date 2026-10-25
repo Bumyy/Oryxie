@@ -417,19 +417,36 @@ class RouteReadyNotifications(commands.Cog):
                                 takeoff_window_hours,
                                 airport,
                             )
-                        except discord.Forbidden:
+                        except discord.Forbidden as exc:
+                            if getattr(exc, "code", None) == 50278:
+                                reason = (
+                                    "Discord says this account shares no server "
+                                    "with the bot; verify the linked account and "
+                                    "server membership."
+                                )
+                                log.warning(
+                                    "Cannot DM route-ready pilot %s (%s) for %s: "
+                                    "no mutual guild.",
+                                    if_user_id,
+                                    discord_user_id,
+                                    registration,
+                                )
+                            else:
+                                reason = (
+                                    "Discord rejected the DM; check the linked "
+                                    "account's privacy settings."
+                                )
+                                log.warning(
+                                    "Discord rejected route-ready DM to pilot %s "
+                                    "(%s), error code %s.",
+                                    if_user_id,
+                                    discord_user_id,
+                                    getattr(exc, "code", "unknown"),
+                                )
                             failed_recipients.append(
                                 f"<@{discord_user_id}> "
                                 f"({(pilot or {}).get('callsign') or 'Pilot'}): "
-                                "Discord rejected the DM."
-                            )
-                            log.warning(
-                                "Cannot DM pilot %s (%s) about aircraft %s at %s; "
-                                "their Discord DMs may be disabled.",
-                                if_user_id,
-                                discord_user_id,
-                                registration,
-                                airport,
+                                + reason
                             )
                         except discord.HTTPException:
                             failed_recipients.append(
