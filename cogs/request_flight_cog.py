@@ -2480,7 +2480,7 @@ class RequestFlightCog(commands.Cog):
 
             embed.add_field(
                 name="Rules",
-                value=FLIGHT_RULES_SUMMARY,
+                value=FLIGHT_RULES,
                 inline=False,
             )
 
@@ -2632,7 +2632,7 @@ class RequestFlightCog(commands.Cog):
 
             embed.add_field(
                 name="Rules",
-                value=FLIGHT_RULES_SUMMARY,
+                value=FLIGHT_RULES,
                 inline=False,
             )
 
