@@ -137,7 +137,8 @@ class StoppedFlightModel:
         message_id: str,
         emoji_id: str,
     ) -> int:
-        return await self.db.execute(
+        await self.ensure_recovery_role_panel_table()
+        changed = await self.db.execute(
             """
             INSERT INTO if_stopped_flight_recovery_role_config
                 (config_id, guild_id, channel_id, message_id, emoji_id)
@@ -155,12 +156,46 @@ class StoppedFlightModel:
                 str(emoji_id),
             ),
         )
+        config = await self.get_recovery_role_panel()
+        if not config or any(
+            str(config[key]) != str(value)
+            for key, value in (
+                ("guild_id", guild_id),
+                ("channel_id", channel_id),
+                ("message_id", message_id),
+                ("emoji_id", emoji_id),
+            )
+        ):
+            raise RuntimeError(
+                "Recovery role panel configuration was not saved to "
+                "if_stopped_flight_recovery_role_config. Check database "
+                "INSERT/UPDATE permissions and the database connection."
+            )
+        if changed == 0:
+            raise RuntimeError(
+                "Database reported no change while saving recovery role panel "
+                "configuration."
+            )
+        return changed
 
     async def get_recovery_role_panel(self) -> Optional[dict]:
         return await self.db.fetch_one(
             "SELECT guild_id, channel_id, message_id, emoji_id "
             "FROM if_stopped_flight_recovery_role_config WHERE config_id = 1"
         )
+
+    async def ensure_recovery_role_panel_table(self) -> None:
+        table_name = "if_stopped_flight_recovery_role_config"
+        if await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
+            return
+        await self.db.execute(self._TABLE_DDL[table_name])
+        if not await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
+            raise RuntimeError(
+                "Required table if_stopped_flight_recovery_role_config is "
+                "missing and could not be created. Grant CREATE TABLE "
+                "permission to the bot database account or apply "
+                "database/stopped_flight_monitor_mysql_schema.sql."
+            )
 
     async def _ensure_eta_warning_columns(self) -> None:
         columns = (

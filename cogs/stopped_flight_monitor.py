@@ -556,8 +556,9 @@ class StoppedFlightMonitor(commands.Cog):
                 ephemeral=True,
             )
             return
+        message = None
         try:
-            await model.ensure_tables()
+            await model.ensure_recovery_role_panel_table()
             message = await interaction.channel.send(
                 f"React with {emoji} to get the stopped-flight recovery alert role "
                 f"({role.mention}). Remove your reaction to opt out."
@@ -583,9 +584,18 @@ class StoppedFlightMonitor(commands.Cog):
             log.exception(
                 "Could not save stopped-flight recovery role panel configuration."
             )
+            if message is not None:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    log.exception(
+                        "Could not remove an unsaved recovery role panel message."
+                    )
             await interaction.response.send_message(
-                "The opt-in message could not be saved. Check the bot database "
-                "permissions and try again.",
+                "The recovery panel could not be saved. The bot needs CREATE "
+                "permission if the recovery config table is missing, and "
+                "INSERT/UPDATE permission to store this panel. Check the bot "
+                "database logs for the exact database error.",
                 ephemeral=True,
             )
             return
