@@ -512,7 +512,7 @@ class StoppedFlightMonitor(commands.Cog):
 
     @app_commands.command(
         name="setup_recovery_role",
-        description="Post the recovery-alert opt-in message in this channel.",
+        description="Admin: post the opt-in panel for stopped-flight alert pings.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_recovery_role(self, interaction: discord.Interaction):

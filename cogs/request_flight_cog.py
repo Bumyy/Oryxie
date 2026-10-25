@@ -1584,7 +1584,8 @@ class ClaimRouteView(discord.ui.View):
                     else f"Airline hub: **{airline} · {hub}**\n"
                 )
                 + f"Route(s):\n{route_lines}\n"
-                + f"Schedule: {schedule_order_note}",
+                + f"Schedule: {schedule_order_note}\n\n"
+                + f"**Rules**\n{FLIGHT_RULES}",
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,
