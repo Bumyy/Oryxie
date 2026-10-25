@@ -1,4 +1,4 @@
-"""Command to request an Infinite Flight flight assignment from the VA fleet and schedule."""
+﻿"""Command to request an Infinite Flight flight assignment from the VA fleet and schedule."""
 
 import asyncio
 import logging
@@ -56,15 +56,11 @@ AIRLINE_HUBS = {
     "American Airlines": "KDFW",
 }
 
-RULES = (
-    "**Qatari Virtual flight rules**\n"
-    "• If an aircraft is stopped in the air, you have 24 hours to land.\n"
-    "• If parked at a hub airport, you have 6 hours from assignment to take off.\n"
-    "• If parked at a non-hub airport, you have 12 hours from assignment to take off.\n"
-    "• If overdue, an admin may take over the flight or make it available to other pilots.\n\n"
-    "⚠️ Each pilot may have unflown outbound routes on up to **2 distinct aircraft**. "
-    "Once a route takes off, its aircraft no longer counts toward this limit. "
-    "Return legs do not count."
+FLIGHT_RULES = (
+    "• Take off within 6 hours at a hub or 12 hours elsewhere\n"
+    "• Stopped in air for 1 hour: assignment removed and public recovery claim posted\n"
+    "• If unclaimed, recovery DMs start at 2 hours\n"
+    "• Staff alerted if unresolved for 4 hours"
 )
 
 
@@ -1583,12 +1579,12 @@ class ClaimRouteView(discord.ui.View):
                 f"{copilot_line}"
                 f"Aircraft: **{registration}** ({_model_label(self.aircraft)})\n"
                 + (
-                    "Cargo operation: **maximum two connected legs per booking**\n"
+                    ""
                     if cargo_aircraft
                     else f"Airline hub: **{airline} · {hub}**\n"
                 )
                 + f"Route(s):\n{route_lines}\n"
-                + f"Schedule: {schedule_order_note}\n\n{RULES}",
+                + f"Schedule: {schedule_order_note}",
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,
@@ -2455,9 +2451,7 @@ class RequestFlightCog(commands.Cog):
                 description=(
                     f"**Aircraft:** {_model_label(aircraft)}\n"
                     + (
-                        "**Cargo booking:** choose up to two connected scheduled "
-                        "legs. Cargo routes do not need to return to a hub; book "
-                        "another pair after the assigned cargo legs are complete."
+                        "Cargo routes do not need to return to an approved hub."
                         if cargo_aircraft
                         else (
                             f"**Airline hubs:** {airline} · **{hub}**\n\n"
@@ -2485,12 +2479,8 @@ class RequestFlightCog(commands.Cog):
             )
 
             embed.add_field(
-                name="Flight rules",
-                value=(
-                    "• 6 hours to take off from a hub\n"
-                    "• 12 hours to take off from a non-hub\n"
-                    "• 24 hours to land if stopped in the air"
-                ),
+                name="Rules",
+                value=FLIGHT_RULES_SUMMARY,
                 inline=False,
             )
 
@@ -2605,8 +2595,7 @@ class RequestFlightCog(commands.Cog):
                 _get(routes[-1], "destination_icao", "") or ""
             ).strip().upper()
             route_policy = (
-                "**Cargo limit:** A maximum of two connected legs can be booked "
-                "at once. Book the next cargo legs after these are complete."
+                ""
                 if cargo_aircraft
                 else (
                     f"**Return-to-base check:** The final route returns to "
@@ -2622,14 +2611,14 @@ class RequestFlightCog(commands.Cog):
                     f"**Aircraft model:** {_model_label(aircraft)}\n"
                     f"**Registration:** {registration}\n"
                     + (
-                        "**Cargo operation:** Up to two connected legs per booking\n"
+                        ""
                         if cargo_aircraft
                         else f"**Airline hubs:** {airline} · {hub}\n"
                     )
                     + f"**Starting route:** {_route_text(selected_route)}\n"
                     + f"**Routes to be assigned:** {len(routes)}\n\n"
                     + f"**Your selected route chain**\n{route_lines}\n\n"
-                    + f"{route_policy}\n\n"
+                    + (f"{route_policy}\n\n" if route_policy else "")
                     + "Confirm only if you want every listed route assigned to you."
                 ),
                 color=discord.Color.green(),
@@ -2642,12 +2631,8 @@ class RequestFlightCog(commands.Cog):
             )
 
             embed.add_field(
-                name="Flight rules",
-                value=(
-                    "• 6 hours to take off from a hub\n"
-                    "• 12 hours to take off from a non-hub\n"
-                    "• 24 hours to land if stopped in the air"
-                ),
+                name="Rules",
+                value=FLIGHT_RULES_SUMMARY,
                 inline=False,
             )
 

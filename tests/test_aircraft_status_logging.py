@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import discord
@@ -177,6 +177,57 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             [("aircraft-1", "A7QRV", "ENROUTE OTHH → EGLL by QRV004")],
         )
         self.assertTrue(cog._status_log_initialized)
+
+    async def test_aircraft_missing_from_partial_startup_baseline_is_logged_later(self):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        cog, _ = self.make_cog(channel)
+        cog._status_log_initialized = False
+        model = AircraftStatusModel({})
+        aircraft_ape = {"id": "aircraft-ape", "registration": "A7-APE"}
+        position_available = False
+
+        async def get_position(aircraft_id):
+            if aircraft_id == "aircraft-ape" and not position_available:
+                raise RuntimeError("Position temporarily unavailable")
+            return self.position
+
+        client = MagicMock()
+        client.get_aircraft_position = AsyncMock(side_effect=get_position)
+        fleet = [self.aircraft, aircraft_ape]
+
+        with (
+            patch(
+                "cogs.stopped_flight_monitor.STATUS_LOG_CHANNEL_ID",
+                DM_LOG_CHANNEL_ID,
+            ),
+            patch(
+                "cogs.stopped_flight_monitor.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await cog._log_fleet_status_changes(
+                client,
+                model,
+                fleet,
+                {},
+            )
+
+            self.assertTrue(cog._status_log_initialized)
+            channel.send.assert_not_awaited()
+
+            position_available = True
+            await cog._log_fleet_status_changes(
+                client,
+                model,
+                fleet,
+                {},
+            )
+
+        channel.send.assert_awaited_once()
+        self.assertIn("**A7-APE**", channel.send.await_args.args[0])
+        self.assertIn("Enroute", channel.send.await_args.args[0])
+        self.assertIn("aircraft-ape", [update[0] for update in model.updates])
 
     def test_status_line_uses_route_and_pilot_mention_not_flight_number(self):
         landed_flight = {
@@ -458,7 +509,11 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
                 new_callable=AsyncMock,
                 return_value=True,
             ) as report,
-            patch.object(cog, "_send_pilot_wave", new_callable=AsyncMock),
+            patch.object(
+                cog,
+                "_send_pilot_wave",
+                new_callable=AsyncMock,
+            ) as recovery_wave,
         ):
             await cog._unassign_and_alert(
                 client,
@@ -480,6 +535,170 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             report.await_args_list[-1].args[1],
             "1-hour Executive warning",
+        )
+        recovery_wave.assert_not_awaited()
+
+    async def test_public_recovery_offer_pings_opt_in_role_and_persists_message(self):
+        channel = MagicMock()
+        channel.id = 444
+        message = MagicMock()
+        message.id = 555
+        channel.send = AsyncMock(return_value=message)
+        cog, bot = self.make_cog(channel)
+        cog._registered_views = set()
+        bot.add_view = MagicMock()
+        role = MagicMock()
+        role.mention = "<@&321>"
+        guild = MagicMock()
+        guild.get_role.return_value = role
+        bot.get_guild.return_value = guild
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+        model = MagicMock()
+        model.update_incident = AsyncMock()
+
+        with (
+            patch(
+                "cogs.stopped_flight_monitor.RECOVERY_ALERT_CHANNEL_ID",
+                444,
+            ),
+            patch(
+                "cogs.stopped_flight_monitor.RECOVERY_PING_ROLE_ID",
+                321,
+            ),
+        ):
+            posted = await cog._send_public_recovery_offer(model, row)
+
+        self.assertTrue(posted)
+        content = channel.send.await_args.args[0]
+        self.assertIn("<@&321>", content)
+        self.assertIn("A7BAB · QR1302", content)
+        self.assertIn("Any Fleet pilot may claim", content)
+        self.assertEqual(
+            model.update_incident.await_args.args[1],
+            {"alert_channel_id": "444", "alert_message_id": "555"},
+        )
+        self.assertEqual(
+            channel.send.await_args.kwargs["allowed_mentions"].roles,
+            [role],
+        )
+
+    async def test_one_hour_posts_public_offer_without_starting_dm_wave(self):
+        cog, bot = self.make_cog(MagicMock())
+        stopped_since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            hours=1,
+            minutes=5,
+        )
+        row = {
+            "schedule_id": "schedule-1",
+            "aircraft_id": "aircraft-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "original_crew_json": "[]",
+            "stopped_since": stopped_since,
+            "lifecycle": "available",
+            "eta_warning_sent": True,
+            "one_hour_sent": False,
+            "two_hour_sent": False,
+            "three_hour_sent": False,
+            "four_hour_sent": False,
+        }
+        model = MagicMock()
+        model.get_incident = AsyncMock(return_value=row)
+        model.update_incident = AsyncMock()
+        client = MagicMock()
+        schedule = {
+            "id": "schedule-1",
+            "aircraft_id": "aircraft-1",
+            "status": 6,
+            "crew": [],
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+        position = {"state": 4, "is_on_ground": False}
+
+        with (
+            patch.object(
+                cog,
+                "_send_public_recovery_offer",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as public_offer,
+            patch.object(
+                cog,
+                "_send_pilot_wave",
+                new_callable=AsyncMock,
+            ) as recovery_wave,
+        ):
+            await cog._process_schedule(
+                client,
+                model,
+                schedule,
+                position,
+                "A7BAB",
+            )
+
+        public_offer.assert_awaited_once_with(model, row)
+        recovery_wave.assert_not_awaited()
+        self.assertTrue(
+            any(
+                call.args[1] == {"one_hour_sent": 1}
+                for call in model.update_incident.await_args_list
+            )
+        )
+
+    async def test_recovery_role_reaction_adds_role_only_on_configured_panel(self):
+        cog, bot = self.make_cog(MagicMock())
+        bot.user = None
+        member = MagicMock()
+        member.bot = False
+        member.add_roles = AsyncMock()
+        payload = MagicMock()
+        payload.user_id = 123
+        payload.guild_id = 456
+        payload.message_id = 789
+        payload.emoji.id = 987
+        payload.member = member
+        role = MagicMock()
+        guild = MagicMock()
+        guild.get_role.return_value = role
+        guild.fetch_member = AsyncMock(return_value=member)
+        bot.get_guild.return_value = guild
+        model = MagicMock()
+        model.get_recovery_role_panel = AsyncMock(
+            return_value={
+                "guild_id": "456",
+                "message_id": "789",
+                "emoji_id": "987",
+            }
+        )
+        bot.stopped_flight_model = model
+
+        with patch("cogs.stopped_flight_monitor.RECOVERY_PING_ROLE_ID", 321):
+            await cog.on_raw_reaction_add(payload)
+
+        member.add_roles.assert_awaited_once_with(
+            role,
+            reason="Opted in to stopped-flight recovery alerts",
+        )
+
+        payload.message_id = 790
+        await cog.on_raw_reaction_add(payload)
+        member.add_roles.assert_awaited_once()
+
+        payload.message_id = 789
+        member.remove_roles = AsyncMock()
+        await cog.on_raw_reaction_remove(payload)
+        member.remove_roles.assert_awaited_once_with(
+            role,
+            reason="Opted out of stopped-flight recovery alerts",
         )
 
     async def test_fleet_pilot_can_claim_open_slot_with_executive_retained(self):
@@ -541,7 +760,11 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("cogs.stopped_flight_monitor.FLEET_ROLE_ID", 42),
-            patch.object(cog, "_expire_claim_messages", new_callable=AsyncMock),
+            patch.object(
+                cog,
+                "_expire_claim_messages",
+                new_callable=AsyncMock,
+            ) as expire_messages,
         ):
             await cog.claim_stopped_flight(interaction, "schedule-1")
 
@@ -550,6 +773,10 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         )
         model.confirm_claim.assert_awaited_once_with(
             "schedule-1", str(member.id)
+        )
+        self.assertIn(
+            f"claimed by <@{member.id}> (Pilot)",
+            expire_messages.await_args.args[2],
         )
 
     async def test_eta_warning_uses_aircraft_registration_not_flight_number(self):
@@ -725,6 +952,65 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             "and the original assigned pilot.",
             message_text,
         )
+
+    async def test_recovery_wave_contacts_no_more_than_five_fleet_pilots(self):
+        cog, bot = self.make_cog(MagicMock())
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        members = []
+        pilots = []
+        for index in range(6):
+            member = MagicMock()
+            member.id = 100 + index
+            member.bot = False
+            member.display_name = f"Pilot {index}"
+            member.nick = None
+            message = MagicMock()
+            message.channel.id = 123
+            message.id = 456 + index
+            member.send = AsyncMock(return_value=message)
+            members.append(member)
+            pilots.append(
+                {
+                    "callsign": f"QRV{index:03}",
+                    "discordid": str(member.id),
+                    "ifuserid": f"if-user-{index}",
+                }
+            )
+        role = MagicMock()
+        role.members = members
+        guild = MagicMock()
+        guild.get_role.return_value = role
+        bot.get_guild.return_value = guild
+        bot.add_view = MagicMock()
+        cog._registered_views = set()
+        cog._activity_cache = {
+            pilot["ifuserid"]: (now - timedelta(minutes=1), 1)
+            for pilot in pilots
+        }
+        model = MagicMock()
+        model.get_dm_events = AsyncMock(return_value=[])
+        model.get_active_pilots = AsyncMock(return_value=pilots)
+        model.get_incident_state = AsyncMock(
+            return_value={"lifecycle": "available"}
+        )
+        model.record_dm_event = AsyncMock()
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "original_crew_json": "[]",
+        }
+
+        with patch(
+            "cogs.stopped_flight_monitor.post_dm_report",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            await cog._send_pilot_wave(model, row, wave=2)
+
+        self.assertEqual(sum(member.send.await_count for member in members), 5)
 
     async def test_crew_removal_dm_explains_next_leg_continuation(self):
         cog, bot = self.make_cog(MagicMock())

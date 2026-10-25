@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from api.if_live_manager import (
@@ -38,6 +39,13 @@ FLEET_ROLE_ID = int(
     os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "1484645309983490119") or 0
 )
 EXECUTIVE_ROLE_ID = 1090751678564810913
+RECOVERY_ALERT_CHANNEL_ID = int(
+    os.getenv("STOPPED_FLIGHT_RECOVERY_CHANNEL_ID", "1563838342431514755") or 0
+)
+RECOVERY_PING_ROLE_ID = int(
+    os.getenv("STOPPED_FLIGHT_RECOVERY_ROLE_ID", "1563838770133082153") or 0
+)
+RECOVERY_OPT_IN_EMOJI_NAME = "qatari"
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", str(DM_LOG_CHANNEL_ID))
     or DM_LOG_CHANNEL_ID
@@ -51,6 +59,7 @@ STOPPED_POSITION_STATE = 4
 IN_FLIGHT_SCHEDULE_STATUS = 6
 MAX_ETA_WARNING_ATTEMPTS = 1
 FLIGHT_HISTORY_DAYS = 3
+MAX_RECOVERY_DM_RECIPIENTS = 5
 DEMAND_HISTORY_DAYS = 7
 MAX_DEMAND_COUNT_BEFORE_CAPPING = 11
 MAX_DEMAND_HISTORY_PAGES = 5
@@ -501,6 +510,159 @@ class StoppedFlightMonitor(commands.Cog):
     def cog_unload(self):
         self.monitor_stopped_flights.cancel()
 
+    @app_commands.command(
+        name="setup_recovery_role",
+        description="Post the recovery-alert opt-in message in this channel.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_recovery_role(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        model = getattr(self.bot, "stopped_flight_model", None)
+        if guild is None or model is None or interaction.channel is None:
+            await interaction.response.send_message(
+                "Run this command in a server text channel after the database is ready.",
+                ephemeral=True,
+            )
+            return
+        role = guild.get_role(RECOVERY_PING_ROLE_ID)
+        emoji = discord.utils.get(
+            guild.emojis,
+            name=RECOVERY_OPT_IN_EMOJI_NAME,
+        )
+        if role is None:
+            await interaction.response.send_message(
+                f"The configured recovery alert role `{RECOVERY_PING_ROLE_ID}` "
+                "was not found in this server.",
+                ephemeral=True,
+            )
+            return
+        bot_member = guild.me
+        if (
+            bot_member is None
+            or not bot_member.guild_permissions.manage_roles
+            or bot_member.top_role <= role
+        ):
+            await interaction.response.send_message(
+                "I need Manage Roles permission, and my highest role must be "
+                "above the recovery alert role.",
+                ephemeral=True,
+            )
+            return
+        if emoji is None or not emoji.available:
+            await interaction.response.send_message(
+                f"The server custom emoji `:{RECOVERY_OPT_IN_EMOJI_NAME}:` "
+                "is unavailable.",
+                ephemeral=True,
+            )
+            return
+        try:
+            await model.ensure_tables()
+            message = await interaction.channel.send(
+                f"React with {emoji} to get the stopped-flight recovery alert role "
+                f"({role.mention}). Remove your reaction to opt out."
+            )
+            await message.add_reaction(emoji)
+            await model.set_recovery_role_panel(
+                str(guild.id),
+                str(interaction.channel_id),
+                str(message.id),
+                str(emoji.id),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Could not publish stopped-flight recovery role panel."
+            )
+            await interaction.response.send_message(
+                "I couldn't post the opt-in message or add its reaction. "
+                "Check my channel permissions and try again.",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            log.exception(
+                "Could not save stopped-flight recovery role panel configuration."
+            )
+            await interaction.response.send_message(
+                "The opt-in message could not be saved. Check the bot database "
+                "permissions and try again.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"Recovery alert opt-in is set up in {interaction.channel.mention}.",
+            ephemeral=True,
+        )
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload):
+        await self._handle_recovery_role_reaction(payload, add_role=True)
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, payload):
+        await self._handle_recovery_role_reaction(payload, add_role=False)
+
+    async def _handle_recovery_role_reaction(self, payload, add_role):
+        bot_user = self.bot.user
+        if bot_user and int(payload.user_id) == int(bot_user.id):
+            return
+        model = getattr(self.bot, "stopped_flight_model", None)
+        if model is None:
+            return
+        try:
+            config = await model.get_recovery_role_panel()
+        except Exception:
+            log.exception("Could not load stopped-flight recovery role panel.")
+            return
+        if not config:
+            return
+        emoji_id = getattr(payload.emoji, "id", None)
+        if (
+            str(payload.guild_id) != str(config["guild_id"])
+            or str(payload.message_id) != str(config["message_id"])
+            or str(emoji_id or "") != str(config["emoji_id"])
+        ):
+            return
+        guild = self.bot.get_guild(int(config["guild_id"]))
+        role = guild.get_role(RECOVERY_PING_ROLE_ID) if guild else None
+        if role is None:
+            log.error(
+                "Recovery opt-in role %s is not available in guild %s.",
+                RECOVERY_PING_ROLE_ID,
+                config["guild_id"],
+            )
+            return
+        member = getattr(payload, "member", None) if add_role else None
+        if member is None and guild:
+            try:
+                member = await guild.fetch_member(int(payload.user_id))
+            except discord.NotFound:
+                return
+            except discord.HTTPException:
+                log.exception(
+                    "Could not fetch member %s for recovery role reaction.",
+                    payload.user_id,
+                )
+                return
+        if member is None or member.bot:
+            return
+        try:
+            if add_role:
+                await member.add_roles(
+                    role,
+                    reason="Opted in to stopped-flight recovery alerts",
+                )
+            else:
+                await member.remove_roles(
+                    role,
+                    reason="Opted out of stopped-flight recovery alerts",
+                )
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Could not %s recovery alert role for member %s.",
+                "add" if add_role else "remove",
+                payload.user_id,
+            )
+
     @tasks.loop(minutes=POLL_INTERVAL_MINUTES)
     async def monitor_stopped_flights(self):
         if not ORG_ID:
@@ -816,39 +978,34 @@ class StoppedFlightMonitor(commands.Cog):
                     registration,
                     status_text,
                 )
-            if expected_aircraft_ids.issubset(current_statuses):
+            if current_statuses or not expected_aircraft_ids:
                 self._status_log_initialized = True
-                log.info(
-                    "Established the initial aircraft status baseline for %s aircraft; "
-                    "startup status messages were suppressed.",
-                    len(current_statuses),
-                )
-            else:
+                if expected_aircraft_ids.issubset(current_statuses):
+                    log.info(
+                        "Established the initial aircraft status baseline for %s "
+                        "aircraft; startup status messages were suppressed.",
+                        len(current_statuses),
+                    )
+                else:
+                    log.warning(
+                        "Established a partial aircraft status baseline (%s of %s "
+                        "positions). Aircraft first seen on later polls will be logged.",
+                        len(current_statuses),
+                        len(expected_aircraft_ids),
+                    )
+            elif expected_aircraft_ids:
                 log.warning(
-                    "Aircraft status baseline is incomplete (%s of %s positions); "
-                    "status notifications remain suppressed until a complete poll.",
-                    len(current_statuses),
+                    "Could not establish an aircraft status baseline: no positions "
+                    "were available from %s aircraft.",
                     len(expected_aircraft_ids),
                 )
             return positions
 
-        initial_statuses = [
-            (aircraft_id, registration, status_text)
-            for aircraft_id, (registration, status_text) in current_statuses.items()
-            if aircraft_id not in previous_statuses
-        ]
-        for aircraft_id, registration, status_text in initial_statuses:
-            await model.set_aircraft_status(
-                aircraft_id,
-                registration,
-                status_text,
-            )
-
         changed = [
             (aircraft_id, registration, status_text)
             for aircraft_id, (registration, status_text) in current_statuses.items()
-            if aircraft_id in previous_statuses
-            and previous_statuses[aircraft_id] != status_text
+            if aircraft_id not in previous_statuses
+            or previous_statuses[aircraft_id] != status_text
         ]
         if not changed:
             return positions
@@ -1016,7 +1173,12 @@ class StoppedFlightMonitor(commands.Cog):
             await self._expire_claim_messages(
                 model,
                 schedule_id,
-                "✅ This flight has been booked by another pilot.",
+                (
+                    f"✅ This flight was claimed by <@{claimant_discord_id}> "
+                    f"({pilot.get('callsign')})."
+                    if claimant_discord_id and pilot and pilot.get("callsign")
+                    else "✅ This flight has already been claimed by another pilot."
+                ),
             )
             return
         if row["lifecycle"] == "claiming":
@@ -1027,7 +1189,9 @@ class StoppedFlightMonitor(commands.Cog):
                     expected_lifecycle="claiming",
                 )
                 await self._expire_claim_messages(
-                    model, schedule_id, "✅ This flight was booked by another fleet pilot."
+                    model,
+                    schedule_id,
+                    "✅ This flight has already been claimed by another Fleet pilot.",
                 )
             return
 
@@ -1123,9 +1287,20 @@ class StoppedFlightMonitor(commands.Cog):
             return
         elapsed = _utcnow() - stopped_since
         if elapsed >= timedelta(hours=1) and not row["one_hour_sent"]:
-            row = await self._unassign_and_alert(client, model, schedule, row)
-            if not row:
-                return
+            if row["lifecycle"] == "monitoring":
+                row = await self._unassign_and_alert(client, model, schedule, row)
+                if not row:
+                    return
+            if row["lifecycle"] == "available" and not row["one_hour_sent"]:
+                if await self._send_public_recovery_offer(model, row):
+                    await model.update_incident(
+                        schedule_id,
+                        {"one_hour_sent": 1},
+                        expected_lifecycle="available",
+                    )
+                    row = await model.get_incident(schedule_id)
+                    if row is None:
+                        return
         if elapsed >= timedelta(hours=2) and not row["two_hour_sent"]:
             wave_sent = True
             try:
@@ -1299,7 +1474,7 @@ class StoppedFlightMonitor(commands.Cog):
 
         await model.update_incident(
             schedule_id,
-            {"lifecycle": "available", "one_hour_sent": 1},
+            {"lifecycle": "available"},
             expected_lifecycle="monitoring",
         )
         row = await model.get_incident(schedule_id)
@@ -1371,20 +1546,71 @@ class StoppedFlightMonitor(commands.Cog):
                 "Executive crew members remain assigned and were not removed."
             ],
         )
+        return row
+
+    async def _send_public_recovery_offer(self, model, row):
+        if row.get("alert_message_id"):
+            return True
+        if not RECOVERY_ALERT_CHANNEL_ID or not RECOVERY_PING_ROLE_ID:
+            log.error(
+                "Public stopped-flight offers require recovery channel and role IDs."
+            )
+            return False
+        guild = self.bot.get_guild(GUILD_ID)
+        role = guild.get_role(RECOVERY_PING_ROLE_ID) if guild else None
+        if role is None:
+            log.error(
+                "Cannot post stopped-flight offer: recovery ping role %s is unavailable.",
+                RECOVERY_PING_ROLE_ID,
+            )
+            return False
         try:
-            await self._send_pilot_wave(model, row, wave=1)
-        except Exception as exc:
-            log.exception("Could not send one-hour recovery DMs for %s", schedule_id)
+            channel = self.bot.get_channel(RECOVERY_ALERT_CHANNEL_ID)
+            if channel is None:
+                channel = await self.bot.fetch_channel(RECOVERY_ALERT_CHANNEL_ID)
+            message = await channel.send(
+                f"<@&{RECOVERY_PING_ROLE_ID}> **Stopped flight available to claim**\n"
+                f"**{row['registration']} · {row['callsign']}** "
+                f"({row['origin_icao']} → {row['destination_icao']})\n"
+                "Stopped in the air for at least one hour. Any Fleet pilot may "
+                "claim it with the button below. Recovery assignments bypass the "
+                "normal two-aircraft limit.",
+                view=self._claim_view(str(row["schedule_id"])),
+                allowed_mentions=discord.AllowedMentions(
+                    roles=[role],
+                    users=False,
+                    everyone=False,
+                ),
+            )
+            await model.update_incident(
+                row["schedule_id"],
+                {
+                    "alert_channel_id": str(channel.id),
+                    "alert_message_id": str(message.id),
+                },
+                expected_lifecycle="available",
+            )
+            log.info(
+                "Posted public stopped-flight offer for %s to channel %s.",
+                row["schedule_id"],
+                channel.id,
+            )
+            return True
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Could not post public stopped-flight offer for schedule %s.",
+                row["schedule_id"],
+            )
             await self._send_dm_recipient_report(
                 row,
-                "1-hour recovery alert",
+                "1-hour public recovery offer failed",
                 [],
                 notes=[
-                    "The recovery DM wave failed "
-                    f"({type(exc).__name__}); see bot logs for details."
+                    "Could not post the public recovery alert. The bot will retry "
+                    "on the next monitor cycle; recovery DMs are scheduled at two hours."
                 ],
             )
-        return row
+            return False
 
     async def _executive_crew_ids(self, if_user_ids, required=True):
         if not if_user_ids:
@@ -1728,7 +1954,7 @@ class StoppedFlightMonitor(commands.Cog):
             if not had_cached_score:
                 await asyncio.sleep(1.05)
 
-        selected = candidates
+        selected = candidates[:MAX_RECOVERY_DM_RECIPIENTS]
         delivered_recipients = []
         failed_recipients = []
         for candidate in selected:
@@ -1858,9 +2084,16 @@ class StoppedFlightMonitor(commands.Cog):
                 f"{linked_pilot_count} with active linked pilot records, "
                 f"{recent_activity_count} with recent flights, "
                 f"{activity_check_failures} flight-history checks failed, "
-                f"{len(selected)} eligible pilots selected."
+                f"{len(candidates)} eligible pilots, "
+                f"{len(selected)} selected (maximum "
+                f"{MAX_RECOVERY_DM_RECIPIENTS})."
             )
         ]
+        if len(candidates) > len(selected):
+            diagnostic_notes.append(
+                f"{len(candidates) - len(selected)} eligible pilots were not "
+                "contacted because the recovery DM wave is capped."
+            )
         exclusion_labels = {
             "missing_link": "no active linked pilot record",
             "already_contacted": "already received this recovery flight DM",
@@ -2107,7 +2340,12 @@ class StoppedFlightMonitor(commands.Cog):
 
         await model.confirm_claim(schedule_id, str(member.id))
         await self._expire_claim_messages(
-            model, schedule_id, f"✅ This flight was booked by <@{member.id}>."
+            model,
+            schedule_id,
+            (
+                f"✅ This flight was claimed by <@{member.id}> "
+                f"({pilot.get('callsign') or 'Pilot'})."
+            ),
         )
         await interaction.response.send_message(
             f"✅ **Flight booked.** You are assigned to "
