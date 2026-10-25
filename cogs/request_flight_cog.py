@@ -320,6 +320,28 @@ def _active_schedules(schedules):
     ]
 
 
+def _current_assignments_for_pilot(schedules, if_user_id, registration_by_aircraft):
+    """Return this pilot's active assignments on aircraft still in the fleet."""
+    assignments = {}
+    target_user_id = str(if_user_id).strip()
+    current_aircraft_ids = set(registration_by_aircraft)
+
+    for route in _active_schedules(schedules):
+        if not any(
+            _crew_user_id(member) == target_user_id
+            for member in (_get(route, "crew", []) or [])
+        ):
+            continue
+
+        aircraft_id = str(_get(route, "aircraft_id") or "")
+        if aircraft_id not in current_aircraft_ids:
+            continue
+
+        assignments.setdefault(aircraft_id, []).append(route)
+
+    return assignments
+
+
 def _schedules_for_aircraft(schedules, aircraft_id):
     """Keep only schedule records belonging to the requested aircraft."""
     expected_id = str(aircraft_id)
@@ -2056,18 +2078,11 @@ class RequestFlightCog(commands.Cog):
                 for aircraft in fleet
                 if _get(aircraft, "id") not in (None, "")
             }
-            assignments = {}
-            for route in _active_schedules(schedules):
-                if not any(
-                    _crew_user_id(member) == if_user_id
-                    for member in (_get(route, "crew", []) or [])
-                ):
-                    continue
-
-                aircraft_id = str(_get(route, "aircraft_id") or "")
-                if not aircraft_id:
-                    continue
-                assignments.setdefault(aircraft_id, []).append(route)
+            assignments = _current_assignments_for_pilot(
+                schedules,
+                if_user_id,
+                registration_by_aircraft,
+            )
 
             if not assignments:
                 await interaction.followup.send(

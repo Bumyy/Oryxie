@@ -4,12 +4,13 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import discord
 
-from cogs.dm_logging import DM_LOG_CHANNEL_ID
 from cogs.stopped_flight_monitor import (
     StoppedFlightMonitor,
     _aircraft_status_text,
     _status_log_line,
 )
+
+TEST_STATUS_LOG_CHANNEL_ID = 123456789
 
 
 class AircraftStatusModel:
@@ -31,6 +32,12 @@ class AircraftStatusModel:
 
 class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.status_channel_patcher = patch(
+            "cogs.stopped_flight_monitor.STATUS_LOG_CHANNEL_ID",
+            TEST_STATUS_LOG_CHANNEL_ID,
+        )
+        self.status_channel_patcher.start()
+        self.addCleanup(self.status_channel_patcher.stop)
         self.aircraft = {"id": "aircraft-1", "registration": "A7QRV"}
         self.position = {
             "state": 2,
@@ -113,7 +120,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "cogs.stopped_flight_monitor.STATUS_LOG_CHANNEL_ID",
-                DM_LOG_CHANNEL_ID,
+                TEST_STATUS_LOG_CHANNEL_ID,
             ),
             patch(
                 "cogs.stopped_flight_monitor.asyncio.sleep",
@@ -127,7 +134,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
                 {"aircraft-1": [self.flight]},
             )
 
-        bot.get_channel.assert_called_once_with(DM_LOG_CHANNEL_ID)
+        bot.get_channel.assert_called_once_with(TEST_STATUS_LOG_CHANNEL_ID)
         channel.send.assert_awaited_once()
         self.assertIn(
             "Enroute, Route: OTHH -> EGLL by <@123456789> (QRV004)",
@@ -199,7 +206,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "cogs.stopped_flight_monitor.STATUS_LOG_CHANNEL_ID",
-                DM_LOG_CHANNEL_ID,
+                TEST_STATUS_LOG_CHANNEL_ID,
             ),
             patch(
                 "cogs.stopped_flight_monitor.asyncio.sleep",
@@ -388,7 +395,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "cogs.stopped_flight_monitor.STATUS_LOG_CHANNEL_ID",
-                DM_LOG_CHANNEL_ID,
+                TEST_STATUS_LOG_CHANNEL_ID,
             ),
             patch(
                 "cogs.stopped_flight_monitor.asyncio.sleep",
@@ -489,7 +496,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "cogs.stopped_flight_monitor.EXECUTIVE_ROLE_ID",
-                1090751678564810913,
+                42,
             ),
             patch.object(
                 cog,
@@ -570,7 +577,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "cogs.stopped_flight_monitor.EXECUTIVE_ROLE_ID",
-                1090751678564810913,
+                42,
             ),
             patch.object(
                 cog,

@@ -1,9 +1,9 @@
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
-from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
+from cogs.dm_logging import post_dm_report
 from cogs.route_ready_notifications import (
     ROUTE_READY_TABLE_DDL,
     RouteReadyNotifications,
@@ -79,6 +79,12 @@ class RouteReadySchemaDatabase:
 
 class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.dm_log_channel_patcher = patch(
+            "cogs.dm_logging.DM_LOG_CHANNEL_ID",
+            123456789,
+        )
+        self.dm_log_channel_patcher.start()
+        self.addCleanup(self.dm_log_channel_patcher.stop)
         self.arrived = {
             "id": "arrived",
             "aircraft_id": "aircraft",
@@ -274,15 +280,16 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
         bot = MagicMock()
         bot.get_channel.return_value = channel
 
-        posted = await post_dm_report(
-            bot,
-            "delivery report",
-            MagicMock(),
-            "test DM",
-        )
+        with patch("cogs.dm_logging.DM_LOG_CHANNEL_ID", 123456789):
+            posted = await post_dm_report(
+                bot,
+                "delivery report",
+                MagicMock(),
+                "test DM",
+            )
 
         self.assertTrue(posted)
-        bot.get_channel.assert_called_once_with(DM_LOG_CHANNEL_ID)
+        bot.get_channel.assert_called_once_with(123456789)
         channel.send.assert_awaited_once()
 
     async def test_dm_report_helper_splits_reports_over_discord_limit(self):
@@ -292,12 +299,13 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
         bot.get_channel.return_value = channel
         content = "DM delivery report\n" + ("x" * 4500)
 
-        posted = await post_dm_report(
-            bot,
-            content,
-            MagicMock(),
-            "large test DM",
-        )
+        with patch("cogs.dm_logging.DM_LOG_CHANNEL_ID", 123456789):
+            posted = await post_dm_report(
+                bot,
+                content,
+                MagicMock(),
+                "large test DM",
+            )
 
         self.assertTrue(posted)
         chunks = [call.args[0] for call in channel.send.await_args_list]

@@ -14,11 +14,6 @@ class RecoveryRoleCommandTests(unittest.TestCase):
         command = StoppedFlightMonitor.setup_recovery_role
         role_check = command.checks[0]
 
-        self.assertEqual(
-            RECOVERY_ROLE_SETUP_AUTHORIZED_ROLE_ID,
-            1090751678564810913,
-        )
-
         authorized_user = SimpleNamespace(
             get_role=lambda role_id: (
                 SimpleNamespace(id=role_id)

@@ -14,7 +14,7 @@ if _configured_channel_id and (
     )
     _configured_channel_id = ""
 
-DM_LOG_CHANNEL_ID = int(_configured_channel_id or "1562428318043602965")
+DM_LOG_CHANNEL_ID = int(_configured_channel_id or "0")
 DISCORD_MESSAGE_LIMIT = 2000
 
 
@@ -35,6 +35,13 @@ def _split_report_content(content):
 
 
 async def post_dm_report(bot, content, logger, context):
+    if not DM_LOG_CHANNEL_ID:
+        logger.error(
+            "Could not post %s DM report: STOPPED_FLIGHT_DM_LOG_CHANNEL_ID "
+            "is not configured.",
+            context,
+        )
+        return False
     try:
         channel = bot.get_channel(DM_LOG_CHANNEL_ID)
         if channel is None:
