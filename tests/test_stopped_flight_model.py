@@ -10,6 +10,7 @@ class SchemaDatabase:
         self.allow_create = allow_create
         self.executed = []
         self.recovery_panel = None
+        self.write_error = None
 
     async def fetch_one(self, query, args=None):
         if query.startswith("SHOW TABLES"):
@@ -44,6 +45,8 @@ class SchemaDatabase:
         if normalized.startswith(
             "INSERT INTO if_stopped_flight_recovery_role_config"
         ):
+            if self.write_error:
+                raise self.write_error
             if not self.allow_create:
                 return 0
             guild_id, channel_id, message_id, emoji_id = args
@@ -55,6 +58,9 @@ class SchemaDatabase:
             }
             return 1
         return 0
+
+    async def execute_or_raise(self, query, args=None):
+        return await self.execute(query, args)
 
 
 class StoppedFlightModelTests(unittest.IsolatedAsyncioTestCase):
@@ -114,6 +120,20 @@ class StoppedFlightModelTests(unittest.IsolatedAsyncioTestCase):
         model = StoppedFlightModel(db)
 
         with self.assertRaisesRegex(RuntimeError, "INSERT/UPDATE permissions"):
+            await model.set_recovery_role_panel(
+                "guild-1",
+                "channel-1",
+                "message-1",
+                "emoji-1",
+            )
+
+    async def test_recovery_panel_preserves_database_write_error(self):
+        db = SchemaDatabase()
+        db.tables.add("if_stopped_flight_recovery_role_config")
+        db.write_error = RuntimeError("INSERT command denied to bot account")
+        model = StoppedFlightModel(db)
+
+        with self.assertRaisesRegex(RuntimeError, "INSERT command denied"):
             await model.set_recovery_role_panel(
                 "guild-1",
                 "channel-1",

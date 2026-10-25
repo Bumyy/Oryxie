@@ -50,7 +50,13 @@ class DatabaseManager:
             await self.connect()
         return self._pool
 
-    async def _execute_query(self, query: str, args: tuple = None, fetch_type: str = 'none'):
+    async def _execute_query(
+        self,
+        query: str,
+        args: tuple = None,
+        fetch_type: str = 'none',
+        raise_errors: bool = False,
+    ):
         """
         The central workhorse method for all database operations.
         Includes reconnection and retry logic.
@@ -61,6 +67,8 @@ class DatabaseManager:
                 pool = await self._get_pool()
                 if not pool:
                     print("Error: Database pool is not available.")
+                    if raise_errors:
+                        raise RuntimeError("Database connection pool is unavailable.")
                     return None if fetch_type in ['one', 'insert'] else [] if fetch_type == 'all' else 0
 
                 async with pool.acquire() as conn:
@@ -85,8 +93,12 @@ class DatabaseManager:
                     continue 
                 else:
                     print("Failed to execute query after reconnecting. The database might be down.")
+                    if raise_errors:
+                        raise
             except Exception as e:
                 print(f"An unexpected database error occurred: {e} - Query: {query} Args: {args}")
+                if raise_errors:
+                    raise
                 break
         
         return None if fetch_type in ['one', 'insert'] else [] if fetch_type == 'all' else 0
@@ -102,6 +114,15 @@ class DatabaseManager:
     async def execute(self, query: str, args: tuple = None):
         """Executes an INSERT, UPDATE, or DELETE query and returns row count."""
         return await self._execute_query(query, args, fetch_type='none')
+
+    async def execute_or_raise(self, query: str, args: tuple = None):
+        """Execute a write query and propagate database errors to the caller."""
+        return await self._execute_query(
+            query,
+            args,
+            fetch_type='none',
+            raise_errors=True,
+        )
 
     async def insert(self, query: str, args: tuple = None):
         """Executes an INSERT query and returns the last inserted ID."""

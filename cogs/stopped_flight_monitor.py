@@ -45,6 +45,7 @@ RECOVERY_ALERT_CHANNEL_ID = int(
 RECOVERY_PING_ROLE_ID = int(
     os.getenv("STOPPED_FLIGHT_RECOVERY_ROLE_ID", "1563838770133082153") or 0
 )
+RECOVERY_ROLE_SETUP_AUTHORIZED_ROLE_ID = 1090751678564810913
 RECOVERY_OPT_IN_EMOJI_NAME = "qatari"
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", str(DM_LOG_CHANNEL_ID))
@@ -514,8 +515,7 @@ class StoppedFlightMonitor(commands.Cog):
         name="setup_recovery_role",
         description="Post the opt-in panel for stopped-flight alert pings.",
     )
-    @app_commands.default_permissions(manage_roles=True)
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.checks.has_role(RECOVERY_ROLE_SETUP_AUTHORIZED_ROLE_ID)
     async def setup_recovery_role(self, interaction: discord.Interaction):
         guild = interaction.guild
         model = getattr(self.bot, "stopped_flight_model", None)

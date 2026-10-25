@@ -138,7 +138,8 @@ class StoppedFlightModel:
         emoji_id: str,
     ) -> int:
         await self.ensure_recovery_role_panel_table()
-        changed = await self.db.execute(
+        execute = getattr(self.db, "execute_or_raise", self.db.execute)
+        changed = await execute(
             """
             INSERT INTO if_stopped_flight_recovery_role_config
                 (config_id, guild_id, channel_id, message_id, emoji_id)
@@ -188,7 +189,8 @@ class StoppedFlightModel:
         table_name = "if_stopped_flight_recovery_role_config"
         if await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
             return
-        await self.db.execute(self._TABLE_DDL[table_name])
+        execute = getattr(self.db, "execute_or_raise", self.db.execute)
+        await execute(self._TABLE_DDL[table_name])
         if not await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
             raise RuntimeError(
                 "Required table if_stopped_flight_recovery_role_config is "
