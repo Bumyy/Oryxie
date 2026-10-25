@@ -23,7 +23,7 @@ AIRLINE_HUBS = {
     "Cathay Pacific": ("VHHH",),
     "Iberia": ("LEMD",),
     "British Airways": ("EGLL",),
-    "LATAM": ("SCEL", "SBGR", "SPJC"),
+    "LATAM": ("SBGR", "SBBR"),
     "JAL": ("RJTT",),
     "Qantas": ("YSSY", "YPPH"),
     "American Airlines": ("KDFW", "KJFK", "KPHX"),

@@ -50,7 +50,7 @@ AIRLINE_HUBS = {
     "Cathay Pacific": "VHHH",
     "Iberia": "LEMD",
     "British Airways": "EGLL",
-    "LATAM": ("SCEL", "SBGR", "SPJC"),
+    "LATAM": ("SBGR", "SBBR"),
     "JAL": "RJTT",
     "Qantas": "YSSY",
     "American Airlines": "KDFW",
@@ -106,7 +106,7 @@ def _aircraft_model(aircraft):
 # fall back to Qatar Airways / OTHH for these aircraft.
 AIRCRAFT_HUB_OVERRIDES = {
     "JA-742J": ("RJTT",),
-    "PT-LBN": ("SCEL", "SBGR", "SPJC"),
+    "PT-LBN": ("SBGR", "SBBR"),
     "A7-BAJ": ("OTHH",),
     "A7BAB": ("OTHH",),
     "G-ZBKC": ("EGLL",),
