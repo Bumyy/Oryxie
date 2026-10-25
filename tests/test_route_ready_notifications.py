@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 
 from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
-from cogs.route_ready_notifications import RouteReadyNotifications, _arrival_candidates
+from cogs.route_ready_notifications import (
+    ROUTE_READY_TABLE_DDL,
+    RouteReadyNotifications,
+    _arrival_candidates,
+)
 
 
 class RouteReadyDatabase:
@@ -53,6 +57,26 @@ class RouteReadyDatabase:
         return 1
 
 
+class RouteReadySchemaDatabase:
+    def __init__(self, allow_create=True):
+        self.tables = set()
+        self.allow_create = allow_create
+
+    async def fetch_one(self, query, args=None):
+        table_name = args[0]
+        return {"table": table_name} if table_name in self.tables else None
+
+    async def execute(self, query, args=None):
+        if query.strip().startswith("CREATE TABLE") and self.allow_create:
+            table_name = query.split("CREATE TABLE IF NOT EXISTS ", 1)[1].split(
+                " ",
+                1,
+            )[0]
+            self.tables.add(table_name)
+            return 1
+        return 0
+
+
 class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.arrived = {
@@ -80,6 +104,27 @@ class RouteReadyNotificationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(candidates, [])
+
+    async def test_ensure_tables_creates_missing_route_ready_tables(self):
+        db = RouteReadySchemaDatabase()
+        cog = RouteReadyNotifications.__new__(RouteReadyNotifications)
+        cog._tables_ready = False
+
+        await cog._ensure_tables(db)
+
+        self.assertEqual(db.tables, set(ROUTE_READY_TABLE_DDL))
+        self.assertTrue(cog._tables_ready)
+
+    async def test_ensure_tables_reports_missing_create_permission(self):
+        db = RouteReadySchemaDatabase(allow_create=False)
+        cog = RouteReadyNotifications.__new__(RouteReadyNotifications)
+        cog._tables_ready = False
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Grant CREATE TABLE permissions",
+        ):
+            await cog._ensure_tables(db)
 
     async def test_failed_route_ready_dm_gets_one_retry_then_stops(self):
         channel = MagicMock()

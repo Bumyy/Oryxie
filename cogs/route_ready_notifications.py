@@ -16,6 +16,31 @@ POLL_INTERVAL_MINUTES = 2
 ARRIVED_STATUS = 11
 UNAVAILABLE_STATUSES = {9, 11}
 NEXT_LEG_READY_STATUSES = {1, 2, 3, 4, 8}
+ROUTE_READY_TABLE_DDL = {
+    "if_route_ready_schedule_state": """
+        CREATE TABLE IF NOT EXISTS if_route_ready_schedule_state (
+            schedule_id VARCHAR(64) NOT NULL PRIMARY KEY,
+            last_status INT NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            COLLATE=utf8mb4_unicode_ci
+    """,
+    "if_route_ready_dm_events": """
+        CREATE TABLE IF NOT EXISTS if_route_ready_dm_events (
+            event_key CHAR(64) NOT NULL PRIMARY KEY,
+            arrival_schedule_id VARCHAR(64) NOT NULL,
+            next_schedule_id VARCHAR(64) NOT NULL,
+            if_user_id VARCHAR(64) NOT NULL,
+            discord_user_id VARCHAR(32) NOT NULL,
+            delivery_status VARCHAR(16) NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_if_route_ready_arrival (arrival_schedule_id),
+            INDEX idx_if_route_ready_next (next_schedule_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            COLLATE=utf8mb4_unicode_ci
+    """,
+}
 
 
 def _get(obj, key, default=None):
@@ -171,10 +196,15 @@ class RouteReadyNotifications(commands.Cog):
         ):
             table = await db.fetch_one("SHOW TABLES LIKE %s", (table_name,))
             if not table:
-                raise RuntimeError(
-                    f"Required table {table_name} is missing; apply "
-                    "database/route_ready_notifications_mysql_schema.sql"
-                )
+                await db.execute(ROUTE_READY_TABLE_DDL[table_name])
+                table = await db.fetch_one("SHOW TABLES LIKE %s", (table_name,))
+                if not table:
+                    raise RuntimeError(
+                        f"Required route-ready table {table_name} is missing "
+                        "and could not be created. Grant CREATE TABLE "
+                        "permissions to the bot database account or apply "
+                        "database/route_ready_notifications_mysql_schema.sql."
+                    )
         self._tables_ready = True
 
     async def _get_organization_schedules(self, client):
