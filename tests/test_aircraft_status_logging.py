@@ -538,6 +538,70 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         )
         recovery_wave.assert_not_awaited()
 
+    async def test_executive_only_flight_does_not_require_schedule_refresh(self):
+        cog, bot = self.make_cog(MagicMock())
+        executive_role = MagicMock()
+        executive_member = MagicMock()
+        executive_member.roles = [executive_role]
+        guild = MagicMock()
+        guild.get_role.return_value = executive_role
+        guild.get_member.return_value = executive_member
+        bot.get_guild.return_value = guild
+        bot.pilots_model.get_pilot_by_ifuserid = AsyncMock(
+            return_value={"discordid": "123456789", "callsign": "QRV001"}
+        )
+
+        row = {
+            "schedule_id": "schedule-1",
+            "aircraft_id": "aircraft-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "original_crew_json": '["if-executive"]',
+        }
+        model = MagicMock()
+        model.update_incident = AsyncMock()
+        model.get_incident = AsyncMock(return_value=row)
+        client = MagicMock()
+        client.remove_crew = AsyncMock()
+        client.list_aircraft_schedules = AsyncMock()
+
+        with (
+            patch(
+                "cogs.stopped_flight_monitor.EXECUTIVE_ROLE_ID",
+                1090751678564810913,
+            ),
+            patch.object(
+                cog,
+                "_notify_executive_pilot",
+                new_callable=AsyncMock,
+                return_value="<@123456789> (QRV001)",
+            ) as executive_dm,
+            patch.object(
+                cog,
+                "_send_dm_recipient_report",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            result = await cog._unassign_and_alert(
+                client,
+                model,
+                {"id": "schedule-1", "crew": [{"userId": "if-executive"}]},
+                row,
+            )
+
+        self.assertIs(result, row)
+        client.remove_crew.assert_not_awaited()
+        client.list_aircraft_schedules.assert_not_awaited()
+        executive_dm.assert_awaited_once_with(model, row, "if-executive", ANY)
+        model.update_incident.assert_awaited_once_with(
+            "schedule-1",
+            {"lifecycle": "available"},
+            expected_lifecycle="monitoring",
+        )
+
     async def test_public_recovery_offer_pings_opt_in_role_and_persists_message(self):
         channel = MagicMock()
         channel.id = 444
@@ -647,6 +711,87 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
 
         public_offer.assert_awaited_once_with(model, row)
         recovery_wave.assert_not_awaited()
+        self.assertTrue(
+            any(
+                call.args[1] == {"one_hour_sent": 1}
+                for call in model.update_incident.await_args_list
+            )
+        )
+
+    async def test_one_hour_skips_public_offer_for_executive_flight(self):
+        cog, _ = self.make_cog(MagicMock())
+        stopped_since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            hours=1,
+            minutes=5,
+        )
+        row = {
+            "schedule_id": "schedule-1",
+            "aircraft_id": "aircraft-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "original_crew_json": '["if-executive"]',
+            "stopped_since": stopped_since,
+            "lifecycle": "monitoring",
+            "eta_warning_sent": True,
+            "one_hour_sent": False,
+            "two_hour_sent": False,
+            "three_hour_sent": False,
+            "four_hour_sent": False,
+        }
+        available_row = {**row, "lifecycle": "available"}
+        model = MagicMock()
+        model.get_incident = AsyncMock(
+            side_effect=[row, row, available_row]
+        )
+        model.update_incident = AsyncMock()
+        client = MagicMock()
+        schedule = {
+            "id": "schedule-1",
+            "aircraft_id": "aircraft-1",
+            "status": 6,
+            "crew": [{"userId": "if-executive"}],
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+        position = {"state": 4, "is_on_ground": False}
+
+        with (
+            patch.object(
+                cog,
+                "_executive_crew_ids",
+                new_callable=AsyncMock,
+                return_value={"if-executive"},
+            ),
+            patch.object(
+                cog,
+                "_unassign_and_alert",
+                new_callable=AsyncMock,
+                return_value=available_row,
+            ) as unassign,
+            patch.object(
+                cog,
+                "_send_public_recovery_offer",
+                new_callable=AsyncMock,
+            ) as public_offer,
+        ):
+            await cog._process_schedule(
+                client,
+                model,
+                schedule,
+                position,
+                "A7BAB",
+            )
+
+        unassign.assert_awaited_once_with(
+            client,
+            model,
+            schedule,
+            row,
+            executive_ids={"if-executive"},
+        )
+        public_offer.assert_not_awaited()
         self.assertTrue(
             any(
                 call.args[1] == {"one_hour_sent": 1}

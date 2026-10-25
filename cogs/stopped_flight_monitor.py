@@ -1311,11 +1311,34 @@ class StoppedFlightMonitor(commands.Cog):
         elapsed = _utcnow() - stopped_since
         if elapsed >= timedelta(hours=1) and not row["one_hour_sent"]:
             if row["lifecycle"] == "monitoring":
-                row = await self._unassign_and_alert(client, model, schedule, row)
+                executive_ids = set(
+                    await self._executive_crew_ids(original_ids)
+                )
+                row = await self._unassign_and_alert(
+                    client,
+                    model,
+                    schedule,
+                    row,
+                    executive_ids=executive_ids,
+                )
                 if not row:
                     return
             if row["lifecycle"] == "available" and not row["one_hour_sent"]:
-                if await self._send_public_recovery_offer(model, row):
+                if set(original_ids).intersection(executive_ids):
+                    await model.update_incident(
+                        schedule_id,
+                        {"one_hour_sent": 1},
+                        expected_lifecycle="available",
+                    )
+                    row = await model.get_incident(schedule_id)
+                    if row is None:
+                        return
+                    log.info(
+                        "Skipped the one-hour public recovery offer for %s "
+                        "because its original crew includes an Executive.",
+                        schedule_id,
+                    )
+                elif await self._send_public_recovery_offer(model, row):
                     await model.update_incident(
                         schedule_id,
                         {"one_hour_sent": 1},
@@ -1478,39 +1501,49 @@ class StoppedFlightMonitor(commands.Cog):
             )
         return sent_any
 
-    async def _unassign_and_alert(self, client, model, schedule, row):
+    async def _unassign_and_alert(
+        self,
+        client,
+        model,
+        schedule,
+        row,
+        executive_ids=None,
+    ):
         schedule_id = str(row["schedule_id"])
         original_ids = json.loads(row["original_crew_json"] or "[]")
         current_ids = {_crew_user_id(member) for member in _crew_members(schedule)}
         try:
-            executive_ids = await self._executive_crew_ids(original_ids)
+            if executive_ids is None:
+                executive_ids = await self._executive_crew_ids(original_ids)
             removable_ids = [
                 if_user_id
                 for if_user_id in original_ids
                 if if_user_id not in executive_ids
             ]
-            for if_user_id in removable_ids:
-                if if_user_id in current_ids:
-                    await client.remove_crew(schedule_id, if_user_id)
-            refreshed_schedules = await client.list_aircraft_schedules(
-                str(row["aircraft_id"])
-            )
-            refreshed = next(
-                (
-                    item
-                    for item in refreshed_schedules or []
-                    if str(_get(item, "id")) == schedule_id
-                ),
-                None,
-            )
-            remaining = {
-                _crew_user_id(member)
-                for member in _crew_members(refreshed)
-            } if refreshed else set()
-            if not refreshed or remaining.intersection(removable_ids):
-                raise RuntimeError(
-                    "Infinite Flight did not confirm removal of the non-Executive crew"
+            if removable_ids:
+                for if_user_id in removable_ids:
+                    if if_user_id in current_ids:
+                        await client.remove_crew(schedule_id, if_user_id)
+                refreshed_schedules = await client.list_aircraft_schedules(
+                    str(row["aircraft_id"])
                 )
+                refreshed = next(
+                    (
+                        item
+                        for item in refreshed_schedules or []
+                        if str(_get(item, "id")) == schedule_id
+                    ),
+                    None,
+                )
+                remaining = {
+                    _crew_user_id(member)
+                    for member in _crew_members(refreshed)
+                } if refreshed else set()
+                if not refreshed or remaining.intersection(removable_ids):
+                    raise RuntimeError(
+                        "Infinite Flight did not confirm removal of the "
+                        "non-Executive crew"
+                    )
         except Exception:
             log.exception("Could not unassign crew from stopped flight %s", schedule_id)
             await self._send_dm_recipient_report(
