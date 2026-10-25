@@ -227,6 +227,28 @@ class MyBot(commands.Bot):
             print(f"Synced {len(synced)} slash command(s) globally.")
             logging.info(f"Synced {len(synced)} slash command(s) globally.")
             print("Registered commands:", [cmd.name for cmd in self.tree.get_commands()])
+
+            guild_id = int(os.getenv("GUILD_ID", "0") or 0)
+            recovery_command = self.tree.get_command("setup_recovery_role")
+            if guild_id and recovery_command:
+                guild = discord.Object(id=guild_id)
+                self.tree.add_command(
+                    recovery_command,
+                    guild=guild,
+                    override=True,
+                )
+                guild_synced = await self.tree.sync(guild=guild)
+                logging.info(
+                    "Synced %s slash command(s) to guild %s, including "
+                    "setup_recovery_role.",
+                    len(guild_synced),
+                    guild_id,
+                )
+            elif not guild_id:
+                logging.warning(
+                    "GUILD_ID is not configured; setup_recovery_role will only "
+                    "be available through global slash-command sync."
+                )
         except Exception as e:
             print(f"Failed to sync slash commands globally: {e}")
             logging.error(f"Failed to sync slash commands globally: {e}")

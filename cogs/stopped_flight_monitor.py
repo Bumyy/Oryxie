@@ -512,9 +512,10 @@ class StoppedFlightMonitor(commands.Cog):
 
     @app_commands.command(
         name="setup_recovery_role",
-        description="Admin: post the opt-in panel for stopped-flight alert pings.",
+        description="Post the opt-in panel for stopped-flight alert pings.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def setup_recovery_role(self, interaction: discord.Interaction):
         guild = interaction.guild
         model = getattr(self.bot, "stopped_flight_model", None)
