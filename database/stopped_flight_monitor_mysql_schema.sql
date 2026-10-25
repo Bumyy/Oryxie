@@ -55,11 +55,3 @@ CREATE TABLE IF NOT EXISTS if_aircraft_status_logs (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS if_stopped_flight_recovery_role_config (
-    config_id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
-    guild_id VARCHAR(32) NOT NULL,
-    channel_id VARCHAR(32) NOT NULL,
-    message_id VARCHAR(32) NOT NULL,
-    emoji_id VARCHAR(32) NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

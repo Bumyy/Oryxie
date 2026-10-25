@@ -72,16 +72,6 @@ class StoppedFlightModel:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 COLLATE=utf8mb4_unicode_ci
         """,
-        "if_stopped_flight_recovery_role_config": """
-            CREATE TABLE IF NOT EXISTS if_stopped_flight_recovery_role_config (
-                config_id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
-                guild_id VARCHAR(32) NOT NULL,
-                channel_id VARCHAR(32) NOT NULL,
-                message_id VARCHAR(32) NOT NULL,
-                emoji_id VARCHAR(32) NOT NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                COLLATE=utf8mb4_unicode_ci
-        """,
     }
 
     _INCIDENT_FIELDS = {
@@ -114,7 +104,6 @@ class StoppedFlightModel:
             "if_stopped_flight_dm_events",
             "if_aircraft_route_availability",
             "if_aircraft_status_logs",
-            "if_stopped_flight_recovery_role_config",
         ):
             if not await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
                 await self.db.execute(self._TABLE_DDL[table_name])
@@ -129,75 +118,6 @@ class StoppedFlightModel:
                         "database/stopped_flight_monitor_mysql_schema.sql."
                     )
         await self._ensure_eta_warning_columns()
-
-    async def set_recovery_role_panel(
-        self,
-        guild_id: str,
-        channel_id: str,
-        message_id: str,
-        emoji_id: str,
-    ) -> int:
-        await self.ensure_recovery_role_panel_table()
-        execute = getattr(self.db, "execute_or_raise", self.db.execute)
-        changed = await execute(
-            """
-            INSERT INTO if_stopped_flight_recovery_role_config
-                (config_id, guild_id, channel_id, message_id, emoji_id)
-            VALUES (1, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                guild_id = VALUES(guild_id),
-                channel_id = VALUES(channel_id),
-                message_id = VALUES(message_id),
-                emoji_id = VALUES(emoji_id)
-            """,
-            (
-                str(guild_id),
-                str(channel_id),
-                str(message_id),
-                str(emoji_id),
-            ),
-        )
-        config = await self.get_recovery_role_panel()
-        if not config or any(
-            str(config[key]) != str(value)
-            for key, value in (
-                ("guild_id", guild_id),
-                ("channel_id", channel_id),
-                ("message_id", message_id),
-                ("emoji_id", emoji_id),
-            )
-        ):
-            raise RuntimeError(
-                "Recovery role panel configuration was not saved to "
-                "if_stopped_flight_recovery_role_config. Check database "
-                "INSERT/UPDATE permissions and the database connection."
-            )
-        if changed == 0:
-            raise RuntimeError(
-                "Database reported no change while saving recovery role panel "
-                "configuration."
-            )
-        return changed
-
-    async def get_recovery_role_panel(self) -> Optional[dict]:
-        return await self.db.fetch_one(
-            "SELECT guild_id, channel_id, message_id, emoji_id "
-            "FROM if_stopped_flight_recovery_role_config WHERE config_id = 1"
-        )
-
-    async def ensure_recovery_role_panel_table(self) -> None:
-        table_name = "if_stopped_flight_recovery_role_config"
-        if await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
-            return
-        execute = getattr(self.db, "execute_or_raise", self.db.execute)
-        await execute(self._TABLE_DDL[table_name])
-        if not await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
-            raise RuntimeError(
-                "Required table if_stopped_flight_recovery_role_config is "
-                "missing and could not be created. Grant CREATE TABLE "
-                "permission to the bot database account or apply "
-                "database/stopped_flight_monitor_mysql_schema.sql."
-            )
 
     async def _ensure_eta_warning_columns(self) -> None:
         columns = (
