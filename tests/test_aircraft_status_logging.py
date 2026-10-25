@@ -655,8 +655,10 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_recovery_role_reaction_adds_role_only_on_configured_panel(self):
+        from types import SimpleNamespace
+
         cog, bot = self.make_cog(MagicMock())
-        bot.user = None
+        bot.user = SimpleNamespace(id=999)
         member = MagicMock()
         member.bot = False
         member.add_roles = AsyncMock()
@@ -664,22 +666,30 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         payload.user_id = 123
         payload.guild_id = 456
         payload.message_id = 789
+        payload.channel_id = 654
         payload.emoji.id = 987
         payload.member = member
         role = MagicMock()
+        emoji = SimpleNamespace(id=987, name="qatari")
         guild = MagicMock()
+        guild.id = 456
         guild.get_role.return_value = role
+        guild.emojis = [emoji]
         guild.fetch_member = AsyncMock(return_value=member)
         bot.get_guild.return_value = guild
-        model = MagicMock()
-        model.get_recovery_role_panel = AsyncMock(
-            return_value={
-                "guild_id": "456",
-                "message_id": "789",
-                "emoji_id": "987",
-            }
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=999),
+            embeds=[
+                SimpleNamespace(
+                    footer=SimpleNamespace(
+                        text="Oryxie recovery role opt-in: 456"
+                    )
+                )
+            ],
         )
-        bot.stopped_flight_model = model
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=message)
+        bot.get_channel.return_value = channel
 
         with patch("cogs.stopped_flight_monitor.RECOVERY_PING_ROLE_ID", 321):
             await cog.on_raw_reaction_add(payload)
@@ -689,12 +699,17 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             reason="Opted in to stopped-flight recovery alerts",
         )
 
+        message.embeds[0].footer.text = "Unrelated message"
         payload.message_id = 790
         await cog.on_raw_reaction_add(payload)
         member.add_roles.assert_awaited_once()
 
         payload.message_id = 789
         member.remove_roles = AsyncMock()
+        await cog.on_raw_reaction_remove(payload)
+        member.remove_roles.assert_not_awaited()
+
+        message.embeds[0].footer.text = "Oryxie recovery role opt-in: 456"
         await cog.on_raw_reaction_remove(payload)
         member.remove_roles.assert_awaited_once_with(
             role,

@@ -47,6 +47,7 @@ RECOVERY_PING_ROLE_ID = int(
 )
 RECOVERY_ROLE_SETUP_AUTHORIZED_ROLE_ID = 1090751678564810913
 RECOVERY_OPT_IN_EMOJI_NAME = "qatari"
+RECOVERY_PANEL_FOOTER_PREFIX = "Oryxie recovery role opt-in:"
 ROUTE_EXHAUSTION_CHANNEL_ID = int(
     os.getenv("ROUTE_EXHAUSTION_CHANNEL_ID", str(DM_LOG_CHANNEL_ID))
     or DM_LOG_CHANNEL_ID
@@ -518,10 +519,9 @@ class StoppedFlightMonitor(commands.Cog):
     @app_commands.checks.has_role(RECOVERY_ROLE_SETUP_AUTHORIZED_ROLE_ID)
     async def setup_recovery_role(self, interaction: discord.Interaction):
         guild = interaction.guild
-        model = getattr(self.bot, "stopped_flight_model", None)
-        if guild is None or model is None or interaction.channel is None:
+        if guild is None or interaction.channel is None:
             await interaction.response.send_message(
-                "Run this command in a server text channel after the database is ready.",
+                "Run this command in a server text channel.",
                 ephemeral=True,
             )
             return
@@ -556,20 +556,22 @@ class StoppedFlightMonitor(commands.Cog):
                 ephemeral=True,
             )
             return
-        message = None
         try:
-            await model.ensure_recovery_role_panel_table()
+            embed = discord.Embed(
+                title="Stopped-flight recovery alerts",
+                description=(
+                    f"React with {emoji} to get the recovery alert role "
+                    f"({role.mention}). Remove your reaction to opt out."
+                ),
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(
+                text=f"{RECOVERY_PANEL_FOOTER_PREFIX} {guild.id}"
+            )
             message = await interaction.channel.send(
-                f"React with {emoji} to get the stopped-flight recovery alert role "
-                f"({role.mention}). Remove your reaction to opt out."
+                embed=embed,
             )
             await message.add_reaction(emoji)
-            await model.set_recovery_role_panel(
-                str(guild.id),
-                str(interaction.channel_id),
-                str(message.id),
-                str(emoji.id),
-            )
         except (discord.Forbidden, discord.HTTPException):
             log.exception(
                 "Could not publish stopped-flight recovery role panel."
@@ -581,21 +583,10 @@ class StoppedFlightMonitor(commands.Cog):
             )
             return
         except Exception:
-            log.exception(
-                "Could not save stopped-flight recovery role panel configuration."
-            )
-            if message is not None:
-                try:
-                    await message.delete()
-                except discord.HTTPException:
-                    log.exception(
-                        "Could not remove an unsaved recovery role panel message."
-                    )
+            log.exception("Could not publish stopped-flight recovery role panel.")
             await interaction.response.send_message(
-                "The recovery panel could not be saved. The bot needs CREATE "
-                "permission if the recovery config table is missing, and "
-                "INSERT/UPDATE permission to store this panel. Check the bot "
-                "database logs for the exact database error.",
+                "I couldn't publish the recovery opt-in panel. Check the bot's "
+                "channel permissions and try again.",
                 ephemeral=True,
             )
             return
@@ -616,30 +607,52 @@ class StoppedFlightMonitor(commands.Cog):
         bot_user = self.bot.user
         if bot_user and int(payload.user_id) == int(bot_user.id):
             return
-        model = getattr(self.bot, "stopped_flight_model", None)
-        if model is None:
+        if payload.guild_id is None:
             return
-        try:
-            config = await model.get_recovery_role_panel()
-        except Exception:
-            log.exception("Could not load stopped-flight recovery role panel.")
-            return
-        if not config:
+        guild = self.bot.get_guild(int(payload.guild_id))
+        if guild is None:
             return
         emoji_id = getattr(payload.emoji, "id", None)
+        emoji = discord.utils.get(
+            guild.emojis,
+            name=RECOVERY_OPT_IN_EMOJI_NAME,
+        )
+        if emoji is None or str(emoji_id or "") != str(emoji.id):
+            return
+        channel = self.bot.get_channel(int(payload.channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(payload.channel_id))
+            except (discord.Forbidden, discord.HTTPException):
+                log.exception(
+                    "Could not access channel %s for recovery role reaction.",
+                    payload.channel_id,
+                )
+                return
+        try:
+            message = await channel.fetch_message(int(payload.message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Could not inspect message %s for recovery role reaction.",
+                payload.message_id,
+            )
+            return
         if (
-            str(payload.guild_id) != str(config["guild_id"])
-            or str(payload.message_id) != str(config["message_id"])
-            or str(emoji_id or "") != str(config["emoji_id"])
+            not bot_user
+            or str(message.author.id) != str(bot_user.id)
+            or not any(
+                embed.footer.text
+                == f"{RECOVERY_PANEL_FOOTER_PREFIX} {guild.id}"
+                for embed in message.embeds
+            )
         ):
             return
-        guild = self.bot.get_guild(int(config["guild_id"]))
-        role = guild.get_role(RECOVERY_PING_ROLE_ID) if guild else None
+        role = guild.get_role(RECOVERY_PING_ROLE_ID)
         if role is None:
             log.error(
                 "Recovery opt-in role %s is not available in guild %s.",
                 RECOVERY_PING_ROLE_ID,
-                config["guild_id"],
+                guild.id,
             )
             return
         member = getattr(payload, "member", None) if add_role else None
