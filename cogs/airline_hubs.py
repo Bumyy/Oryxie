@@ -25,8 +25,8 @@ AIRLINE_HUBS = {
     "British Airways": ("EGLL",),
     "LATAM": ("SBGR", "SBBR"),
     "JAL": ("RJTT",),
-    "Qantas": ("YSSY", "YPPH"),
-    "American Airlines": ("KDFW", "KJFK", "KPHX"),
+    "Qantas": ("YSSY",),
+    "American Airlines": ("KJFK", "KPHL", "KPHX", "KCLT", "KMIA", "KDFW", "KLAX"),
 }
 
 
