@@ -17,6 +17,7 @@ from cogs.airline_hubs import (
     hubs_for_registration,
     is_cargo_registration,
 )
+from services.aircraft_classifier import load_aircraft_models
 
 log = logging.getLogger(__name__)
 
@@ -197,6 +198,80 @@ def _build_cargo_route_chain(schedules, start_index, max_routes=2):
 
 def _model_label(aircraft):
     return f"{_airline_name(aircraft)} {_aircraft_model(aircraft) or 'Model unknown'}"
+
+
+def _simbrief_assignment_link(bot, aircraft, pilot, route):
+    simbrief_service = getattr(bot, "simbrief_service", None)
+    flight_board_service = getattr(bot, "flight_board_service", None)
+    convert_aircraft = getattr(
+        flight_board_service,
+        "convert_aircraft_name_to_icao",
+        None,
+    )
+    aircraft_catalog = _get(flight_board_service, "aircraft_db", {})
+    known_aircraft_types = _get(aircraft_catalog, "infinite_flight", {})
+    aircraft_model = _aircraft_model(aircraft)
+    registration_model = load_aircraft_models().get(_registration(aircraft))
+    if registration_model == "A321NEO":
+        aircraft_model = "Airbus A321neo"
+    origin = str(_get(route, "origin_icao") or "").strip().upper()
+    destination = str(_get(route, "destination_icao") or "").strip().upper()
+    callsign = str((pilot or {}).get("callsign") or "").strip()
+
+    if (
+        simbrief_service is None
+        or not callable(convert_aircraft)
+        or not aircraft_model
+        or not re.fullmatch(r"[A-Z]{4}", origin)
+        or not re.fullmatch(r"[A-Z]{4}", destination)
+        or not callsign
+    ):
+        return None
+
+    aircraft_type = str(convert_aircraft(aircraft_model) or "").strip().upper()
+    if (
+        not aircraft_type
+        or aircraft_type == "XXXX"
+        or aircraft_type not in known_aircraft_types
+    ):
+        log.warning(
+            "Could not create SimBrief link: no catalogued ICAO type found for aircraft model %r.",
+            aircraft_model,
+        )
+        return None
+
+    return simbrief_service.generate_dispatch_link(
+        origin=origin,
+        destination=destination,
+        aircraft_type=aircraft_type,
+        callsign=callsign,
+    )
+
+
+def _simbrief_assignment_lines(bot, aircraft, pilot, routes):
+    if not routes:
+        return ""
+
+    labeled_routes = [("Departure FPL", routes[0])]
+    labeled_routes.extend(
+        (
+            f"FPL for Connecting route "
+            f"{str(_get(route, 'origin_icao') or '???').strip().upper()} -> "
+            f"{str(_get(route, 'destination_icao') or '???').strip().upper()}",
+            route,
+        )
+        for route in routes[1:-1]
+    )
+    if len(routes) > 1:
+        labeled_routes.append(("Return FPL", routes[-1]))
+
+    lines = []
+    for label, route in labeled_routes:
+        link = _simbrief_assignment_link(bot, aircraft, pilot, route)
+        if link:
+            lines.append(f"[{label}]({link})")
+
+    return "\n".join(lines)
 
 
 def _state_label(position):
@@ -1568,6 +1643,12 @@ class ClaimRouteView(discord.ui.View):
                 "callsign",
                 interaction.user.display_name,
             )
+            simbrief_lines = _simbrief_assignment_lines(
+                self.cog.bot,
+                self.aircraft,
+                self.pilot,
+                assigned,
+            )
             copilot_line = ""
 
             if self.copilot:
@@ -1607,7 +1688,9 @@ class ClaimRouteView(discord.ui.View):
                 )
                 + f"Route(s):\n{route_lines}\n"
                 + f"Schedule: {schedule_order_note}\n\n"
+                + (f"{simbrief_lines}\n\n" if simbrief_lines else "")
                 + f"**Rules**\n{FLIGHT_RULES}",
+                suppress_embeds=True,
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,

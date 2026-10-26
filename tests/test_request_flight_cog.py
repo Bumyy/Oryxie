@@ -3,7 +3,182 @@ import unittest
 from cogs.request_flight_cog import (
     RouteStartSelect,
     _current_assignments_for_pilot,
+    _simbrief_assignment_link,
+    _simbrief_assignment_lines,
 )
+
+
+class SimBriefLinkTests(unittest.TestCase):
+    def test_builds_prefilled_link_for_first_assigned_route(self):
+        class SimBriefService:
+            def generate_dispatch_link(
+                self,
+                origin,
+                destination,
+                aircraft_type,
+                callsign,
+            ):
+                return (
+                    f"{origin}|{destination}|{aircraft_type}|{callsign}"
+                )
+
+        class FlightBoardService:
+            def convert_aircraft_name_to_icao(self, model):
+                self.model = model
+                return "B77W"
+
+        class Bot:
+            simbrief_service = SimBriefService()
+            flight_board_service = FlightBoardService()
+            flight_board_service.aircraft_db = {
+                "infinite_flight": {"B77W": "Boeing 777-300ER"}
+            }
+
+        bot = Bot()
+
+        link = _simbrief_assignment_link(
+            bot,
+            {"model": "Boeing 777-300ER"},
+            {"callsign": "QRV123"},
+            {"origin_icao": "othh", "destination_icao": "egll"},
+        )
+
+        self.assertEqual(link, "OTHH|EGLL|B77W|QRV123")
+        self.assertEqual(
+            bot.flight_board_service.model,
+            "Boeing 777-300ER",
+        )
+
+    def test_skips_link_when_aircraft_type_is_unknown(self):
+        class SimBriefService:
+            def generate_dispatch_link(self, **kwargs):
+                self.generated = True
+                return "unexpected"
+
+        class FlightBoardService:
+            def convert_aircraft_name_to_icao(self, model):
+                return "NG777"
+
+        class Bot:
+            simbrief_service = SimBriefService()
+            flight_board_service = FlightBoardService()
+            flight_board_service.aircraft_db = {
+                "infinite_flight": {"B77W": "Boeing 777-300ER"}
+            }
+
+        bot = Bot()
+        link = _simbrief_assignment_link(
+            bot,
+            {"model": "Unknown aircraft"},
+            {"callsign": "QRV123"},
+            {"origin_icao": "OTHH", "destination_icao": "EGLL"},
+        )
+
+        self.assertIsNone(link)
+        self.assertFalse(
+            getattr(bot.simbrief_service, "generated", False),
+        )
+
+    def test_builds_departure_and_return_links_without_flight_numbers(self):
+        class SimBriefService:
+            def __init__(self):
+                self.requests = []
+
+            def generate_dispatch_link(
+                self,
+                origin,
+                destination,
+                aircraft_type,
+                callsign,
+            ):
+                self.requests.append(
+                    (origin, destination, aircraft_type, callsign)
+                )
+                return f"https://simbrief.test/{origin}/{destination}"
+
+        class FlightBoardService:
+            aircraft_db = {
+                "infinite_flight": {"B77W": "Boeing 777-300ER"}
+            }
+
+            def convert_aircraft_name_to_icao(self, model):
+                return "B77W"
+
+        class Bot:
+            simbrief_service = SimBriefService()
+            flight_board_service = FlightBoardService()
+
+        bot = Bot()
+        lines = _simbrief_assignment_lines(
+            bot,
+            {"model": "Boeing 777-300ER"},
+            {"callsign": "QRV123"},
+            [
+                {"origin_icao": "OTHH", "destination_icao": "EGLL"},
+                {"origin_icao": "EGLL", "destination_icao": "OTHH"},
+            ],
+        )
+
+        self.assertEqual(
+            bot.simbrief_service.requests,
+            [
+                ("OTHH", "EGLL", "B77W", "QRV123"),
+                ("EGLL", "OTHH", "B77W", "QRV123"),
+            ],
+        )
+        self.assertEqual(
+            lines,
+            "[Departure FPL](https://simbrief.test/OTHH/EGLL)\n"
+            "[Return FPL](https://simbrief.test/EGLL/OTHH)",
+        )
+
+    def test_builds_a_link_for_each_connecting_leg(self):
+        class SimBriefService:
+            def __init__(self):
+                self.aircraft_types = []
+
+            def generate_dispatch_link(
+                self,
+                origin,
+                destination,
+                aircraft_type,
+                callsign,
+            ):
+                self.aircraft_types.append(aircraft_type)
+                return f"https://simbrief.test/{origin}/{destination}"
+
+        class FlightBoardService:
+            aircraft_db = {
+                "infinite_flight": {"A21N": "Airbus A321neo"}
+            }
+
+            def convert_aircraft_name_to_icao(self, model):
+                return "A21N" if model == "Airbus A321neo" else "A321"
+
+        class Bot:
+            simbrief_service = SimBriefService()
+            flight_board_service = FlightBoardService()
+
+        bot = Bot()
+        lines = _simbrief_assignment_lines(
+            bot,
+            {"registration": "PT-LBN", "model": "Airbus A321"},
+            {"callsign": "QRV006"},
+            [
+                {"origin_icao": "SBGR", "destination_icao": "SBBR"},
+                {"origin_icao": "SBBR", "destination_icao": "SCEL"},
+                {"origin_icao": "SCEL", "destination_icao": "SBGR"},
+            ],
+        )
+
+        self.assertEqual(
+            lines,
+            "[Departure FPL](https://simbrief.test/SBGR/SBBR)\n"
+            "[FPL for Connecting route SBBR -> SCEL]"
+            "(https://simbrief.test/SBBR/SCEL)\n"
+            "[Return FPL](https://simbrief.test/SCEL/SBGR)",
+        )
+        self.assertEqual(bot.simbrief_service.aircraft_types, ["A21N"] * 3)
 
 
 class RouteStartSelectTests(unittest.TestCase):
