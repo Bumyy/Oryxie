@@ -212,8 +212,6 @@ def _simbrief_assignment_link(bot, aircraft, pilot, route):
     known_aircraft_types = _get(aircraft_catalog, "infinite_flight", {})
     aircraft_model = _aircraft_model(aircraft)
     registration_model = load_aircraft_models().get(_registration(aircraft))
-    if registration_model == "A321NEO":
-        aircraft_model = "Airbus A321neo"
     origin = str(_get(route, "origin_icao") or "").strip().upper()
     destination = str(_get(route, "destination_icao") or "").strip().upper()
     callsign = str((pilot or {}).get("callsign") or "").strip()
@@ -228,7 +226,30 @@ def _simbrief_assignment_link(bot, aircraft, pilot, route):
     ):
         return None
 
-    aircraft_type = str(convert_aircraft(aircraft_model) or "").strip().upper()
+    aircraft_type = ""
+    if registration_model:
+        normalized_registration_model = re.sub(
+            r"[^A-Z0-9]",
+            "",
+            registration_model.upper(),
+        )
+        aircraft_type = next(
+            (
+                code
+                for code, name in known_aircraft_types.items()
+                if re.sub(
+                    r"[^A-Z0-9]",
+                    "",
+                    re.sub(r"^(AIRBUS|BOEING)\s*", "", str(name).upper()),
+                )
+                == normalized_registration_model
+            ),
+            "",
+        )
+    if not aircraft_type:
+        aircraft_type = str(
+            convert_aircraft(aircraft_model) or ""
+        ).strip().upper()
     if (
         not aircraft_type
         or aircraft_type == "XXXX"

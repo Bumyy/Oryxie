@@ -1,4 +1,7 @@
+import json
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from cogs.request_flight_cog import (
     RouteStartSelect,
@@ -6,9 +9,37 @@ from cogs.request_flight_cog import (
     _simbrief_assignment_link,
     _simbrief_assignment_lines,
 )
+from services.aircraft_classifier import load_aircraft_models
+from services.flight_board_service import FlightBoardService
 
 
 class SimBriefLinkTests(unittest.TestCase):
+    def test_all_current_fleet_models_resolve_to_their_fleet_icao_type(self):
+        project_root = Path(__file__).resolve().parents[1]
+        fleet_frames = json.loads(
+            (project_root / "assets" / "fleet_frames.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        aircraft_catalog = json.loads(
+            (project_root / "assets" / "aircraft_data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        models = load_aircraft_models()
+        converter = SimpleNamespace(
+            aircraft_db=aircraft_catalog,
+        )
+
+        self.assertTrue(set(fleet_frames).issubset(models))
+        for registration, frame in fleet_frames.items():
+            with self.subTest(registration=registration):
+                aircraft_type = FlightBoardService.convert_aircraft_name_to_icao(
+                    converter,
+                    models[registration],
+                )
+                self.assertEqual(aircraft_type, frame["icao"])
+
     def test_builds_prefilled_link_for_first_assigned_route(self):
         class SimBriefService:
             def generate_dispatch_link(
@@ -77,6 +108,52 @@ class SimBriefLinkTests(unittest.TestCase):
         self.assertIsNone(link)
         self.assertFalse(
             getattr(bot.simbrief_service, "generated", False),
+        )
+
+    def test_uses_registered_a350_1000_type_for_a7_aoa(self):
+        class SimBriefService:
+            def generate_dispatch_link(
+                self,
+                origin,
+                destination,
+                aircraft_type,
+                callsign,
+            ):
+                self.request = (
+                    origin,
+                    destination,
+                    aircraft_type,
+                    callsign,
+                )
+                return "https://simbrief.test/dispatch"
+
+        class FlightBoardService:
+            aircraft_db = {
+                "infinite_flight": {
+                    "A359": "Airbus A350",
+                    "A35K": "Airbus A350-1000",
+                }
+            }
+
+            def convert_aircraft_name_to_icao(self, model):
+                return "A350"
+
+        class Bot:
+            simbrief_service = SimBriefService()
+            flight_board_service = FlightBoardService()
+
+        bot = Bot()
+        link = _simbrief_assignment_link(
+            bot,
+            {"registration": "A7-AOA", "model": "Airbus A350-1000"},
+            {"callsign": "QRV123"},
+            {"origin_icao": "OTHH", "destination_icao": "LIMC"},
+        )
+
+        self.assertEqual(link, "https://simbrief.test/dispatch")
+        self.assertEqual(
+            bot.simbrief_service.request,
+            ("OTHH", "LIMC", "A35K", "QRV123"),
         )
 
     def test_builds_departure_and_return_links_without_flight_numbers(self):
