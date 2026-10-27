@@ -734,18 +734,8 @@ class StoppedFlightMonitor(commands.Cog):
                         registration,
                         has_active_routes,
                     )
-                await self._send_route_exhaustion_alerts(
-                    client,
-                    model,
-                    schedules_by_aircraft,
-                )
-                positions = await self._log_fleet_status_changes(
-                    client,
-                    model,
-                    fleet,
-                    schedules_by_aircraft,
-                )
 
+                positions = {}
                 active = [
                     schedule
                     for schedule in schedules
@@ -765,6 +755,7 @@ class StoppedFlightMonitor(commands.Cog):
                         position = positions.get(aircraft_id)
                         if position is None:
                             position = await client.get_aircraft_position(aircraft_id)
+                            positions[aircraft_id] = position
                         await self._process_schedule(
                             client,
                             model,
@@ -778,6 +769,18 @@ class StoppedFlightMonitor(commands.Cog):
                             schedule_id,
                         )
                 await self._close_inactive_incidents(model, active_ids)
+                await self._send_route_exhaustion_alerts(
+                    client,
+                    model,
+                    schedules_by_aircraft,
+                )
+                await self._log_fleet_status_changes(
+                    client,
+                    model,
+                    fleet,
+                    schedules_by_aircraft,
+                    position_cache=positions,
+                )
         except Exception:
             log.exception("Stopped-flight monitoring cycle failed.")
 
@@ -945,6 +948,7 @@ class StoppedFlightMonitor(commands.Cog):
         model,
         fleet,
         schedules_by_aircraft,
+        position_cache=None,
     ):
         if not STATUS_LOG_CHANNEL_ID:
             if not self._warned_status_logging_disabled:
@@ -965,7 +969,7 @@ class StoppedFlightMonitor(commands.Cog):
 
         previous_statuses = await model.get_aircraft_statuses()
         current_statuses = {}
-        positions = {}
+        positions = position_cache if position_cache is not None else {}
         expected_aircraft_ids = {
             str(_get(aircraft, "id") or "")
             for aircraft in fleet or []
@@ -975,15 +979,17 @@ class StoppedFlightMonitor(commands.Cog):
             aircraft_id = str(_get(aircraft, "id") or "")
             if not aircraft_id:
                 continue
-            try:
-                position = await client.get_aircraft_position(aircraft_id)
-            except Exception:
-                log.exception(
-                    "Could not load position for aircraft status log %s",
-                    aircraft_id,
-                )
-                continue
-            positions[aircraft_id] = position
+            position = positions.get(aircraft_id)
+            if position is None:
+                try:
+                    position = await client.get_aircraft_position(aircraft_id)
+                except Exception:
+                    log.exception(
+                        "Could not load position for aircraft status log %s",
+                        aircraft_id,
+                    )
+                    continue
+                positions[aircraft_id] = position
             registration = str(
                 _get(aircraft, "registration") or "Unknown aircraft"
             )
