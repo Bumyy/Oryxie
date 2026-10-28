@@ -736,13 +736,27 @@ class StoppedFlightMonitor(commands.Cog):
                         has_active_routes,
                     )
 
+                # Fetch position data for the whole fleet. Schedule status is
+                # not a reliable way to find AP+ aircraft: IF can report the
+                # aircraft as STOPPED after removing it from the live server,
+                # even when its schedule is no longer IN_FLIGHT.
                 positions = {}
+                for aircraft_id in registrations:
+                    try:
+                        positions[aircraft_id] = await client.get_aircraft_position(
+                            aircraft_id
+                        )
+                    except Exception:
+                        log.exception(
+                            "Could not load position for fleet aircraft %s",
+                            aircraft_id,
+                        )
+
                 active = [
                     schedule
                     for schedule in schedules
                     if _status(schedule) == IN_FLIGHT_SCHEDULE_STATUS
                 ]
-                active_ids = {str(_get(schedule, "id")) for schedule in active}
                 processed_aircraft = set()
                 for schedule in active:
                     aircraft_id = str(_get(schedule, "aircraft_id") or "")
@@ -781,21 +795,51 @@ class StoppedFlightMonitor(commands.Cog):
                     is_on_ground = bool(_get(position, "is_on_ground", True))
                     if not (state == STOPPED_POSITION_STATE and not is_on_ground):
                         continue
-                    for schedule in schedules_by_aircraft.get(aircraft_id, []):
-                        try:
-                            await self._process_schedule(
-                                client,
-                                model,
-                                schedule,
-                                position,
-                                registrations.get(aircraft_id, "Unknown aircraft"),
-                            )
-                        except Exception:
-                            log.exception(
-                                "Stopped-flight monitoring failed for stopped aircraft %s schedule %s",
-                                aircraft_id,
-                                str(_get(schedule, "id") or ""),
-                            )
+                    aircraft_schedules = schedules_by_aircraft.get(aircraft_id, [])
+                    schedule = None
+                    # Prefer the schedule already associated with an incident,
+                    # so its stopped timer survives changes to schedule status.
+                    for candidate in aircraft_schedules:
+                        candidate_id = str(_get(candidate, "id") or "")
+                        if not candidate_id:
+                            continue
+                        incident = await model.get_incident(candidate_id)
+                        if incident and incident.get("lifecycle") in {
+                            "monitoring",
+                            "available",
+                            "claiming",
+                        }:
+                            schedule = candidate
+                            break
+                    # For a newly detected STOPPED aircraft, choose the current
+                    # route using schedule details only; STOPPED position state
+                    # above is the detection gate, not IN_FLIGHT schedule status.
+                    if schedule is None:
+                        schedule = _status_schedule(
+                            "STOPPED IN AIR",
+                            aircraft_schedules,
+                        )
+                    if schedule is None:
+                        log.warning(
+                            "Aircraft %s is STOPPED airborne, but IF Live returned "
+                            "no usable schedule for recovery tracking.",
+                            aircraft_id,
+                        )
+                        continue
+                    try:
+                        await self._process_schedule(
+                            client,
+                            model,
+                            schedule,
+                            position,
+                            registrations.get(aircraft_id, "Unknown aircraft"),
+                        )
+                    except Exception:
+                        log.exception(
+                            "Stopped-flight monitoring failed for stopped aircraft %s schedule %s",
+                            aircraft_id,
+                            str(_get(schedule, "id") or ""),
+                        )
                 await self._close_inactive_incidents(model, positions)
                 await self._send_route_exhaustion_alerts(
                     client,
