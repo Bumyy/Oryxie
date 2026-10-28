@@ -1253,8 +1253,44 @@ class StoppedFlightMonitor(commands.Cog):
                 original_crew_json=json.dumps(crew_ids),
             )
             row = await model.get_incident(schedule_id)
-        if row is None or row["lifecycle"] in {"claimed", "completed", "resumed"}:
+        if row is None:
             return
+        stopped_airborne = (
+            int(_get(position, "state", -1)) == STOPPED_POSITION_STATE
+            and not bool(_get(position, "is_on_ground", True))
+        )
+        if row["lifecycle"] == "claimed":
+            return
+        if row["lifecycle"] in {"completed", "resumed"}:
+            if not stopped_airborne:
+                return
+            # Older monitor cycles could close incidents based on schedule
+            # status before seeing the aircraft's STOPPED position. Reopen
+            # those stale rows from the live API state and start a fresh timer.
+            await model.update_incident(
+                schedule_id,
+                {
+                    "lifecycle": "monitoring",
+                    "stopped_since": _utcnow(),
+                    "original_crew_json": (
+                        json.dumps(crew_ids)
+                        if crew_ids
+                        else row.get("original_crew_json") or "[]"
+                    ),
+                    "one_hour_sent": 0,
+                    "two_hour_sent": 0,
+                    "three_hour_sent": 0,
+                    "four_hour_sent": 0,
+                },
+                expected_lifecycle=row["lifecycle"],
+            )
+            row = await model.get_incident(schedule_id)
+            if row is None or row["lifecycle"] != "monitoring":
+                return
+            log.info(
+                "Reopened stopped-flight incident %s from current IF Live STOPPED state.",
+                schedule_id,
+            )
         original_ids = json.loads(row["original_crew_json"] or "[]")
         executive_ids = set(
             await self._executive_crew_ids(original_ids)
@@ -1307,28 +1343,37 @@ class StoppedFlightMonitor(commands.Cog):
                     "callsign": str(_get(schedule, "callsign") or "Unknown flight"),
                     "origin_icao": str(_get(schedule, "origin_icao") or ""),
                     "destination_icao": str(_get(schedule, "destination_icao") or ""),
-                    "original_crew_json": json.dumps(crew_ids),
+                    "original_crew_json": (
+                        json.dumps(crew_ids)
+                        if crew_ids
+                        else row.get("original_crew_json") or "[]"
+                    ),
                 },
-                expected_lifecycle="monitoring",
+                expected_lifecycle=row["lifecycle"],
             )
 
-        stopped_airborne = (
-            int(_get(position, "state", -1)) == STOPPED_POSITION_STATE
-            and not bool(_get(position, "is_on_ground", True))
-        )
         if stopped_airborne and not row["stopped_since"]:
+            values = {
+                "stopped_since": _utcnow(),
+                "original_crew_json": (
+                    json.dumps(crew_ids)
+                    if crew_ids
+                    else row.get("original_crew_json") or "[]"
+                ),
+            }
+            if row["lifecycle"] == "monitoring":
+                values.update(
+                    {
+                        "one_hour_sent": 0,
+                        "two_hour_sent": 0,
+                        "three_hour_sent": 0,
+                        "four_hour_sent": 0,
+                    }
+                )
             await model.update_incident(
                 schedule_id,
-                {
-                    "stopped_since": _utcnow(),
-                    "lifecycle": "monitoring",
-                    "original_crew_json": json.dumps(crew_ids),
-                    "one_hour_sent": 0,
-                    "two_hour_sent": 0,
-                    "three_hour_sent": 0,
-                    "four_hour_sent": 0,
-                },
-                expected_lifecycle="monitoring",
+                values,
+                expected_lifecycle=row["lifecycle"],
             )
             row = await model.get_incident(schedule_id)
             log.info(
