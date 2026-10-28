@@ -1,29 +1,43 @@
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
 import json
 import os
+import time
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Load fleet frames data
+# Fallback JSON file if IF Live API is temporarily unreachable
 FLEET_FRAMES_FILE = "assets/fleet_frames.json"
 
+ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
+TOKEN_OWNER_ID = 1
+FLEET_CACHE_SECONDS = 300
+
 # Allowed Role IDs (Fleet role + Executive role)
-FLEET_ROLE_ID = 1480252371320967239
+FLEET_ROLE_ID = 1484645309983490119
 EXECUTIVE_ROLE_ID = 1421074400773668894
 ALLOWED_ROLE_IDS = (FLEET_ROLE_ID, EXECUTIVE_ROLE_ID)
 
+
+def _get(obj, key, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def load_fleet_frames():
-    """Load fleet frames from JSON file."""
+    """Fallback: Load fleet frames from JSON file if IF Live is unavailable."""
     try:
-        with open(FLEET_FRAMES_FILE, 'r') as f:
-            return json.load(f)
+        if os.path.exists(FLEET_FRAMES_FILE):
+            with open(FLEET_FRAMES_FILE, 'r') as f:
+                return json.load(f)
     except Exception as e:
-        logger.error(f"Error loading fleet frames: {e}")
-        return {}
+        logger.error(f"Error loading fallback fleet frames: {e}")
+    return {}
 
 class FleetPirepModal(discord.ui.Modal, title="Fleet Flight Details"):
     """Modal for entering fleet flight details."""
@@ -154,7 +168,9 @@ class FleetPirepCog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
-        self.fleet_frames = load_fleet_frames()
+        self.fleet_frames: Dict[str, dict] = load_fleet_frames()
+        self._fleet_at = 0.0
+        self._fleet_lock = asyncio.Lock()
         self._pirep_service = None
     
     def _get_pirep_service(self):
@@ -163,11 +179,74 @@ class FleetPirepCog(commands.Cog):
             from services.pirep_filing_service import PirepFilingService
             self._pirep_service = PirepFilingService(self.bot)
         return self._pirep_service
+
+    async def _get_live_fleet_frames(self) -> Dict[str, dict]:
+        """Fetch active fleet registrations from IF Live and enrich with DB aircraft/livery data."""
+        now = time.monotonic()
+        if self.fleet_frames and (now - self._fleet_at < FLEET_CACHE_SECONDS):
+            return self.fleet_frames
+
+        async with self._fleet_lock:
+            now = time.monotonic()
+            if self.fleet_frames and (now - self._fleet_at < FLEET_CACHE_SECONDS):
+                return self.fleet_frames
+
+            manager = getattr(self.bot, "if_live_manager", None)
+            if not ORG_ID or manager is None:
+                return self.fleet_frames or load_fleet_frames()
+
+            try:
+                async with await manager.get_client(TOKEN_OWNER_ID) as client:
+                    fleet = await client.list_organization_aircraft(ORG_ID)
+
+                fleet_service = getattr(self.bot, "fleet_service", None)
+                fleet_db_map = (
+                    await fleet_service.get_fleet_db_map(fleet)
+                    if fleet_service
+                    else {}
+                )
+
+                live_frames: Dict[str, dict] = {}
+                for ac in sorted(
+                    list(fleet or []),
+                    key=lambda item: str(_get(item, "registration", "")).upper(),
+                ):
+                    reg = str(_get(ac, "registration", "") or "").strip()
+                    if not reg:
+                        continue
+                    if_id = str(_get(ac, "aircraft_id", "") or "").strip()
+                    db_row = fleet_db_map.get(if_id) or {}
+
+                    icao = (
+                        db_row.get("icao")
+                        or db_row.get("name")
+                        or "Unknown"
+                    )
+                    livery = (
+                        db_row.get("liveryname")
+                        or db_row.get("livery")
+                        or "VA Fleet"
+                    )
+                    live_frames[reg] = {
+                        "icao": str(icao).strip(),
+                        "livery": str(livery).strip(),
+                        "aircraft_id": db_row.get("id"),
+                    }
+
+                if live_frames:
+                    self.fleet_frames = live_frames
+                    self._fleet_at = time.monotonic()
+            except Exception as e:
+                logger.error(f"Error fetching live fleet frames from IF Live: {e}")
+                if not self.fleet_frames:
+                    self.fleet_frames = load_fleet_frames()
+
+            return self.fleet_frames
     
     async def frame_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        """Autocomplete for fleet frames with full data."""
-        self.fleet_frames = load_fleet_frames()
-        frames = list(self.fleet_frames.keys())
+        """Autocomplete for fleet frames with full data from IF Live + DB."""
+        frames_map = await self._get_live_fleet_frames()
+        frames = list(frames_map.keys())
         
         # Filter by frame name, ICAO, or livery
         if current:
@@ -175,18 +254,18 @@ class FleetPirepCog(commands.Cog):
             frames = [
                 f for f in frames
                 if query in f.upper()
-                or query in self.fleet_frames[f].get('icao', '').upper()
-                or query in self.fleet_frames[f].get('livery', '').upper()
+                or query in frames_map[f].get('icao', '').upper()
+                or query in frames_map[f].get('livery', '').upper()
             ]
         
         # Build choices with full data: "FRAME (ICAO - Livery)"
         choices = []
         for frame in frames[:25]:
-            frame_data = self.fleet_frames[frame]
+            frame_data = frames_map[frame]
             icao = frame_data.get('icao', 'N/A')
             livery = frame_data.get('livery', 'N/A')
             display_name = f"{frame} ({icao} - {livery})"
-            choices.append(app_commands.Choice(name=display_name, value=frame))
+            choices.append(app_commands.Choice(name=display_name[:100], value=frame))
         
         return choices
     
@@ -201,10 +280,14 @@ class FleetPirepCog(commands.Cog):
         pilot_2: discord.Member = None
     ):
         """File a fleet PIREP with optional dual pilot split."""
-        self.fleet_frames = load_fleet_frames()
+        frames_map = await self._get_live_fleet_frames()
         
-        # Validate frame exists
-        if frame not in self.fleet_frames:
+        # Match frame case-insensitively
+        matched_key = next(
+            (k for k in frames_map if k.upper() == frame.strip().upper()),
+            None,
+        )
+        if not matched_key:
             await interaction.response.send_message("❌ Invalid frame selected.", ephemeral=True)
             return
         
@@ -218,8 +301,8 @@ class FleetPirepCog(commands.Cog):
             await interaction.response.send_message("❌ Cannot select the same pilot for both positions.", ephemeral=True)
             return
         
-        # Get frame data
-        frame_data = self.fleet_frames[frame]
+        # Get frame data (copy so modal mutation doesn't alter cache)
+        frame_data = dict(frames_map[matched_key])
         
         # Get Discord IDs and display names directly from Member objects
         pilot1_id = pilot_1.id
@@ -228,7 +311,7 @@ class FleetPirepCog(commands.Cog):
         pilot2_name = pilot_2.display_name if pilot_2 else None
         
         # Send modal
-        modal = FleetPirepModal(self, frame, frame_data, pilot1_id, pilot2_id, pilot1_name, pilot2_name)
+        modal = FleetPirepModal(self, matched_key, frame_data, pilot1_id, pilot2_id, pilot1_name, pilot2_name)
         await interaction.response.send_modal(modal)
 
     @live_fleet_pirep.error
