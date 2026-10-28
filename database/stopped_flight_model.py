@@ -349,7 +349,7 @@ class StoppedFlightModel:
             return []
         placeholders = ", ".join(["%s"] * len(lifecycles))
         return await self.db.fetch_all(
-            "SELECT schedule_id, lifecycle FROM if_stopped_flight_incidents "
+            "SELECT schedule_id, aircraft_id, lifecycle FROM if_stopped_flight_incidents "
             f"WHERE lifecycle IN ({placeholders})",
             tuple(lifecycles),
         )
