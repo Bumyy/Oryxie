@@ -1291,6 +1291,7 @@ class StoppedFlightMonitor(commands.Cog):
                 "Reopened stopped-flight incident %s from current IF Live STOPPED state.",
                 schedule_id,
             )
+            await self._announce_new_stopped_aircraft(row)
         original_ids = json.loads(row["original_crew_json"] or "[]")
         executive_ids = set(
             await self._executive_crew_ids(original_ids)
@@ -1376,11 +1377,8 @@ class StoppedFlightMonitor(commands.Cog):
                 expected_lifecycle=row["lifecycle"],
             )
             row = await model.get_incident(schedule_id)
-            log.info(
-                "Aircraft %s schedule %s entered stopped-airborne state.",
-                registration,
-                schedule_id,
-            )
+            if row is not None:
+                await self._announce_new_stopped_aircraft(row)
         elif row["stopped_since"] and not stopped_airborne:
             if row["lifecycle"] == "available":
                 await model.update_incident(
@@ -1822,6 +1820,30 @@ class StoppedFlightMonitor(commands.Cog):
                 ],
             )
             return False
+
+    async def _announce_new_stopped_aircraft(self, row):
+        message = (
+            f"🛑 **New stopped aircraft detected**\n"
+            f"**{row['registration']} · {row['callsign']}** "
+            f"({row['origin_icao']} → {row['destination_icao']})\n"
+            "IF Live reports it stopped airborne. The recovery timer starts now; "
+            "the public offer is due after 1 hour and pilot DMs after 2 hours."
+        )
+        log.warning(
+            "New stopped-aircraft incident detected: %s · %s (%s → %s), "
+            "schedule %s; recovery timer started.",
+            row["registration"],
+            row["callsign"],
+            row["origin_icao"],
+            row["destination_icao"],
+            row["schedule_id"],
+        )
+        await post_dm_report(
+            self.bot,
+            message,
+            log,
+            f"new stopped-aircraft detection for schedule {row['schedule_id']}",
+        )
 
     async def _executive_crew_ids(self, if_user_ids, required=True):
         if not if_user_ids:
