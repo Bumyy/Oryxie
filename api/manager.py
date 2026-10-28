@@ -17,6 +17,7 @@ class InfiniteFlightAPIManager:
         
         self.base_url = "https://api.infiniteflight.com/public/v2"
         self._session: Optional[aiohttp.ClientSession] = None
+        self._aircraft_without_livery_endpoint: set[str] = set()
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -69,7 +70,22 @@ class InfiniteFlightAPIManager:
                 return text_data
                 
         except aiohttp.ClientResponseError as e:
-            print(f"API Request Error to {url}: {e.status}, message='{e.message}'")
+            if (
+                e.status == 404
+                and endpoint.startswith("/aircraft/")
+                and endpoint.endswith("/liveries")
+            ):
+                aircraft_id = endpoint[len("/aircraft/") : -len("/liveries")]
+                self._aircraft_without_livery_endpoint.add(aircraft_id)
+                print(
+                    "Infinite Flight has no livery endpoint for aircraft "
+                    f"{aircraft_id}; future livery lookups will be skipped."
+                )
+            else:
+                print(
+                    f"API Request Error to {url}: "
+                    f"{e.status}, message='{e.message}'"
+                )
             return None
 
         except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as e:
@@ -126,7 +142,15 @@ class InfiniteFlightAPIManager:
         """
         Fetches all available liveries for a specific aircraft ID.
         """
-        return await self._request('GET', f'/aircraft/{aircraft_id}/liveries')
+        if aircraft_id in self._aircraft_without_livery_endpoint:
+            return {"result": []}
+        response = await self._request(
+            'GET',
+            f'/aircraft/{aircraft_id}/liveries',
+        )
+        if aircraft_id in self._aircraft_without_livery_endpoint:
+            return {"result": []}
+        return response
     
     async def get_user_flights(self, user_id: str, hours: int = 72) -> Dict:
         """

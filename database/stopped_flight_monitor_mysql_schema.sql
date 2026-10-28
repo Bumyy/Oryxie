@@ -1,4 +1,5 @@
--- Apply with a database account that has CREATE TABLE privileges.
+-- The bot creates these tables on startup when its database account has
+-- CREATE TABLE privileges. Apply this file manually if it does not.
 CREATE TABLE IF NOT EXISTS if_stopped_flight_incidents (
     schedule_id VARCHAR(64) NOT NULL PRIMARY KEY,
     aircraft_id VARCHAR(64) NOT NULL,

@@ -1,4 +1,4 @@
-"""Command to request an Infinite Flight flight assignment from the VA fleet and schedule."""
+﻿"""Command to request an Infinite Flight flight assignment from the VA fleet and schedule."""
 
 import asyncio
 import logging
@@ -17,6 +17,7 @@ from cogs.airline_hubs import (
     hubs_for_registration,
     is_cargo_registration,
 )
+from services.aircraft_classifier import load_aircraft_models
 
 log = logging.getLogger(__name__)
 
@@ -50,21 +51,17 @@ AIRLINE_HUBS = {
     "Cathay Pacific": "VHHH",
     "Iberia": "LEMD",
     "British Airways": "EGLL",
-    "LATAM": ("SCEL", "SBGR", "SPJC"),
+    "LATAM": ("SBGR", "SBBR"),
     "JAL": "RJTT",
     "Qantas": "YSSY",
     "American Airlines": "KDFW",
 }
 
-RULES = (
-    "**Qatari Virtual flight rules**\n"
-    "• If an aircraft is stopped in the air, you have 24 hours to land.\n"
-    "• If parked at a hub airport, you have 6 hours from assignment to take off.\n"
-    "• If parked at a non-hub airport, you have 12 hours from assignment to take off.\n"
-    "• If overdue, an admin may take over the flight or make it available to other pilots.\n\n"
-    "⚠️ Each pilot may have unflown outbound routes on up to **2 distinct aircraft**. "
-    "Once a route takes off, its aircraft no longer counts toward this limit. "
-    "Return legs do not count."
+FLIGHT_RULES = (
+    "• Take off within 6 hours at a hub or 12 hours elsewhere\n"
+    "• Stopped in air for 1 hour: assignment removed and public recovery claim posted\n"
+    "• If unclaimed, recovery DMs start at 2 hours\n"
+    "• Staff alerted if unresolved for 4 hours"
 )
 
 
@@ -106,7 +103,7 @@ def _aircraft_model(aircraft):
 # fall back to Qatar Airways / OTHH for these aircraft.
 AIRCRAFT_HUB_OVERRIDES = {
     "JA-742J": ("RJTT",),
-    "PT-LBN": ("SCEL", "SBGR", "SPJC"),
+    "PT-LBN": ("SBGR", "SBBR"),
     "A7-BAJ": ("OTHH",),
     "A7BAB": ("OTHH",),
     "G-ZBKC": ("EGLL",),
@@ -203,6 +200,101 @@ def _model_label(aircraft):
     return f"{_airline_name(aircraft)} {_aircraft_model(aircraft) or 'Model unknown'}"
 
 
+def _simbrief_assignment_link(bot, aircraft, pilot, route):
+    simbrief_service = getattr(bot, "simbrief_service", None)
+    flight_board_service = getattr(bot, "flight_board_service", None)
+    convert_aircraft = getattr(
+        flight_board_service,
+        "convert_aircraft_name_to_icao",
+        None,
+    )
+    aircraft_catalog = _get(flight_board_service, "aircraft_db", {})
+    known_aircraft_types = _get(aircraft_catalog, "infinite_flight", {})
+    aircraft_model = _aircraft_model(aircraft)
+    registration_model = load_aircraft_models().get(_registration(aircraft))
+    origin = str(_get(route, "origin_icao") or "").strip().upper()
+    destination = str(_get(route, "destination_icao") or "").strip().upper()
+    callsign = str((pilot or {}).get("callsign") or "").strip()
+
+    if (
+        simbrief_service is None
+        or not callable(convert_aircraft)
+        or not aircraft_model
+        or not re.fullmatch(r"[A-Z]{4}", origin)
+        or not re.fullmatch(r"[A-Z]{4}", destination)
+        or not callsign
+    ):
+        return None
+
+    aircraft_type = ""
+    if registration_model:
+        normalized_registration_model = re.sub(
+            r"[^A-Z0-9]",
+            "",
+            registration_model.upper(),
+        )
+        aircraft_type = next(
+            (
+                code
+                for code, name in known_aircraft_types.items()
+                if re.sub(
+                    r"[^A-Z0-9]",
+                    "",
+                    re.sub(r"^(AIRBUS|BOEING)\s*", "", str(name).upper()),
+                )
+                == normalized_registration_model
+            ),
+            "",
+        )
+    if not aircraft_type:
+        aircraft_type = str(
+            convert_aircraft(aircraft_model) or ""
+        ).strip().upper()
+    if (
+        not aircraft_type
+        or aircraft_type == "XXXX"
+        or aircraft_type not in known_aircraft_types
+    ):
+        log.warning(
+            "Could not create SimBrief link: no catalogued ICAO type found for aircraft model %r.",
+            aircraft_model,
+        )
+        return None
+
+    return simbrief_service.generate_dispatch_link(
+        origin=origin,
+        destination=destination,
+        aircraft_type=aircraft_type,
+        callsign=callsign,
+    )
+
+
+def _simbrief_assignment_lines(bot, aircraft, pilot, routes):
+    if not routes:
+        return ""
+
+    labeled_routes = [("Departure FPL", routes[0])]
+    labeled_routes.extend(
+        (
+            f"FPL for Connecting route "
+            f"{str(_get(route, 'origin_icao') or '???').strip().upper()} -> "
+            f"{str(_get(route, 'destination_icao') or '???').strip().upper()}",
+            route,
+        )
+        for route in routes[1:-1]
+    )
+    if len(routes) > 1:
+        labeled_routes.append(("Return FPL", routes[-1]))
+
+    lines = []
+    for label, route in labeled_routes:
+        link = _simbrief_assignment_link(bot, aircraft, pilot, route)
+        if link:
+            lines.append(f"[{label}]({link})")
+
+    return "\n".join(lines)
+
+
 def _state_label(position):
     labels = {
         0: "Unknown",
@@ -243,7 +335,7 @@ def _route_status(route):
 
 
 def _is_unavailable_status(route):
-    return _route_status(route) in {8, 9, 11}
+    return _route_status(route) in {9, 11}
 
 
 def _is_return_leg(previous, route):
@@ -322,6 +414,28 @@ def _active_schedules(schedules):
         for route in sorted(list(by_id.values()) + no_id, key=_sequence)
         if not _is_unavailable_status(route)
     ]
+
+
+def _current_assignments_for_pilot(schedules, if_user_id, registration_by_aircraft):
+    """Return this pilot's active assignments on aircraft still in the fleet."""
+    assignments = {}
+    target_user_id = str(if_user_id).strip()
+    current_aircraft_ids = set(registration_by_aircraft)
+
+    for route in _active_schedules(schedules):
+        if not any(
+            _crew_user_id(member) == target_user_id
+            for member in (_get(route, "crew", []) or [])
+        ):
+            continue
+
+        aircraft_id = str(_get(route, "aircraft_id") or "")
+        if aircraft_id not in current_aircraft_ids:
+            continue
+
+        assignments.setdefault(aircraft_id, []).append(route)
+
+    return assignments
 
 
 def _schedules_for_aircraft(schedules, aircraft_id):
@@ -448,7 +562,7 @@ def _route_ids(routes):
     return [str(_get(route, "id")) for route in routes]
 
 
-def _route_option_label(routes):
+def _route_option_label_chain(routes):
     callsigns = list(dict.fromkeys(
         str(_get(route, "callsign", "") or "").strip()
         for route in routes
@@ -737,7 +851,7 @@ class RouteStartSelect(discord.ui.Select):
             )
             options.append(
                 discord.SelectOption(
-                    label=_route_option_label(routes),
+                    label=_route_option_label_chain(routes),
                     description=(
                         route_kind + _route_chain_description(routes)
                     )[:100],
@@ -1550,6 +1664,12 @@ class ClaimRouteView(discord.ui.View):
                 "callsign",
                 interaction.user.display_name,
             )
+            simbrief_lines = _simbrief_assignment_lines(
+                self.cog.bot,
+                self.aircraft,
+                self.pilot,
+                assigned,
+            )
             copilot_line = ""
 
             if self.copilot:
@@ -1583,12 +1703,15 @@ class ClaimRouteView(discord.ui.View):
                 f"{copilot_line}"
                 f"Aircraft: **{registration}** ({_model_label(self.aircraft)})\n"
                 + (
-                    "Cargo operation: **maximum two connected legs per booking**\n"
+                    ""
                     if cargo_aircraft
                     else f"Airline hub: **{airline} · {hub}**\n"
                 )
                 + f"Route(s):\n{route_lines}\n"
-                + f"Schedule: {schedule_order_note}\n\n{RULES}",
+                + f"Schedule: {schedule_order_note}\n\n"
+                + (f"{simbrief_lines}\n\n" if simbrief_lines else "")
+                + f"**Rules**\n{FLIGHT_RULES}",
+                suppress_embeds=True,
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
                     roles=False,
@@ -2059,18 +2182,11 @@ class RequestFlightCog(commands.Cog):
                 for aircraft in fleet
                 if _get(aircraft, "id") not in (None, "")
             }
-            assignments = {}
-            for route in _active_schedules(schedules):
-                if not any(
-                    _crew_user_id(member) == if_user_id
-                    for member in (_get(route, "crew", []) or [])
-                ):
-                    continue
-
-                aircraft_id = str(_get(route, "aircraft_id") or "")
-                if not aircraft_id:
-                    continue
-                assignments.setdefault(aircraft_id, []).append(route)
+            assignments = _current_assignments_for_pilot(
+                schedules,
+                if_user_id,
+                registration_by_aircraft,
+            )
 
             if not assignments:
                 await interaction.followup.send(
@@ -2455,9 +2571,7 @@ class RequestFlightCog(commands.Cog):
                 description=(
                     f"**Aircraft:** {_model_label(aircraft)}\n"
                     + (
-                        "**Cargo booking:** choose up to two connected scheduled "
-                        "legs. Cargo routes do not need to return to a hub; book "
-                        "another pair after the assigned cargo legs are complete."
+                        "Cargo routes do not need to return to an approved hub."
                         if cargo_aircraft
                         else (
                             f"**Airline hubs:** {airline} · **{hub}**\n\n"
@@ -2485,12 +2599,8 @@ class RequestFlightCog(commands.Cog):
             )
 
             embed.add_field(
-                name="Flight rules",
-                value=(
-                    "• 6 hours to take off from a hub\n"
-                    "• 12 hours to take off from a non-hub\n"
-                    "• 24 hours to land if stopped in the air"
-                ),
+                name="Rules",
+                value=FLIGHT_RULES,
                 inline=False,
             )
 
@@ -2605,8 +2715,7 @@ class RequestFlightCog(commands.Cog):
                 _get(routes[-1], "destination_icao", "") or ""
             ).strip().upper()
             route_policy = (
-                "**Cargo limit:** A maximum of two connected legs can be booked "
-                "at once. Book the next cargo legs after these are complete."
+                ""
                 if cargo_aircraft
                 else (
                     f"**Return-to-base check:** The final route returns to "
@@ -2622,14 +2731,14 @@ class RequestFlightCog(commands.Cog):
                     f"**Aircraft model:** {_model_label(aircraft)}\n"
                     f"**Registration:** {registration}\n"
                     + (
-                        "**Cargo operation:** Up to two connected legs per booking\n"
+                        ""
                         if cargo_aircraft
                         else f"**Airline hubs:** {airline} · {hub}\n"
                     )
                     + f"**Starting route:** {_route_text(selected_route)}\n"
                     + f"**Routes to be assigned:** {len(routes)}\n\n"
                     + f"**Your selected route chain**\n{route_lines}\n\n"
-                    + f"{route_policy}\n\n"
+                    + (f"{route_policy}\n\n" if route_policy else "")
                     + "Confirm only if you want every listed route assigned to you."
                 ),
                 color=discord.Color.green(),
@@ -2642,12 +2751,8 @@ class RequestFlightCog(commands.Cog):
             )
 
             embed.add_field(
-                name="Flight rules",
-                value=(
-                    "• 6 hours to take off from a hub\n"
-                    "• 12 hours to take off from a non-hub\n"
-                    "• 24 hours to land if stopped in the air"
-                ),
+                name="Rules",
+                value=FLIGHT_RULES,
                 inline=False,
             )
 

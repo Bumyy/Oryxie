@@ -178,8 +178,8 @@ def _route_status_number(schedule):
 
 
 def _is_unavailable_status(schedule):
-    # Completed=8, CANCELLED=9, ARRIVED=11.
-    return _route_status_number(schedule) in {8, 9, 11}
+    # Delayed routes (8) remain active; only cancelled and arrived routes are terminal.
+    return _route_status_number(schedule) in {9, 11}
 
 
 def _active_schedules(schedules):

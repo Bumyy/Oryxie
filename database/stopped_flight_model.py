@@ -7,6 +7,73 @@ from .manager import DatabaseManager
 class StoppedFlightModel:
     """Database operations for stopped-flight incidents and recovery DMs."""
 
+    _TABLE_DDL = {
+        "if_stopped_flight_incidents": """
+            CREATE TABLE IF NOT EXISTS if_stopped_flight_incidents (
+                schedule_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                aircraft_id VARCHAR(64) NOT NULL,
+                registration VARCHAR(32) NOT NULL,
+                callsign VARCHAR(64) NOT NULL,
+                origin_icao VARCHAR(8) NOT NULL,
+                destination_icao VARCHAR(8) NOT NULL,
+                original_crew_json TEXT NOT NULL,
+                stopped_since DATETIME NULL,
+                lifecycle VARCHAR(16) NOT NULL DEFAULT 'monitoring',
+                eta_warning_sent TINYINT(1) NOT NULL DEFAULT 0,
+                eta_warning_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                eta_warning_last_attempt_at DATETIME NULL,
+                one_hour_sent TINYINT(1) NOT NULL DEFAULT 0,
+                two_hour_sent TINYINT(1) NOT NULL DEFAULT 0,
+                three_hour_sent TINYINT(1) NOT NULL DEFAULT 0,
+                four_hour_sent TINYINT(1) NOT NULL DEFAULT 0,
+                claim_user_id VARCHAR(64) NULL,
+                alert_channel_id VARCHAR(32) NULL,
+                alert_message_id VARCHAR(32) NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_stopped_flight_lifecycle (lifecycle, stopped_since)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                COLLATE=utf8mb4_unicode_ci
+        """,
+        "if_stopped_flight_dm_events": """
+            CREATE TABLE IF NOT EXISTS if_stopped_flight_dm_events (
+                schedule_id VARCHAR(64) NOT NULL,
+                if_user_id VARCHAR(64) NOT NULL,
+                discord_user_id VARCHAR(32) NOT NULL,
+                wave TINYINT UNSIGNED NOT NULL,
+                flight_count_7d INT UNSIGNED NOT NULL DEFAULT 0,
+                channel_id VARCHAR(32) NULL,
+                message_id VARCHAR(32) NULL,
+                delivery_status VARCHAR(16) NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (schedule_id, if_user_id),
+                INDEX idx_stopped_flight_dm_wave (schedule_id, wave)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                COLLATE=utf8mb4_unicode_ci
+        """,
+        "if_aircraft_route_availability": """
+            CREATE TABLE IF NOT EXISTS if_aircraft_route_availability (
+                aircraft_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                registration VARCHAR(32) NOT NULL,
+                has_active_routes TINYINT(1) NOT NULL DEFAULT 0,
+                alert_sent TINYINT(1) NOT NULL DEFAULT 1,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                COLLATE=utf8mb4_unicode_ci
+        """,
+        "if_aircraft_status_logs": """
+            CREATE TABLE IF NOT EXISTS if_aircraft_status_logs (
+                aircraft_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                registration VARCHAR(32) NOT NULL,
+                status_text VARCHAR(128) NOT NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                COLLATE=utf8mb4_unicode_ci
+        """,
+    }
+
     _INCIDENT_FIELDS = {
         "aircraft_id",
         "registration",
@@ -39,10 +106,17 @@ class StoppedFlightModel:
             "if_aircraft_status_logs",
         ):
             if not await self.db.fetch_one("SHOW TABLES LIKE %s", (table_name,)):
-                raise RuntimeError(
-                    f"Required table {table_name} is missing; apply "
-                    "database/stopped_flight_monitor_mysql_schema.sql"
-                )
+                await self.db.execute(self._TABLE_DDL[table_name])
+                if not await self.db.fetch_one(
+                    "SHOW TABLES LIKE %s",
+                    (table_name,),
+                ):
+                    raise RuntimeError(
+                        f"Required table {table_name} is missing and could not "
+                        "be created. Grant CREATE TABLE permissions to the bot "
+                        "database account or apply "
+                        "database/stopped_flight_monitor_mysql_schema.sql."
+                    )
         await self._ensure_eta_warning_columns()
 
     async def _ensure_eta_warning_columns(self) -> None:
