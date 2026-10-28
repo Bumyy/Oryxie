@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -65,8 +66,8 @@ STOPPED_POSITION_STATE = 4
 IN_FLIGHT_SCHEDULE_STATUS = 6
 MAX_ETA_WARNING_ATTEMPTS = 3
 ETA_WARNING_RETRY_MINUTES = 10
-FLIGHT_HISTORY_DAYS = 3
-MAX_RECOVERY_DM_RECIPIENTS = 5
+FLIGHT_HISTORY_DAYS = 30
+RECOVERY_CANDIDATE_LIMIT = 3
 DEMAND_HISTORY_DAYS = 7
 MAX_DEMAND_COUNT_BEFORE_CAPPING = 11
 MAX_DEMAND_HISTORY_PAGES = 5
@@ -742,6 +743,7 @@ class StoppedFlightMonitor(commands.Cog):
                     if _status(schedule) == IN_FLIGHT_SCHEDULE_STATUS
                 ]
                 active_ids = {str(_get(schedule, "id")) for schedule in active}
+                processed_aircraft = set()
                 for schedule in active:
                     aircraft_id = str(_get(schedule, "aircraft_id") or "")
                     schedule_id = str(_get(schedule, "id") or "")
@@ -763,12 +765,38 @@ class StoppedFlightMonitor(commands.Cog):
                             position,
                             registrations.get(aircraft_id, "Unknown aircraft"),
                         )
+                        processed_aircraft.add(aircraft_id)
                     except Exception:
                         log.exception(
                             "Stopped-flight monitoring failed for schedule %s",
                             schedule_id,
                         )
-                await self._close_inactive_incidents(model, active_ids)
+                for aircraft_id, position in positions.items():
+                    if aircraft_id in processed_aircraft:
+                        continue
+                    try:
+                        state = int(_get(position, "state", -1))
+                    except (TypeError, ValueError):
+                        continue
+                    is_on_ground = bool(_get(position, "is_on_ground", True))
+                    if not (state == STOPPED_POSITION_STATE and not is_on_ground):
+                        continue
+                    for schedule in schedules_by_aircraft.get(aircraft_id, []):
+                        try:
+                            await self._process_schedule(
+                                client,
+                                model,
+                                schedule,
+                                position,
+                                registrations.get(aircraft_id, "Unknown aircraft"),
+                            )
+                        except Exception:
+                            log.exception(
+                                "Stopped-flight monitoring failed for stopped aircraft %s schedule %s",
+                                aircraft_id,
+                                str(_get(schedule, "id") or ""),
+                            )
+                await self._close_inactive_incidents(model, positions)
                 await self._send_route_exhaustion_alerts(
                     client,
                     model,
@@ -1965,6 +1993,7 @@ class StoppedFlightMonitor(commands.Cog):
         role_member_count = 0
         linked_pilot_count = 0
         recent_activity_count = 0
+        offline_filtered_count = 0
         exclusion_counts = {
             "missing_link": 0,
             "already_contacted": 0,
@@ -1988,6 +2017,9 @@ class StoppedFlightMonitor(commands.Cog):
             if member.bot:
                 continue
             role_member_count += 1
+            if member.status not in (discord.Status.online, discord.Status.idle, discord.Status.dnd):
+                offline_filtered_count += 1
+                continue
             pilot = by_discord.get(str(member.id))
             if not pilot:
                 record_exclusion("missing_link", member)
@@ -2026,7 +2058,7 @@ class StoppedFlightMonitor(commands.Cog):
                 flight_count = await self._recent_live_flight_count(if_user_id)
             except Exception:
                 log.exception(
-                    "Could not check three-day Live flight history for %s",
+                    "Could not check 30-day Live flight history for %s",
                     pilot.get("callsign", if_user_id),
                 )
                 activity_check_failures += 1
@@ -2048,7 +2080,8 @@ class StoppedFlightMonitor(commands.Cog):
             if not had_cached_score:
                 await asyncio.sleep(1.05)
 
-        selected = candidates[:MAX_RECOVERY_DM_RECIPIENTS]
+        candidates.sort(key=lambda c: (-c["flight_count"], random.random()))
+        selected = candidates[:RECOVERY_CANDIDATE_LIMIT]
         delivered_recipients = []
         failed_recipients = []
         for candidate in selected:
@@ -2175,12 +2208,13 @@ class StoppedFlightMonitor(commands.Cog):
             (
                 "Candidate check: "
                 f"{role_member_count} non-bot Fleet-role members, "
+                f"{offline_filtered_count} offline (filtered out), "
                 f"{linked_pilot_count} with active linked pilot records, "
-                f"{recent_activity_count} with recent flights, "
+                f"{recent_activity_count} with recent 30-day flights, "
                 f"{activity_check_failures} flight-history checks failed, "
                 f"{len(candidates)} eligible pilots, "
                 f"{len(selected)} selected (maximum "
-                f"{MAX_RECOVERY_DM_RECIPIENTS})."
+                f"{RECOVERY_CANDIDATE_LIMIT})."
             )
         ]
         if len(candidates) > len(selected):
@@ -2308,11 +2342,21 @@ class StoppedFlightMonitor(commands.Cog):
                 exc_info=True,
             )
 
-    async def _close_inactive_incidents(self, model, active_ids):
+    async def _close_inactive_incidents(self, model, positions):
         rows = await model.list_incidents(("monitoring", "available"))
         for row in rows or []:
             schedule_id = str(row["schedule_id"])
-            if schedule_id in active_ids:
+            aircraft_id = str(row["aircraft_id"])
+            position = positions.get(aircraft_id)
+            if not position:
+                continue
+            try:
+                state = int(_get(position, "state", -1))
+            except (TypeError, ValueError):
+                continue
+            is_on_ground = bool(_get(position, "is_on_ground", True))
+            is_stopped_airborne = (state == STOPPED_POSITION_STATE and not is_on_ground)
+            if is_stopped_airborne:
                 continue
             await model.update_incident(
                 schedule_id,
