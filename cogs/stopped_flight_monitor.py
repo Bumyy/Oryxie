@@ -15,6 +15,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from api.if_live_manager import (
+    AircraftPersistenceState,
     IFLiveError,
     PersistentFlightCrewMemberRole,
     ScheduledFlightStatus,
@@ -62,7 +63,7 @@ ROUTE_EXHAUSTION_ROLE_ID = int(
 )
 TOKEN_OWNER_ID = 1
 POLL_INTERVAL_MINUTES = 2
-STOPPED_POSITION_STATE = 4
+STOPPED_POSITION_STATE = int(AircraftPersistenceState.STOPPED)
 IN_FLIGHT_SCHEDULE_STATUS = 6
 MAX_ETA_WARNING_ATTEMPTS = 3
 ETA_WARNING_RETRY_MINUTES = 10
@@ -264,9 +265,9 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
         (schedule for schedule in active_schedules if _status(schedule) == 10),
         None,
     )
-    if state == 5:
+    if state == int(AircraftPersistenceState.MAINTENANCE):
         return "MAINTENANCE"
-    if state == STOPPED_POSITION_STATE and not on_ground:
+    if state == STOPPED_POSITION_STATE:
         return (
             _schedule_status_text("STOPPED IN AIR", current_flight)
             if current_flight
@@ -274,7 +275,7 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
         )
     if taxiing_flight:
         return _schedule_status_text("TAXIING", taxiing_flight)
-    if not on_ground or state == 2:
+    if not on_ground or state == int(AircraftPersistenceState.IN_FLIGHT):
         return _schedule_status_text("ENROUTE", current_flight)
 
     airport = _nearest_airport_icao(bot, position)
@@ -710,47 +711,24 @@ class StoppedFlightMonitor(commands.Cog):
         try:
             await model.ensure_tables()
             await self._register_active_views(model)
-            async with await manager.get_client(TOKEN_OWNER_ID) as client:
-                schedules = await self._get_organization_schedules(client)
-                fleet = await client.list_organization_aircraft(ORG_ID)
-                registrations = {
-                    str(_get(aircraft, "id")): str(
-                        _get(aircraft, "registration") or "Unknown aircraft"
-                    )
-                    for aircraft in fleet or []
-                }
-                schedules_by_aircraft = {}
-                for schedule in schedules:
-                    aircraft_id = str(_get(schedule, "aircraft_id") or "")
-                    if aircraft_id:
-                        schedules_by_aircraft.setdefault(aircraft_id, []).append(
-                            schedule
-                        )
-                for aircraft_id, registration in registrations.items():
-                    has_active_routes = _has_active_routes(
-                        schedules_by_aircraft.get(aircraft_id, [])
-                    )
-                    await model.sync_route_availability(
-                        aircraft_id,
-                        registration,
-                        has_active_routes,
-                    )
+            # Query LiveFleetService for consolidated fleet, schedules, and positions
+            fleet_snapshot = await manager.get_live_fleet(ORG_ID, pilot_id=TOKEN_OWNER_ID)
+            schedules = fleet_snapshot.all_schedules
+            schedules_by_aircraft = fleet_snapshot.schedules_by_aircraft
+            positions = fleet_snapshot.to_positions_dict()
+            fleet = getattr(fleet_snapshot, "_fleet_list", None) or []
+            registrations = {
+                ac.aircraft_id: ac.registration
+                for ac in fleet_snapshot
+            }
+            for ac in fleet_snapshot:
+                await model.sync_route_availability(
+                    ac.aircraft_id,
+                    ac.registration,
+                    ac.has_active_routes,
+                )
 
-                # Fetch position data for the whole fleet. Schedule status is
-                # not a reliable way to find AP+ aircraft: IF can report the
-                # aircraft as STOPPED after removing it from the live server,
-                # even when its schedule is no longer IN_FLIGHT.
-                positions = {}
-                for aircraft_id in registrations:
-                    try:
-                        positions[aircraft_id] = await client.get_aircraft_position(
-                            aircraft_id
-                        )
-                    except Exception:
-                        log.exception(
-                            "Could not load position for fleet aircraft %s",
-                            aircraft_id,
-                        )
+            async with await manager.get_client(TOKEN_OWNER_ID) as client:
 
                 active = [
                     schedule
@@ -792,8 +770,7 @@ class StoppedFlightMonitor(commands.Cog):
                         state = int(_get(position, "state", -1))
                     except (TypeError, ValueError):
                         continue
-                    is_on_ground = bool(_get(position, "is_on_ground", True))
-                    if not (state == STOPPED_POSITION_STATE and not is_on_ground):
+                    if state != STOPPED_POSITION_STATE:
                         continue
                     aircraft_schedules = schedules_by_aircraft.get(aircraft_id, [])
                     schedule = None
@@ -804,11 +781,7 @@ class StoppedFlightMonitor(commands.Cog):
                         if not candidate_id:
                             continue
                         incident = await model.get_incident(candidate_id)
-                        if incident and incident.get("lifecycle") in {
-                            "monitoring",
-                            "available",
-                            "claiming",
-                        }:
+                        if incident and incident.get("lifecycle") != "claimed":
                             schedule = candidate
                             break
                     # For a newly detected STOPPED aircraft, choose the current
@@ -818,6 +791,22 @@ class StoppedFlightMonitor(commands.Cog):
                         schedule = _status_schedule(
                             "STOPPED IN AIR",
                             aircraft_schedules,
+                        )
+                    if schedule is None:
+                        # A STOPPED position is authoritative even if IF has
+                        # marked the corresponding schedule terminal. Use its
+                        # latest route record to create and track the incident.
+                        schedule = next(
+                            (
+                                candidate
+                                for candidate in reversed(
+                                    sorted(aircraft_schedules, key=_sequence)
+                                )
+                                if _get(candidate, "id")
+                                and _get(candidate, "origin_icao")
+                                and _get(candidate, "destination_icao")
+                            ),
+                            None,
                         )
                     if schedule is None:
                         log.warning(
@@ -1257,7 +1246,15 @@ class StoppedFlightMonitor(commands.Cog):
             return
         stopped_airborne = (
             int(_get(position, "state", -1)) == STOPPED_POSITION_STATE
-            and not bool(_get(position, "is_on_ground", True))
+        )
+        log.debug(
+            "_process_schedule: schedule_id=%s registration=%s state=%s (stopped_airborne=%s) lifecycle=%s stopped_since=%s",
+            schedule_id,
+            registration,
+            _get(position, "state", -1),
+            stopped_airborne,
+            row.get("lifecycle"),
+            row.get("stopped_since"),
         )
         if row["lifecycle"] == "claimed":
             return
@@ -1354,6 +1351,12 @@ class StoppedFlightMonitor(commands.Cog):
             )
 
         if stopped_airborne and not row["stopped_since"]:
+            log.info(
+                "Detected stopped airborne aircraft! Setting stopped_since for schedule %s (%s, registration %s)",
+                schedule_id,
+                _get(schedule, "callsign"),
+                registration,
+            )
             values = {
                 "stopped_since": _utcnow(),
                 "original_crew_json": (
@@ -2465,9 +2468,7 @@ class StoppedFlightMonitor(commands.Cog):
                 state = int(_get(position, "state", -1))
             except (TypeError, ValueError):
                 continue
-            is_on_ground = bool(_get(position, "is_on_ground", True))
-            is_stopped_airborne = (state == STOPPED_POSITION_STATE and not is_on_ground)
-            if is_stopped_airborne:
+            if state == STOPPED_POSITION_STATE:
                 continue
             await model.update_incident(
                 schedule_id,
@@ -2557,8 +2558,6 @@ class StoppedFlightMonitor(commands.Cog):
                 )
                 if (
                     not current
-                    or _status(current) != IN_FLIGHT_SCHEDULE_STATUS
-                    or _get(position, "is_on_ground", True)
                     or int(_get(position, "state", -1)) != STOPPED_POSITION_STATE
                     or assignment_role is None
                 ):

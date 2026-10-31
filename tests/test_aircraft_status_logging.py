@@ -1100,6 +1100,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         member = MagicMock()
         member.id = 123456789
         member.bot = False
+        member.status = discord.Status.online
         member.display_name = "Recovery Pilot"
         member.nick = None
         message = MagicMock()
@@ -1152,7 +1153,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             message_text,
         )
 
-    async def test_recovery_wave_contacts_no_more_than_five_fleet_pilots(self):
+    async def test_recovery_wave_contacts_no_more_than_three_fleet_pilots(self):
         cog, bot = self.make_cog(MagicMock())
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         members = []
@@ -1161,6 +1162,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             member = MagicMock()
             member.id = 100 + index
             member.bot = False
+            member.status = discord.Status.online
             member.display_name = f"Pilot {index}"
             member.nick = None
             message = MagicMock()
@@ -1209,7 +1211,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog._send_pilot_wave(model, row, wave=2)
 
-        self.assertEqual(sum(member.send.await_count for member in members), 5)
+        self.assertEqual(sum(member.send.await_count for member in members), 3)
 
     async def test_crew_removal_dm_explains_next_leg_continuation(self):
         cog, bot = self.make_cog(MagicMock())

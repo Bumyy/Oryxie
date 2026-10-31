@@ -1,7 +1,10 @@
+import logging
 from datetime import timedelta
 from typing import Optional
 
 from .manager import DatabaseManager
+
+log = logging.getLogger(__name__)
 
 
 class StoppedFlightModel:
@@ -342,7 +345,23 @@ class StoppedFlightModel:
         if expected_lifecycle is not None:
             query += " AND lifecycle = %s"
             args.append(expected_lifecycle)
-        return await self.db.execute(query, tuple(args))
+        count = await self.db.execute(query, tuple(args))
+        if count == 0:
+            log.warning(
+                "update_incident affected 0 rows for schedule_id=%s (expected_lifecycle=%s, values=%s)",
+                schedule_id,
+                expected_lifecycle,
+                values,
+            )
+        else:
+            log.debug(
+                "update_incident updated %s row(s) for schedule_id=%s (expected_lifecycle=%s, fields=%s)",
+                count,
+                schedule_id,
+                expected_lifecycle,
+                list(values.keys()),
+            )
+        return count
 
     async def list_incidents(self, lifecycles: tuple[str, ...]) -> list[dict]:
         if not lifecycles:

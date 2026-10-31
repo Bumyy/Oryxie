@@ -9,6 +9,9 @@ from enum import IntEnum
 from typing import Any, Optional, Dict, List
 
 import aiohttp
+import logging
+
+log = logging.getLogger(__name__)
 
 
 class PersistentOrganizationType(IntEnum):
@@ -419,14 +422,29 @@ class IFLiveClient:
 
     async def _request(self, method: str, url: str, **kwargs) -> Any:
         full_url = f"{self.base_url}{url}"
-        async with self._http.request(method, full_url, **kwargs) as response:
-            body = await response.json(content_type=None)
-            if response.status == 200:
-                return _parse_if_response(body)
-            exc_cls = _STATUS_ERROR_MAP.get(response.status, IFLiveError)
-            error_code = body.get("errorCode", response.status) if isinstance(body, dict) else response.status
-            detail = body.get("error", body.get("detail", str(body))) if isinstance(body, dict) else str(body)
-            raise exc_cls(response.status, error_code, detail)
+        max_retries = 3
+        for attempt in range(max_retries):
+            async with self._http.request(method, full_url, **kwargs) as response:
+                body = await response.json(content_type=None)
+                if response.status == 200:
+                    return _parse_if_response(body)
+
+                if response.status == 429 and attempt < max_retries - 1:
+                    retry_seconds = 5.0
+                    if isinstance(body, dict):
+                        res_str = str(body.get("result", ""))
+                        import re
+                        m = re.search(r"(\d+)\s*second", res_str)
+                        if m:
+                            retry_seconds = float(m.group(1)) + 1.0
+                    log.warning("IF API rate limited on %s, waiting %.1fs before retry...", url, retry_seconds)
+                    await asyncio.sleep(retry_seconds)
+                    continue
+
+                exc_cls = _STATUS_ERROR_MAP.get(response.status, IFLiveError)
+                error_code = body.get("errorCode", response.status) if isinstance(body, dict) else response.status
+                detail = body.get("error", body.get("detail", str(body))) if isinstance(body, dict) else str(body)
+                raise exc_cls(response.status, error_code, detail)
 
     async def list_organizations(self) -> list[IFOrganization]:
         result = await self._request("GET", "/live/organizations")
@@ -672,5 +690,17 @@ class IFLiveManager:
 
     async def revoke(self, pilot_id: int) -> None:
         await self.bot.if_live_tokens_model.delete_token(pilot_id)
+
+    @property
+    def fleet_service(self):
+        if getattr(self, "_fleet_service", None) is None:
+            from api.live_fleet_state import LiveFleetService
+            v2_api = getattr(self.bot, "if_api_manager", None)
+            self._fleet_service = LiveFleetService(self, v2_api=v2_api)
+        return self._fleet_service
+
+    async def get_live_fleet(self, organization_id: str | None = None, force_refresh: bool = False, pilot_id: int = 1):
+        """Fetch or return cached snapshot of the organization's fleet states."""
+        return await self.fleet_service.get_live_fleet(organization_id, force_refresh=force_refresh, pilot_id=pilot_id)
 
 
