@@ -34,7 +34,9 @@ STAFF_CHANNEL_ID = int(
     or DM_LOG_CHANNEL_ID
 )
 STATUS_LOG_CHANNEL_ID = int(
-    os.getenv("AIRCRAFT_STATUS_LOG_CHANNEL_ID", "0") or 0
+    os.getenv("AIRCRAFT_STATUS_LOG_CHANNEL_ID")
+    or os.getenv("FLIGHT_TRACKER_CHANNEL_ID")
+    or "0"
 )
 FLEET_ROLE_ID = int(
     os.getenv("STOPPED_FLIGHT_FLEET_ROLE_ID", "0") or 0
@@ -716,7 +718,11 @@ class StoppedFlightMonitor(commands.Cog):
             schedules = fleet_snapshot.all_schedules
             schedules_by_aircraft = fleet_snapshot.schedules_by_aircraft
             positions = fleet_snapshot.to_positions_dict()
-            fleet = getattr(fleet_snapshot, "_fleet_list", None) or []
+            fleet = (
+                getattr(fleet_snapshot, "fleet_list", None)
+                or list(fleet_snapshot)
+                or []
+            )
             registrations = {
                 ac.aircraft_id: ac.registration
                 for ac in fleet_snapshot
@@ -2033,17 +2039,22 @@ class StoppedFlightMonitor(commands.Cog):
                 event.get("if_user_id"),
             )
 
-    async def _recent_live_flight_count(self, if_user_id):
+    async def _recent_live_flight_activity(self, if_user_id):
         now = _utcnow()
         cached = self._activity_cache.get(if_user_id)
         if cached and now - cached[0] < timedelta(seconds=ACTIVITY_CACHE_SECONDS):
-            return cached[1]
+            val = cached[1]
+            if isinstance(val, (tuple, list)):
+                return int(val[0]), int(val[1])
+            return int(val), int(val)
 
         api = getattr(self.bot, "if_api_manager", None)
         if api is None:
             raise RuntimeError("Infinite Flight public API manager is unavailable")
-        cutoff = now - timedelta(days=FLIGHT_HISTORY_DAYS)
-        count = 0
+        cutoff_30d = now - timedelta(days=FLIGHT_HISTORY_DAYS)
+        cutoff_7d = now - timedelta(days=7)
+        count_7d = 0
+        count_30d = 0
         for page_index in range(MAX_FLIGHT_HISTORY_PAGES):
             response = await api.get_user_flights_page(
                 if_user_id,
@@ -2067,15 +2078,22 @@ class StoppedFlightMonitor(commands.Cog):
                 created = _parse_utc(_get(flight, "created"))
                 if created is None:
                     continue
-                if created < cutoff:
+                if created < cutoff_30d:
                     stop = True
                     continue
                 if float(_get(flight, "totalTime", 0) or 0) > 0:
-                    count += 1
+                    count_30d += 1
+                    if created >= cutoff_7d:
+                        count_7d += 1
             if stop or not result.get("hasNextPage") or not flights:
                 break
-        self._activity_cache[if_user_id] = (now, count)
-        return count
+        res = (count_7d, count_30d)
+        self._activity_cache[if_user_id] = (now, res)
+        return res
+
+    async def _recent_live_flight_count(self, if_user_id):
+        activity = await self._recent_live_flight_activity(if_user_id)
+        return activity[1]
 
     async def _send_pilot_wave(self, model, row, wave):
         guild = self.bot.get_guild(GUILD_ID)
@@ -2096,6 +2114,13 @@ class StoppedFlightMonitor(commands.Cog):
             recovery_only=True,
         )
         contacted = {str(item["if_user_id"]) for item in contacted_rows or []}
+        recent_dm_counts = {}
+        try:
+            if hasattr(model, "get_recent_recovery_dm_counts"):
+                recent_dm_counts = await model.get_recent_recovery_dm_counts(hours=24)
+        except Exception:
+            log.exception("Could not retrieve 24-hour recovery DM frequency counts")
+
         pilots = await model.get_active_pilots()
         by_discord = {
             str(pilot["discordid"]): pilot
@@ -2169,33 +2194,68 @@ class StoppedFlightMonitor(commands.Cog):
 
             had_cached_score = if_user_id in self._activity_cache
             try:
-                flight_count = await self._recent_live_flight_count(if_user_id)
+                flights_7d, flights_30d = await self._recent_live_flight_activity(if_user_id)
             except Exception:
                 log.exception(
-                    "Could not check 30-day Live flight history for %s",
+                    "Could not check Live flight history for %s",
                     pilot.get("callsign", if_user_id),
                 )
                 activity_check_failures += 1
                 record_exclusion("activity_check_failed", member, pilot)
                 continue
-            if flight_count:
+            if flights_30d:
                 candidates.append(
                     {
                         "member": member,
                         "pilot": pilot,
                         "if_user_id": if_user_id,
-                        "flight_count": flight_count,
+                        "flight_count": flights_30d,
+                        "flights_7d": flights_7d,
+                        "flights_30d": flights_30d,
+                        "is_hook": (flights_7d == 0 and flights_30d > 0),
+                        "recent_dm_count": recent_dm_counts.get(if_user_id, 0),
                     }
                 )
-                if flight_count:
-                    recent_activity_count += 1
+                recent_activity_count += 1
             else:
                 record_exclusion("no_recent_flights", member, pilot)
             if not had_cached_score:
                 await asyncio.sleep(1.05)
 
-        candidates.sort(key=lambda c: (-c["flight_count"], random.random()))
-        selected = candidates[:RECOVERY_CANDIDATE_LIMIT]
+        # Separate into active pilots (flew in last 7d) and re-engagement hook pilots (flew in last 30d, but not 7d)
+        active_candidates = [c for c in candidates if not c["is_hook"]]
+        hook_candidates = [c for c in candidates if c["is_hook"]]
+
+        # Target slot allocation: 1 slot for re-engagement hook pilot, up to 2 for active pilots
+        hook_target = 1 if hook_candidates else 0
+        active_target = min(len(active_candidates), RECOVERY_CANDIDATE_LIMIT - hook_target)
+        if active_target + hook_target < RECOVERY_CANDIDATE_LIMIT:
+            hook_target = min(len(hook_candidates), RECOVERY_CANDIDATE_LIMIT - active_target)
+
+        def _weighted_pick(pool, k):
+            if not pool or k <= 0:
+                return []
+            if len(pool) <= k:
+                res = list(pool)
+                random.shuffle(res)
+                return res
+            # Weighted sampling without replacement (A-Res):
+            # Scale down weight aggressively if the pilot received recovery DMs in the last 24h
+            scored = []
+            for item in pool:
+                base_act = math.sqrt(max(1, item["flights_7d"] if not item["is_hook"] else item["flights_30d"]))
+                dm_penalty = 1.0 + 3.0 * item["recent_dm_count"]
+                effective_weight = max(base_act / dm_penalty, 0.0001)
+                rnd = max(random.random(), 1e-9)
+                score = rnd ** (1.0 / effective_weight)
+                scored.append((score, item))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [item for _, item in scored[:k]]
+
+        selected_active = _weighted_pick(active_candidates, active_target)
+        selected_hook = _weighted_pick(hook_candidates, hook_target)
+        selected = selected_active + selected_hook
+        random.shuffle(selected)
         delivered_recipients = []
         failed_recipients = []
         for candidate in selected:
@@ -2326,8 +2386,10 @@ class StoppedFlightMonitor(commands.Cog):
                 f"{linked_pilot_count} with active linked pilot records, "
                 f"{recent_activity_count} with recent 30-day flights, "
                 f"{activity_check_failures} flight-history checks failed, "
-                f"{len(candidates)} eligible pilots, "
-                f"{len(selected)} selected (maximum "
+                f"{len(candidates)} eligible pilots "
+                f"({len(active_candidates)} active in 7d, {len(hook_candidates)} re-engagement in 30d), "
+                f"{len(selected)} selected "
+                f"({len(selected_active)} active, {len(selected_hook)} re-engagement; maximum "
                 f"{RECOVERY_CANDIDATE_LIMIT})."
             )
         ]
@@ -2336,10 +2398,16 @@ class StoppedFlightMonitor(commands.Cog):
                 f"{len(candidates) - len(selected)} eligible pilots were not "
                 "contacted because the recovery DM wave is capped."
             )
+        deprioritized_count = sum(1 for c in candidates if c["recent_dm_count"] > 0)
+        if deprioritized_count:
+            diagnostic_notes.append(
+                f"{deprioritized_count} candidates deprioritized to prevent spamming "
+                "(already received recovery DMs in the last 24 hours)."
+            )
         exclusion_labels = {
             "missing_link": "no active linked pilot record",
             "already_contacted": "already received this recovery flight DM",
-            "no_recent_flights": "no Live flights in the 3-day activity window",
+            "no_recent_flights": "no Live flights in the 30-day activity window",
             "activity_check_failed": "Live activity check failed",
             "assigned_executive": "Executive remains assigned to this flight",
         }

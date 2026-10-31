@@ -400,6 +400,24 @@ class StoppedFlightModel:
             query += " AND channel_id IS NOT NULL AND message_id IS NOT NULL"
         return await self.db.fetch_all(query, tuple(args))
 
+    async def get_recent_recovery_dm_counts(self, hours: int = 24) -> dict[str, int]:
+        """Return mapping of if_user_id -> count of recovery DMs received in the last `hours`."""
+        rows = await self.db.fetch_all(
+            """
+            SELECT if_user_id, COUNT(*) as dm_count
+            FROM if_stopped_flight_dm_events
+            WHERE wave > 0
+              AND delivery_status = 'delivered'
+              AND created_at >= NOW() - INTERVAL %s HOUR
+            GROUP BY if_user_id
+            """,
+            (hours,),
+        )
+        return {
+            str(row["if_user_id"]): int(row["dm_count"])
+            for row in rows or []
+        }
+
     async def get_active_pilots(self) -> list[dict]:
         return await self.db.fetch_all(
             "SELECT callsign, discordid, ifuserid FROM pilots "
