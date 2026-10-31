@@ -72,7 +72,7 @@ class FleetPirepModal(discord.ui.Modal, title="Fleet Flight Details"):
         max_length=2
     )
     
-    def __init__(self, cog, frame_name: str, frame_data: dict, pilot1_id: int, pilot2_id: Optional[int], pilot1_name: str = None, pilot2_name: str = None):
+    def __init__(self, cog, frame_name: str, frame_data: dict, pilot1_id: int, pilot2_id: Optional[int], pilot1_name: str = None, pilot2_name: str = None, multiplier: str = "150000"):
         super().__init__()
         self.cog = cog
         self.frame_name = frame_name
@@ -81,6 +81,7 @@ class FleetPirepModal(discord.ui.Modal, title="Fleet Flight Details"):
         self.pilot2_id = pilot2_id
         self.pilot1_name = pilot1_name  # Discord member display name
         self.pilot2_name = pilot2_name  # Discord member display name
+        self.multiplier = multiplier
         
         # Add frame name to frame_data for the service
         self.frame_data['name'] = frame_name
@@ -118,7 +119,8 @@ class FleetPirepModal(discord.ui.Modal, title="Fleet Flight Details"):
                 total_duration_hours=hours,
                 total_duration_minutes=minutes,
                 pilot1_name=self.pilot1_name,
-                pilot2_name=self.pilot2_name
+                pilot2_name=self.pilot2_name,
+                multiplier=self.multiplier
             )
             
             if result.get('error'):
@@ -132,8 +134,10 @@ class FleetPirepModal(discord.ui.Modal, title="Fleet Flight Details"):
             )
             
             total_duration = f"{hours:02d}:{minutes:02d}"
+            multiplier_label = "2x (Lift Users)" if self.multiplier == "200000" else "1.5x (Non-Lift Users)"
             embed.add_field(name="✈️ Flight", value=f"{self.frame_name} ({dep_icao} → {arr_icao})", inline=False)
-            embed.add_field(name="⏱️ Total Duration", value=total_duration, inline=False)
+            embed.add_field(name="⏱️ Total Duration", value=total_duration, inline=True)
+            embed.add_field(name="✨ Multiplier", value=multiplier_label, inline=True)
             
             # Pilot 1 result
             p1_result = result.get('pilot1_result')
@@ -272,10 +276,23 @@ class FleetPirepCog(commands.Cog):
     @app_commands.command(name="live_fleet_pirep", description="File a dual-pilot PIREP for fleet flights")
     @app_commands.checks.has_any_role(*ALLOWED_ROLE_IDS)
     @app_commands.autocomplete(frame=frame_autocomplete)
+    @app_commands.describe(
+        frame="Select the aircraft registration",
+        multiplier="1.5x for non-lift users, 2x for lift users",
+        pilot_1="Primary pilot",
+        pilot_2="Second pilot (optional, splits flight time 50/50)",
+    )
+    @app_commands.choices(
+        multiplier=[
+            app_commands.Choice(name="1.5x (For Non-Lift Users)", value="150000"),
+            app_commands.Choice(name="2x (For Lift Users)", value="200000"),
+        ]
+    )
     async def live_fleet_pirep(
         self, 
         interaction: discord.Interaction,
         frame: str,
+        multiplier: app_commands.Choice[str],
         pilot_1: discord.Member,
         pilot_2: discord.Member = None
     ):
@@ -309,9 +326,19 @@ class FleetPirepCog(commands.Cog):
         pilot1_name = pilot_1.display_name
         pilot2_id = pilot_2.id if pilot_2 else None
         pilot2_name = pilot_2.display_name if pilot_2 else None
+        selected_multiplier = multiplier.value if multiplier else "150000"
         
         # Send modal
-        modal = FleetPirepModal(self, matched_key, frame_data, pilot1_id, pilot2_id, pilot1_name, pilot2_name)
+        modal = FleetPirepModal(
+            self,
+            matched_key,
+            frame_data,
+            pilot1_id,
+            pilot2_id,
+            pilot1_name,
+            pilot2_name,
+            multiplier=selected_multiplier,
+        )
         await interaction.response.send_modal(modal)
 
     @live_fleet_pirep.error

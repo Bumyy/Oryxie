@@ -248,7 +248,8 @@ class PirepFilingService:
         total_duration_hours: int,
         total_duration_minutes: int,
         pilot1_name: str = None,
-        pilot2_name: str = None
+        pilot2_name: str = None,
+        multiplier: str = "150000"
     ) -> Dict:
         """
         Submits dual-pilot PIREP with 50/50 hour split.
@@ -263,6 +264,7 @@ class PirepFilingService:
             total_duration_minutes: Total flight minutes
             pilot1_name: Discord display name of Pilot 1 (fallback if DB name is None)
             pilot2_name: Discord display name of Pilot 2 (fallback if DB name is None)
+            multiplier: Multiplier code ("150000" for 1.5x or "200000" for 2x)
         
         Returns:
             Dict with success status and results
@@ -274,9 +276,9 @@ class PirepFilingService:
             'error': None
         }
         
-        # Hardcoded values
+        # Hardcoded aircraft_id, configurable multiplier (defaults to 150000)
         aircraft_id = 11
-        multiplier = "150000"
+        multiplier = str(multiplier or "150000")
         
         # Calculate duration string
         total_minutes = (total_duration_hours * 60) + total_duration_minutes
