@@ -105,6 +105,17 @@ class LiveAircraftState:
     has_active_routes: bool = False
 
     @property
+    def id(self) -> str:
+        """Alias for aircraft_id to support legacy access patterns."""
+        return self.aircraft_id
+
+    def __getitem__(self, key: str) -> Any:
+        """Support dict-style access."""
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    @property
     def stopped_duration(self) -> Optional[timedelta]:
         """Time elapsed since the aircraft was stopped."""
         if not self.stopped_since:
@@ -182,6 +193,7 @@ class LiveFleetSnapshot:
 
     aircraft_by_id: Dict[str, LiveAircraftState] = field(default_factory=dict)
     aircraft_by_reg: Dict[str, LiveAircraftState] = field(default_factory=dict)
+    fleet_list: List[Any] = field(default_factory=list)
     all_schedules: List[Any] = field(default_factory=list)
     schedules_by_aircraft: Dict[str, List[Any]] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=utcnow)
@@ -625,6 +637,7 @@ class LiveFleetService:
                 snapshot = LiveFleetSnapshot(
                     aircraft_by_id=aircraft_by_id,
                     aircraft_by_reg=aircraft_by_reg,
+                    fleet_list=list(self._fleet_list or []),
                     all_schedules=schedules_list,
                     schedules_by_aircraft=schedules_by_aircraft,
                     timestamp=snapshot_time,
