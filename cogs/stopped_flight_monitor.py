@@ -2529,9 +2529,23 @@ class StoppedFlightMonitor(commands.Cog):
 
         try:
             manager = self.bot.if_live_manager
+            ac_state = None
+            if hasattr(manager, "get_live_fleet") and asyncio.iscoroutinefunction(manager.get_live_fleet):
+                fleet_snapshot = await manager.get_live_fleet(ORG_ID, pilot_id=TOKEN_OWNER_ID)
+                ac_state = fleet_snapshot.get(incident["aircraft_id"]) if fleet_snapshot else None
+                if ac_state is not None and not ac_state.is_stopped:
+                    raise RuntimeError("The stopped flight is no longer claimable")
+
             async with await manager.get_client(TOKEN_OWNER_ID) as client:
-                position = await client.get_aircraft_position(incident["aircraft_id"])
-                schedules = await client.list_aircraft_schedules(incident["aircraft_id"])
+                if ac_state is None:
+                    position = await client.get_aircraft_position(incident["aircraft_id"])
+                    # Allow either STOPPED (4) or IN_FLIGHT (2) if not in live session
+                    state_val = int(_get(position, "state", -1))
+                    is_ground = bool(_get(position, "is_on_ground", False))
+                    if is_ground or state_val not in (STOPPED_POSITION_STATE, int(AircraftPersistenceState.IN_FLIGHT)):
+                        raise RuntimeError("The stopped flight is no longer claimable")
+
+                schedules = (getattr(ac_state, "schedules", None) or []) if ac_state else await client.list_aircraft_schedules(incident["aircraft_id"])
                 current = next(
                     (
                         schedule
@@ -2556,11 +2570,7 @@ class StoppedFlightMonitor(commands.Cog):
                     ),
                     None,
                 )
-                if (
-                    not current
-                    or int(_get(position, "state", -1)) != STOPPED_POSITION_STATE
-                    or assignment_role is None
-                ):
+                if not current or assignment_role is None:
                     raise RuntimeError("The stopped flight is no longer claimable")
                 result = await client.assign_crew(
                     str(schedule_id), str(pilot["ifuserid"]), assignment_role
