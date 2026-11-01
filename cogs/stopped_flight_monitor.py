@@ -1408,7 +1408,13 @@ class StoppedFlightMonitor(commands.Cog):
                     expected_lifecycle="available",
                 )
                 await self._expire_claim_messages(
-                    model, schedule_id, "Aircraft resumed; this claim is no longer available."
+                    model,
+                    schedule_id,
+                    "Aircraft resumed; this claim is no longer available.",
+                    reply_text=(
+                        "This claim is no longer available because the aircraft resumed. "
+                        "The original pilot should be noted for any 50/50 PIREP tracking."
+                    ),
                 )
                 return
             await model.update_incident(
@@ -2588,18 +2594,24 @@ class StoppedFlightMonitor(commands.Cog):
             return view
         return StoppedFlightClaimView(self, schedule_id)
 
-    async def _expire_claim_messages(self, model, schedule_id, content):
+    async def _expire_claim_messages(self, model, schedule_id, content, reply_text=None):
         incident = await model.get_incident(schedule_id)
         if incident and incident.get("alert_channel_id") and incident.get("alert_message_id"):
             await self._edit_claim_message(
-                incident["alert_channel_id"], incident["alert_message_id"], content
+                incident["alert_channel_id"],
+                incident["alert_message_id"],
+                content,
+                reply_text=reply_text,
             )
         events = await model.get_dm_events(
             schedule_id, with_message_ids=True
         )
         for event in events or []:
             await self._edit_claim_message(
-                event["channel_id"], event["message_id"], content
+                event["channel_id"],
+                event["message_id"],
+                content,
+                reply_text=reply_text,
             )
 
     def _strike_out_claim_message(self, content):
@@ -2610,7 +2622,7 @@ class StoppedFlightMonitor(commands.Cog):
             return text
         return f"~~{text}~~"
 
-    async def _edit_claim_message(self, channel_id, message_id, content):
+    async def _edit_claim_message(self, channel_id, message_id, content, reply_text=None):
         try:
             channel = self.bot.get_channel(int(channel_id))
             if channel is None:
@@ -2620,6 +2632,12 @@ class StoppedFlightMonitor(commands.Cog):
                 content=self._strike_out_claim_message(content),
                 view=None,
             )
+            if reply_text and str(reply_text).strip():
+                await channel.send(
+                    str(reply_text).strip(),
+                    reference=message.to_reference(),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             log.warning(
                 "Could not expire stopped-flight claim message %s", message_id,
@@ -2647,7 +2665,12 @@ class StoppedFlightMonitor(commands.Cog):
             )
             if row["lifecycle"] == "available":
                 await self._expire_claim_messages(
-                    model, schedule_id, "This flight is no longer available to claim."
+                    model,
+                    schedule_id,
+                    "This flight is no longer available to claim.",
+                    reply_text=(
+                        "This claim expired because the aircraft is no longer available to claim."
+                    ),
                 )
 
     async def _claim_member(self, interaction):
@@ -2773,6 +2796,11 @@ class StoppedFlightMonitor(commands.Cog):
             (
                 f"✅ This flight was claimed by <@{member.id}> "
                 f"({pilot.get('callsign') or 'Pilot'})."
+            ),
+            reply_text=(
+                f"This recovery flight is now claimed by <@{member.id}> "
+                f"({pilot.get('callsign') or 'Pilot'}). "
+                "The original assigned pilot should be noted for any 50/50 PIREP tracking."
             ),
         )
         await interaction.response.send_message(
