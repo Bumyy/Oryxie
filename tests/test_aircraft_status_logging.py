@@ -1026,6 +1026,39 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             channel.send.await_args.args[0].lower(),
         )
 
+    async def test_public_recovery_offer_mentions_original_pilot_callsign(self):
+        cog, bot = self.make_cog(MagicMock())
+        cog._registered_views = set()
+        guild = MagicMock()
+        role = MagicMock()
+        guild.get_role.return_value = role
+        bot.get_guild.return_value = guild
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        bot.get_channel.return_value = channel
+        bot.pilots_model.get_pilot_by_ifuserid = AsyncMock(
+            return_value={"callsign": "QRV004"}
+        )
+        model = MagicMock()
+        model.update_incident = AsyncMock()
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "XXX1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "original_crew_json": '["if-user-1"]',
+        }
+
+        with (
+            patch("cogs.stopped_flight_monitor.RECOVERY_ALERT_CHANNEL_ID", 123),
+            patch("cogs.stopped_flight_monitor.RECOVERY_PING_ROLE_ID", 321),
+        ):
+            await cog._send_public_recovery_offer(model, row)
+
+        self.assertIn("Original pilot: **QRV004**", channel.send.await_args.args[0])
+        self.assertIn("QRV004", channel.send.await_args.kwargs["embed"].description)
+
     async def test_eta_warning_uses_aircraft_registration_not_flight_number(self):
         cog, bot = self.make_cog(MagicMock())
         user = MagicMock()
