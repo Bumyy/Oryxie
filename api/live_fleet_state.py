@@ -625,8 +625,10 @@ class LiveFleetService:
                         state.heading = float(v2_flight.get("heading", 0.0))
                         state.vertical_speed = float(v2_flight.get("verticalSpeed", 0.0))
 
-                        # Altitude & speed check for active airborne vs ground taxiing
-                        state.is_on_ground = bool(state.altitude < 100 and state.speed < 30)
+                        # Ground speed threshold for ground vs airborne:
+                        # Airliners cannot fly below 50 knots (stall speed > 120 kts),
+                        # and taxi speeds in Infinite Flight commonly reach 35 knots.
+                        state.is_on_ground = bool(state.speed < 50)
                         state.is_actively_flying = not state.is_on_ground
                         state.is_parked = state.is_on_ground
                         state.is_stopped = False

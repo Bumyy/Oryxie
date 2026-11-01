@@ -391,6 +391,20 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
         (schedule for schedule in active_schedules if _status(schedule) == 10),
         None,
     )
+
+    speed = 0.0
+    try:
+        speed = float(_get(position, "speed", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        speed = 0.0
+
+    # Hysteresis: an aircraft that has already landed or parked cannot flip back to
+    # ENROUTE on the same leg while its ground speed is under 60 kts (normal taxi speed)
+    if previous_status and previous_status.startswith(("LANDED", "PARKED")) and speed < 60:
+        on_ground = True
+        if state == int(AircraftPersistenceState.IN_FLIGHT):
+            state = int(AircraftPersistenceState.PARKED)
+
     if state == int(AircraftPersistenceState.MAINTENANCE):
         return "MAINTENANCE"
     if state == STOPPED_POSITION_STATE:
@@ -441,15 +455,21 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
             )
             return f"LANDED{location} · {details}".strip(" ·")
     if previous_status and previous_status.startswith("LANDED"):
+        if not airport and " AT " in previous_status:
+            prev_airport = (
+                previous_status.split(" AT ", 1)[1]
+                .split(" · ", 1)[0]
+                .split(" ", 1)[0]
+                .strip()
+                .upper()
+            )
+            if prev_airport and prev_airport != "LOCATION":
+                airport = prev_airport
         return f"PARKED AT {airport}" if airport else "PARKED"
     if airport:
         return f"PARKED AT {airport}"
-    if active_schedules:
-        origin = str(
-            _get(active_schedules[0], "origin_icao", "") or ""
-        ).strip().upper()
-        if origin:
-            return f"PARKED AT {origin}"
+    if previous_status and previous_status.startswith("PARKED AT "):
+        return previous_status
     return "PARKED · LOCATION UNKNOWN"
 
 
