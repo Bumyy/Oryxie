@@ -270,11 +270,15 @@ def _parse_step_climbs_from_flight_plan(
         lon = loc.get("longitude")
         if lat is not None and lon is not None:
             try:
+                lat_f = float(lat)
+                lon_f = float(lon)
+                if abs(lat_f) < 0.01 and abs(lon_f) < 0.01:
+                    continue
                 waypoints.append({
                     "name": str(item.get("name") or "").strip().upper(),
                     "altitude": float(item.get("altitude", -1) or -1),
-                    "lat": float(lat),
-                    "lon": float(lon),
+                    "lat": lat_f,
+                    "lon": lon_f,
                 })
             except (TypeError, ValueError):
                 continue
@@ -365,16 +369,6 @@ def _nearest_airport_icao(bot, position):
             nearest_icao = str(icao).upper()
 
     return nearest_icao if nearest_distance <= 25 else None
-
-
-def _takeoff_window_hours(registration, airport_icao=None):
-    normalized_registration = str(registration or "").strip().upper()
-    airport = str(airport_icao or "").strip().upper()
-    if airport and airport in hubs_for_registration(normalized_registration):
-        return 6
-    if airport and airport not in hubs_for_registration(normalized_registration):
-        return 12
-    return 6 if not normalized_registration else 12
 
 
 def _aircraft_status_text(bot, position, schedules, previous_status=None):
@@ -637,12 +631,301 @@ class StoppedFlightClaimView(discord.ui.View):
         await self.cog.claim_stopped_flight(interaction, self.schedule_id)
 
 
+class LiveFlightCompletedView(discord.ui.View):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        registration: str,
+        schedule: Any,
+        pilot_discord_id: int,
+    ):
+        super().__init__(timeout=86400)
+        self.bot = bot
+        self.registration = registration
+        self.schedule = schedule
+        self.pilot_discord_id = pilot_discord_id
+        self.origin_icao = str(_get(schedule, "origin_icao") or "").strip().upper()
+        self.destination_icao = str(_get(schedule, "destination_icao") or "").strip().upper()
+        self.callsign = str(_get(schedule, "callsign") or registration).strip().upper()
+
+    @discord.ui.button(
+        label="File PIREP (ACARS)",
+        style=discord.ButtonStyle.success,
+        custom_id="btn_live_flight_acars_file",
+    )
+    async def file_pirep_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.pilot_discord_id:
+            await interaction.response.send_message(
+                "This flight tracker was initiated for a different pilot.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        pirep_service = getattr(self.bot, "pirep_filing_service", None)
+        if not pirep_service:
+            await interaction.followup.send(
+                "PIREP filing service is currently unavailable.",
+                ephemeral=True,
+            )
+            return
+
+        result = await pirep_service.fetch_if_flights(interaction.user.id)
+        if not result or not result.get("success"):
+            error_msg = (result or {}).get("error") or "Could not fetch flight data from Infinite Flight."
+            await interaction.followup.send(error_msg, ephemeral=True)
+            return
+
+        flights = result.get("flights") or []
+        if not flights:
+            await interaction.followup.send(
+                "No recent flights found in your Infinite Flight logbook. Please allow 1-2 minutes for Infinite Flight to sync your logbook and try again.",
+                ephemeral=True,
+            )
+            return
+
+        matched_flight = next(
+            (
+                f for f in flights
+                if str(f.get("departure") or "").upper() == self.origin_icao
+                and str(f.get("arrival") or "").upper() == self.destination_icao
+            ),
+            None,
+        )
+        if not matched_flight:
+            matched_flight = next(
+                (
+                    f for f in flights
+                    if str(f.get("arrival") or "").upper() == self.destination_icao
+                ),
+                None,
+            )
+        if not matched_flight:
+            matched_flight = flights[0]
+
+        duration_str = matched_flight.get("duration") or "00:00"
+        try:
+            parts = duration_str.split(":")
+            hours = int(parts[0])
+            minutes = int(parts[1])
+        except (ValueError, IndexError):
+            hours = 0
+            minutes = 0
+
+        view = LivePirepConfirmationView(
+            bot=self.bot,
+            registration=self.registration,
+            origin_icao=self.origin_icao or str(matched_flight.get("departure") or "???"),
+            destination_icao=self.destination_icao or str(matched_flight.get("arrival") or "???"),
+            callsign=self.callsign,
+            duration_str=duration_str,
+            total_duration_hours=hours,
+            total_duration_minutes=minutes,
+            pilot1_user=interaction.user,
+            parent_view=self,
+            parent_message=interaction.message,
+        )
+        embed = view.build_confirmation_embed()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+class LivePirepConfirmationView(discord.ui.View):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        registration: str,
+        origin_icao: str,
+        destination_icao: str,
+        callsign: str,
+        duration_str: str,
+        total_duration_hours: int,
+        total_duration_minutes: int,
+        pilot1_user: Any,
+        parent_view: Optional[discord.ui.View] = None,
+        parent_message: Optional[discord.Message] = None,
+    ):
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.registration = registration
+        self.origin_icao = origin_icao
+        self.destination_icao = destination_icao
+        self.callsign = callsign
+        self.duration_str = duration_str
+        self.hours = total_duration_hours
+        self.minutes = total_duration_minutes
+        self.pilot1_user = pilot1_user
+        self.pilot2_user: Optional[Any] = None
+        self.parent_view = parent_view
+        self.parent_message = parent_message
+
+    def build_confirmation_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"Live Fleet PIREP · {self.registration}",
+            color=discord.Color(QATAR_MAROON),
+        )
+        embed.description = (
+            f"**{self.origin_icao}** -> **{self.destination_icao}** · **{self.registration}** · **{self.callsign}**\n"
+            f"Flight Duration: **{self.duration_str}** ({self.hours}h {self.minutes}m)\n\n"
+        )
+        if self.pilot2_user:
+            total_min = self.hours * 60 + self.minutes
+            split_min = total_min // 2
+            p1_min = split_min + (1 if total_min % 2 == 1 else 0)
+            p1_h, p1_m = divmod(p1_min, 60)
+            p2_h, p2_m = divmod(split_min, 60)
+            embed.description += (
+                f"Pilot 1 (PIC): {self.pilot1_user.mention} — **{p1_h:02d}:{p1_m:02d}**\n"
+                f"Pilot 2 (Co-Pilot): {self.pilot2_user.mention} — **{p2_h:02d}:{p2_m:02d}**\n"
+                f"-# 50/50 split flight hours applied"
+            )
+        else:
+            embed.description += (
+                f"Pilot: {self.pilot1_user.mention} — **{self.duration_str}** (100%)\n"
+                f"-# Single pilot flight"
+            )
+        return embed
+
+    @discord.ui.button(
+        label="Confirm & File PIREP",
+        style=discord.ButtonStyle.success,
+        custom_id="btn_confirm_file_live_pirep",
+    )
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.pilot1_user.id:
+            await interaction.response.send_message(
+                "You cannot confirm this PIREP.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        pirep_service = getattr(self.bot, "pirep_filing_service", None)
+        if not pirep_service:
+            await interaction.followup.send(
+                "PIREP filing service is currently unavailable.",
+                ephemeral=True,
+            )
+            return
+
+        frame_data = {"name": self.registration}
+        pilot2_id = self.pilot2_user.id if self.pilot2_user else None
+        pilot2_name = getattr(self.pilot2_user, "display_name", None) if self.pilot2_user else None
+
+        result = await pirep_service.submit_fleet_pirep(
+            pilot1_discord_id=self.pilot1_user.id,
+            pilot2_discord_id=pilot2_id,
+            frame_data=frame_data,
+            dep_icao=self.origin_icao,
+            arr_icao=self.destination_icao,
+            total_duration_hours=self.hours,
+            total_duration_minutes=self.minutes,
+            pilot1_name=self.pilot1_user.display_name,
+            pilot2_name=pilot2_name,
+        )
+
+        p1_res = (result or {}).get("pilot1_result") or {}
+        p1_success = p1_res.get("success", False)
+
+        if not p1_success:
+            err = result.get("error") or p1_res.get("error") or "Unknown submission error from CrewCenter."
+            await interaction.followup.send(f"Failed to submit PIREP: {err}", ephemeral=True)
+            return
+
+        for item in self.children:
+            item.disabled = True
+
+        success_embed = discord.Embed(
+            title="Fleet PIREP Filed Successfully",
+            description=(
+                f"**{self.origin_icao}** -> **{self.destination_icao}** · **{self.registration}**\n"
+                f"Total Duration: **{self.duration_str}**\n\n"
+                f"Pilot 1: {self.pilot1_user.mention} ({p1_res.get('duration', self.duration_str)} credited)\n"
+            ),
+            color=discord.Color.green(),
+        )
+        if self.pilot2_user:
+            p2_res = (result or {}).get("pilot2_result") or {}
+            success_embed.description += (
+                f"Pilot 2: {self.pilot2_user.mention} ({p2_res.get('duration', 'N/A')} credited)\n"
+            )
+
+        await interaction.edit_original_response(content=None, embed=success_embed, view=self)
+
+        if self.parent_view and self.parent_message:
+            try:
+                for child in self.parent_view.children:
+                    child.disabled = True
+                await self.parent_message.edit(view=self.parent_view)
+            except Exception:
+                pass
+
+    @discord.ui.button(
+        label="Add Co-Pilot (50/50 Split)",
+        style=discord.ButtonStyle.secondary,
+        custom_id="btn_add_copilot_live_pirep",
+    )
+    async def add_copilot_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.pilot1_user.id:
+            await interaction.response.send_message("Only the primary pilot can add a co-pilot.", ephemeral=True)
+            return
+
+        view = LivePirepUserSelectView(parent_confirmation=self)
+        await interaction.response.edit_message(
+            content="Select your co-pilot from the dropdown below to split hours 50/50:",
+            embed=None,
+            view=view,
+        )
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.danger,
+        custom_id="btn_cancel_live_pirep",
+    )
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content="PIREP filing cancelled.",
+            embed=None,
+            view=self,
+        )
+
+
+class LivePirepUserSelectView(discord.ui.View):
+    def __init__(self, parent_confirmation: LivePirepConfirmationView):
+        super().__init__(timeout=300)
+        self.parent = parent_confirmation
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="Select a co-pilot...",
+        min_values=1,
+        max_values=1,
+    )
+    async def select_user(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        selected_user = select.values[0]
+        if selected_user.id == self.parent.pilot1_user.id:
+            await interaction.response.send_message(
+                "You cannot select yourself as the co-pilot.",
+                ephemeral=True,
+            )
+            return
+
+        self.parent.pilot2_user = selected_user
+        embed = self.parent.build_confirmation_embed()
+        await interaction.response.edit_message(content=None, embed=embed, view=self.parent)
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = self.parent.build_confirmation_embed()
+        await interaction.response.edit_message(content=None, embed=embed, view=self.parent)
+
+
 class StoppedFlightMonitor(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._registered_views = set()
         self._activity_cache = {}
-        self._takeoff_limit_warning_cache = set()
         self._warned_status_logging_disabled = False
         self._warned_route_exhaustion_role_disabled = False
         self._status_log_initialized = False
@@ -893,11 +1176,16 @@ class StoppedFlightMonitor(commands.Cog):
             else:
                 step_climbs = []
 
+        target_destination = str(_get(active_sched, "destination_icao") or "").strip().upper()
+        dist_nm, eta_m = _flight_progress(self.bot, pos, target_destination)
+        is_approach = (eta_m is not None and eta_m <= 40) or (dist_nm is not None and dist_nm <= 150)
+
         map_file = await self._generate_flight_map_file(
             schedule=active_sched,
             position=pos,
             flight_plan_items=fpl_items,
             registration=target_registration,
+            focus_approach=is_approach,
         )
         has_map = map_file is not None
 
@@ -911,11 +1199,20 @@ class StoppedFlightMonitor(commands.Cog):
             has_map=has_map,
         )
 
+        completed_view = None
+        if flight_status == "LANDED":
+            completed_view = LiveFlightCompletedView(
+                bot=self.bot,
+                registration=target_registration,
+                schedule=active_sched,
+                pilot_discord_id=interaction.user.id,
+            )
+
         try:
             if map_file:
-                msg = await interaction.user.send(embed=embed, file=map_file)
+                msg = await interaction.user.send(embed=embed, file=map_file, view=completed_view)
             else:
-                msg = await interaction.user.send(embed=embed)
+                msg = await interaction.user.send(embed=embed, view=completed_view)
         except discord.Forbidden:
             await interaction.followup.send(
                 "Could not send you a direct message. Please check your Discord privacy "
@@ -939,6 +1236,7 @@ class StoppedFlightMonitor(commands.Cog):
             "v2_flight_id": v2_flight_id,
             "last_map_ts": now_ts if has_map else 0,
             "has_map": has_map,
+            "is_approach": is_approach,
         }
         if not hasattr(self, "_live_flight_trackers"):
             self._live_flight_trackers = {}
@@ -1862,69 +2160,6 @@ class StoppedFlightMonitor(commands.Cog):
             return
         elapsed = _utcnow() - stopped_since
         original_ids = json.loads(row["original_crew_json"] or "[]")
-        parked_icao = (
-            _nearest_airport_icao(self.bot, position)
-            or str(_get(schedule, "destination_icao") or "").strip().upper()
-        )
-        takeoff_limit_hours = _takeoff_window_hours(registration, parked_icao)
-        warning_window_hours = max(0, takeoff_limit_hours - 2)
-        if (
-            not stopped_airborne
-            and elapsed >= timedelta(hours=warning_window_hours)
-            and elapsed < timedelta(hours=takeoff_limit_hours)
-            and schedule_id not in self._takeoff_limit_warning_cache
-        ):
-            self._takeoff_limit_warning_cache.add(schedule_id)
-            for if_user_id in original_ids:
-                try:
-                    pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
-                except Exception:
-                    continue
-                discord_id = str((pilot or {}).get("discordid") or "")
-                if not discord_id.isdigit():
-                    continue
-                try:
-                    user = self.bot.get_user(int(discord_id))
-                    if user is None:
-                        user = await self.bot.fetch_user(int(discord_id))
-                    await user.send(
-                        f"**Takeoff window alert**\n"
-                        f"**{registration}** has been parked on the ground at **{parked_icao or 'an unknown airport'}** "
-                        f"for {max(1, int(elapsed.total_seconds() // 3600))} hours. "
-                        f"If it has not departed within the next 2 hours, this assignment will be unassigned."
-                    )
-                except Exception:
-                    log.exception(
-                        "Could not DM takeoff-window warning for IF user %s on schedule %s",
-                        if_user_id,
-                        schedule_id,
-                    )
-        if (
-            not stopped_airborne
-            and elapsed >= timedelta(hours=takeoff_limit_hours)
-            and row["lifecycle"] in {"monitoring", "available"}
-        ):
-            if row["lifecycle"] == "monitoring":
-                await self._unassign_and_alert(
-                    client,
-                    model,
-                    schedule,
-                    row,
-                    executive_ids=set(await self._executive_crew_ids(original_ids)),
-                )
-            elif row["lifecycle"] == "available":
-                await self._send_public_recovery_offer(
-                    model,
-                    {**row, "registration": registration, "callsign": str(_get(schedule, "callsign") or row.get("callsign") or "Unknown flight")},
-                )
-                await self._send_dm_recipient_report(
-                    row,
-                    "Parked on ground takeoff timeout",
-                    [],
-                    notes=[
-                        f"The aircraft has been parked on the ground at **{parked_icao or 'an unknown airport'}** for {takeoff_limit_hours} hours; the assignment has been reopened for recovery pilots."
-                    ],
-                )
         if elapsed >= timedelta(hours=1) and not row["one_hour_sent"]:
             if row["lifecycle"] == "monitoring":
                 executive_ids = set(
@@ -3305,11 +3540,16 @@ class StoppedFlightMonitor(commands.Cog):
                 else:
                     step_climbs = []
 
+            dest_icao = str(_get(schedule, "destination_icao") or "").strip().upper()
+            dist_nm, eta_m = _flight_progress(self.bot, position, dest_icao)
+            is_approach = (eta_m is not None and eta_m <= 40) or (dist_nm is not None and dist_nm <= 150)
+
             map_file = await self._generate_flight_map_file(
                 schedule=schedule,
                 position=position,
                 flight_plan_items=fpl_items,
                 registration=registration,
+                focus_approach=is_approach,
             )
             has_map = map_file is not None
 
@@ -3344,6 +3584,7 @@ class StoppedFlightMonitor(commands.Cog):
                 "v2_flight_id": v2_flight_id,
                 "last_map_ts": now_ts if has_map else 0,
                 "has_map": has_map,
+                "is_approach": is_approach,
             }
             self._live_flight_trackers[str(aircraft_id)] = tracker_data
             if hasattr(model, "save_live_flight_tracker"):
@@ -3397,6 +3638,7 @@ class StoppedFlightMonitor(commands.Cog):
         position: Any,
         flight_plan_items: Optional[list] = None,
         registration: Optional[str] = None,
+        focus_approach: bool = False,
     ) -> Optional[discord.File]:
         map_service = getattr(self.bot, "route_map_service", None)
         if not map_service or not position:
@@ -3407,18 +3649,25 @@ class StoppedFlightMonitor(commands.Cog):
             return None
 
         try:
-            curr_lat = float(_get(position, "latitude", 0.0) or 0.0)
-            curr_lon = float(_get(position, "longitude", 0.0) or 0.0)
+            curr_lat_val = _get(position, "latitude")
+            curr_lon_val = _get(position, "longitude")
+            curr_lat = float(curr_lat_val) if curr_lat_val is not None else None
+            curr_lon = float(curr_lon_val) if curr_lon_val is not None else None
+            if curr_lat is not None and curr_lon is not None:
+                if abs(curr_lat) < 0.01 and abs(curr_lon) < 0.01:
+                    curr_lat = None
+                    curr_lon = None
             heading = float(_get(position, "heading", 0.0) or 0.0)
             reg = str(registration or _get(schedule, "callsign") or "").strip().upper()
             res = map_service.create_route_map(
                 dep=dep,
                 arr=arr,
-                flight_plan_waypoints=flight_plan_items,
+                flight_plan_waypoints=_flatten_fpl_items(flight_plan_items),
                 current_lat=curr_lat,
                 current_lon=curr_lon,
                 heading=heading,
                 registration=reg,
+                focus_approach=focus_approach,
             )
             buf = await res if asyncio.iscoroutine(res) else res
             if buf and hasattr(buf, "read") and not hasattr(buf, "_mock_return_value"):
@@ -3650,15 +3899,25 @@ class StoppedFlightMonitor(commands.Cog):
                             else:
                                 step_climbs = []
 
+                        dest_icao = str(_get(current_schedule or tracker, "destination_icao") or "").strip().upper()
+                        dist_nm, eta_m = _flight_progress(self.bot, position, dest_icao)
+                        is_approach = (eta_m is not None and eta_m <= 40) or (dist_nm is not None and dist_nm <= 150)
+                        was_approach = bool(tracker.get("is_approach", False))
+
                         now_ts = int(_utcnow().timestamp())
                         last_map_ts = int(tracker.get("last_map_ts") or 0)
                         has_map = bool(tracker.get("has_map", False))
 
-                        # Regenerate flight plan map every 15 minutes (900s)
+                        # Regenerate flight plan map every 15 minutes (900s),
+                        # or immediately if transitioning to approach mode
                         should_refresh_map = (
                             status == "ENROUTE"
                             and position is not None
-                            and (last_map_ts == 0 or (now_ts - last_map_ts >= 900))
+                            and (
+                                last_map_ts == 0
+                                or (is_approach and not was_approach)
+                                or (now_ts - last_map_ts >= 900)
+                            )
                         )
 
                         map_file = None
@@ -3668,14 +3927,30 @@ class StoppedFlightMonitor(commands.Cog):
                                 position=position,
                                 flight_plan_items=fpl_items,
                                 registration=registration,
+                                focus_approach=is_approach,
                             )
                             if map_file:
                                 tracker["last_map_ts"] = now_ts
                                 tracker["has_map"] = True
+                                tracker["is_approach"] = is_approach
                                 has_map = True
+                        elif is_approach != was_approach:
+                            tracker["is_approach"] = is_approach
 
+                        completed_view = None
                         if status == "LANDED":
                             has_map = False
+                            discord_user_id = tracker.get("discord_user_id")
+                            if discord_user_id:
+                                try:
+                                    completed_view = LiveFlightCompletedView(
+                                        bot=self.bot,
+                                        registration=registration,
+                                        schedule=current_schedule or tracker,
+                                        pilot_discord_id=int(discord_user_id),
+                                    )
+                                except Exception:
+                                    log.exception("Could not create LiveFlightCompletedView for %s", registration)
 
                         msg = await channel.fetch_message(int(message_id))
                         embed = self._build_live_flight_embed(
@@ -3686,7 +3961,9 @@ class StoppedFlightMonitor(commands.Cog):
                             step_climbs=step_climbs,
                             has_map=has_map,
                         )
-                        if map_file:
+                        if status == "LANDED":
+                            await msg.edit(embed=embed, view=completed_view)
+                        elif map_file:
                             await msg.edit(embed=embed, attachments=[map_file])
                         else:
                             await msg.edit(embed=embed)

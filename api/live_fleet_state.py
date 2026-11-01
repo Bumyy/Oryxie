@@ -493,26 +493,71 @@ class LiveFleetService:
                         if cs:
                             v2_by_callsign[cs] = f
 
-                def _find_v2_flight(ac_id: str, pos: Optional[IFAircraftPosition], reg: str) -> Optional[Dict[str, Any]]:
-                    if ac_id in v2_flights:
-                        return v2_flights[ac_id]
-                    if pos and pos.last_pilot_id and str(pos.last_pilot_id).strip() in v2_by_user:
-                        return v2_by_user[str(pos.last_pilot_id).strip()]
+                def _normalize_cs(callsign_str: str) -> str:
+                    return str(callsign_str or "").strip().upper().replace(" ", "").replace("-", "")
+
+                matched_v2_by_aircraft: Dict[str, Dict[str, Any]] = {}
+                claimed_v2_flight_ids: Set[str] = set()
+
+                # Pass 1: Direct registration or active schedule callsign matches (exclusive)
+                for ac in fleet:
+                    ac_id = str(ac.id)
+                    reg = str(ac.registration or "Unknown").strip().upper()
+                    norm_reg = _normalize_cs(reg)
+
+                    flight = v2_by_callsign.get(norm_reg) or v2_by_callsign.get(reg.replace(" ", ""))
+                    if flight and flight.get("flightId") not in claimed_v2_flight_ids:
+                        matched_v2_by_aircraft[ac_id] = flight
+                        claimed_v2_flight_ids.add(flight["flightId"])
+                        continue
+
+                    for sch in schedules_by_aircraft.get(ac_id, []):
+                        sch_cs = _normalize_cs(sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "") or "")
+                        if sch_cs and sch_cs in v2_by_callsign:
+                            cand = v2_by_callsign[sch_cs]
+                            if cand.get("flightId") not in claimed_v2_flight_ids:
+                                matched_v2_by_aircraft[ac_id] = cand
+                                claimed_v2_flight_ids.add(cand["flightId"])
+                                break
+
+                # Pass 2: Pilot User ID matches (for pilots who fly without matching callsign)
+                # Enforces that a single multiplayer flight cannot be claimed by multiple aircraft
+                for ac in fleet:
+                    ac_id = str(ac.id)
+                    if ac_id in matched_v2_by_aircraft:
+                        continue
+                    pos = v3_positions.get(ac_id)
+                    reg = str(ac.registration or "Unknown").strip().upper()
+                    norm_reg = _normalize_cs(reg)
+
+                    matched = None
                     for sch in schedules_by_aircraft.get(ac_id, []):
                         crew_list = getattr(sch, "crew", []) or (sch.get("crew", []) if isinstance(sch, dict) else [])
                         for member in crew_list:
                             m_uid = str(member.get("userId") if isinstance(member, dict) else getattr(member, "userId", "") or "").strip()
                             if m_uid and m_uid in v2_by_user:
-                                return v2_by_user[m_uid]
-                        sch_cs = str(sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "") or "").strip().upper().replace(" ", "")
-                        if sch_cs and sch_cs in v2_by_callsign:
-                            return v2_by_callsign[sch_cs]
-                    norm_reg = reg.replace("-", "").strip().upper()
-                    if norm_reg and norm_reg in v2_by_callsign:
-                        return v2_by_callsign[norm_reg]
-                    if reg in v2_by_callsign:
-                        return v2_by_callsign[reg]
-                    return None
+                                cand = v2_by_user[m_uid]
+                                if cand.get("flightId") not in claimed_v2_flight_ids:
+                                    matched = cand
+                                    break
+                        if matched:
+                            break
+
+                    if not matched and pos and pos.last_pilot_id:
+                        p_uid = str(pos.last_pilot_id).strip()
+                        if p_uid in v2_by_user:
+                            cand = v2_by_user[p_uid]
+                            if cand.get("flightId") not in claimed_v2_flight_ids:
+                                cand_cs = _normalize_cs(cand.get("callsign"))
+                                if not bool(cand_cs and cand_cs.startswith("A7") and cand_cs != norm_reg):
+                                    matched = cand
+
+                    if matched and matched.get("flightId") not in claimed_v2_flight_ids:
+                        matched_v2_by_aircraft[ac_id] = matched
+                        claimed_v2_flight_ids.add(matched["flightId"])
+
+                def _find_v2_flight(ac_id: str, pos: Optional[IFAircraftPosition] = None, reg: str = "") -> Optional[Dict[str, Any]]:
+                    return matched_v2_by_aircraft.get(ac_id)
 
                 # Identify stopped/AP+ aircraft that require v2 route breadcrumbs
                 route_fetch_ids = []
@@ -585,6 +630,8 @@ class LiveFleetService:
                         state.is_actively_flying = not state.is_on_ground
                         state.is_parked = state.is_on_ground
                         state.is_stopped = False
+                        if v2_flight.get("userId"):
+                            state.last_pilot_id = str(v2_flight["userId"])
                         if v2_flight.get("username"):
                             state.last_pilot_username = str(v2_flight["username"])
 

@@ -353,6 +353,134 @@ class FleetPirepCog(commands.Cog):
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"❌ Error: {error}", ephemeral=True)
 
+    @app_commands.command(name="acars_live", description="Automatically file a fleet PIREP from your latest Infinite Flight flight")
+    @app_commands.checks.has_any_role(*ALLOWED_ROLE_IDS)
+    @app_commands.autocomplete(frame=frame_autocomplete)
+    async def acars_live(
+        self,
+        interaction: discord.Interaction,
+        frame: Optional[str] = None,
+        copilot: Optional[discord.Member] = None,
+    ):
+        """Automatically file a fleet PIREP using your latest Infinite Flight logbook flight."""
+        await interaction.response.defer(ephemeral=True)
+
+        if copilot and copilot.id == interaction.user.id:
+            await interaction.followup.send("Cannot select yourself as the co-pilot.", ephemeral=True)
+            return
+
+        pirep_service = self._get_pirep_service()
+        result = await pirep_service.fetch_if_flights(interaction.user.id)
+        if not result or not result.get("success"):
+            err = (result or {}).get("error") or "Could not fetch recent flights from Infinite Flight."
+            await interaction.followup.send(f"Error: {err}", ephemeral=True)
+            return
+
+        flights = result.get("flights") or []
+        if not flights:
+            await interaction.followup.send(
+                "No recent flights found in your Infinite Flight logbook. Please allow 1-2 minutes for Infinite Flight to sync and try again.",
+                ephemeral=True,
+            )
+            return
+
+        latest = flights[0]
+        dep_icao = str(latest.get("departure") or "").upper()
+        arr_icao = str(latest.get("arrival") or "").upper()
+        duration_str = latest.get("duration") or "00:00"
+
+        try:
+            parts = duration_str.split(":")
+            hours = int(parts[0])
+            minutes = int(parts[1])
+        except (ValueError, IndexError):
+            hours = 0
+            minutes = 0
+
+        frames_map = await self._get_live_fleet_frames()
+        matched_key = None
+        if frame:
+            matched_key = next(
+                (k for k in frames_map if k.upper() == frame.strip().upper()),
+                None,
+            )
+            if not matched_key:
+                await interaction.followup.send(f"Invalid frame selected: {frame}", ephemeral=True)
+                return
+        else:
+            monitor = self.bot.get_cog("StoppedFlightMonitor")
+            if monitor and hasattr(monitor, "_live_flight_trackers"):
+                for aid, trk in monitor._live_flight_trackers.items():
+                    if str(trk.get("discord_user_id")) == str(interaction.user.id):
+                        matched_key = trk.get("registration")
+                        break
+
+        if not matched_key:
+            await interaction.followup.send(
+                f"Detected latest flight: **{dep_icao}** -> **{arr_icao}** ({duration_str}).\n"
+                "Please specify which fleet frame you flew using `/acars_live frame:<REG>` (e.g. `frame:A7-BAE`).",
+                ephemeral=True,
+            )
+            return
+
+        frame_data = dict(frames_map.get(matched_key, {"name": matched_key}))
+        frame_data["name"] = matched_key
+
+        pilot2_id = copilot.id if copilot else None
+        pilot2_name = copilot.display_name if copilot else None
+
+        submit_res = await pirep_service.submit_fleet_pirep(
+            pilot1_discord_id=interaction.user.id,
+            pilot2_discord_id=pilot2_id,
+            frame_data=frame_data,
+            dep_icao=dep_icao,
+            arr_icao=arr_icao,
+            total_duration_hours=hours,
+            total_duration_minutes=minutes,
+            pilot1_name=interaction.user.display_name,
+            pilot2_name=pilot2_name,
+        )
+
+        p1_res = (submit_res or {}).get("pilot1_result") or {}
+        if not p1_res.get("success"):
+            err = submit_res.get("error") or p1_res.get("error") or "Failed to submit to CrewCenter."
+            await interaction.followup.send(f"Error submitting PIREP: {err}", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="Fleet PIREP Filed Successfully (ACARS)",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Flight", value=f"{matched_key} ({dep_icao} -> {arr_icao})", inline=False)
+        embed.add_field(name="Total Duration", value=duration_str, inline=False)
+        embed.add_field(
+            name="Pilot 1",
+            value=f"{interaction.user.mention} - {p1_res.get('duration', duration_str)} hours",
+            inline=False,
+        )
+        if copilot:
+            p2_res = (submit_res or {}).get("pilot2_result") or {}
+            embed.add_field(
+                name="Pilot 2 (Co-Pilot)",
+                value=f"{copilot.mention} - {p2_res.get('duration', 'N/A')} hours",
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @acars_live.error
+    async def acars_live_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, (app_commands.MissingRole, app_commands.MissingAnyRole)):
+            await interaction.response.send_message(
+                "You do not have the required Fleet or Executive role to use this command.",
+                ephemeral=True,
+            )
+        else:
+            logger.error(f"Error in acars_live: {error}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"Error: {error}", ephemeral=True)
+
+
 async def setup(bot):
     """Setup function for loading the cog."""
     await bot.add_cog(FleetPirepCog(bot))
