@@ -246,7 +246,7 @@ class PilotReengagementCog(commands.Cog):
         embed = discord.Embed(
             title=title,
             description=(
-                f"It's been **{days} days** since your last flight with Qatar Virtual. "
+                f"It's been **{days} days** since your last flight with Qatari Virtual. "
                 "An aircraft is fueled and ready on the ramp for immediate departure with **zero wait time**."
             ),
             color=QATAR_MAROON,
