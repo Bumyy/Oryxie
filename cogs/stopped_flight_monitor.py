@@ -8,7 +8,7 @@ import os
 import random
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import discord
@@ -241,6 +241,101 @@ def _aircraft_model(item):
         if value and str(value).strip():
             return str(value).strip()
     return ""
+
+
+def _flatten_fpl_items(items):
+    flat = []
+    for item in items or []:
+        flat.append(item)
+        children = item.get("children")
+        if children and isinstance(children, list):
+            flat.extend(_flatten_fpl_items(children))
+    return flat
+
+
+def _parse_step_climbs_from_flight_plan(
+    flight_plan_items,
+    current_alt,
+    current_lat,
+    current_lon,
+    current_speed,
+):
+    if not flight_plan_items or current_speed <= 50:
+        return []
+
+    waypoints = []
+    for item in _flatten_fpl_items(flight_plan_items):
+        loc = item.get("location") or {}
+        lat = loc.get("latitude")
+        lon = loc.get("longitude")
+        if lat is not None and lon is not None:
+            try:
+                waypoints.append({
+                    "name": str(item.get("name") or "").strip().upper(),
+                    "altitude": float(item.get("altitude", -1) or -1),
+                    "lat": float(lat),
+                    "lon": float(lon),
+                })
+            except (TypeError, ValueError):
+                continue
+
+    if len(waypoints) < 2:
+        return []
+
+    closest_idx = 0
+    min_dist = float("inf")
+    for i, wp in enumerate(waypoints):
+        d = _distance_nm(current_lat, current_lon, wp["lat"], wp["lon"])
+        if d < min_dist:
+            min_dist = d
+            closest_idx = i
+
+    upcoming = waypoints[closest_idx:]
+    if not upcoming:
+        return []
+
+    min_step_alt = max(24000.0, current_alt + 800.0)
+    step_climbs = []
+    seen_fls = set()
+    last_alt = current_alt
+
+    cum_dist = _distance_nm(current_lat, current_lon, upcoming[0]["lat"], upcoming[0]["lon"])
+
+    for i, wp in enumerate(upcoming):
+        if i > 0:
+            cum_dist += _distance_nm(
+                upcoming[i - 1]["lat"],
+                upcoming[i - 1]["lon"],
+                wp["lat"],
+                wp["lon"],
+            )
+
+        wp_alt = wp["altitude"]
+        if wp_alt >= min_step_alt and wp_alt >= last_alt + 800.0:
+            target_fl = round(wp_alt / 100)
+            if target_fl not in seen_fls:
+                seen_fls.add(target_fl)
+                last_alt = wp_alt
+
+                min_remaining = cum_dist * 60 / current_speed
+                now_utc = _utcnow()
+                step_ts = int(now_utc.timestamp() + min_remaining * 60)
+                step_dt = datetime.fromtimestamp(step_ts, tz=timezone.utc)
+                step_zulu = step_dt.strftime("%H:%M") + "Z"
+                if step_dt.date() != now_utc.date():
+                    step_zulu = step_dt.strftime("%d %b %H:%M") + "Z"
+
+                step_climbs.append({
+                    "target_fl": target_fl,
+                    "target_alt": int(wp_alt),
+                    "waypoint": wp["name"] or f"Fix {i}",
+                    "dist_nm": round(cum_dist),
+                    "min_remaining": round(min_remaining),
+                    "step_ts": step_ts,
+                    "step_zulu": step_zulu,
+                })
+
+    return step_climbs
 
 
 def _nearest_airport_icao(bot, position):
@@ -552,6 +647,7 @@ class StoppedFlightMonitor(commands.Cog):
         self._warned_route_exhaustion_role_disabled = False
         self._status_log_initialized = False
         self._live_flight_trackers = {}
+        self._flight_plan_cache = {}
         self.monitor_stopped_flights.start()
 
     def cog_unload(self):
@@ -781,12 +877,28 @@ class StoppedFlightMonitor(commands.Cog):
                 except Exception:
                     target_pilot = None
 
+        v2_flight_id = str(_get(pos, "v2_flight_id") or getattr(matched_ac, "v2_flight_id", "") or "").strip()
+        step_climbs = None
+        if v2_flight_id and flight_status == "ENROUTE" and pos:
+            fpl_items = await self._get_flight_plan_items(v2_flight_id)
+            if fpl_items:
+                step_climbs = _parse_step_climbs_from_flight_plan(
+                    fpl_items,
+                    float(_get(pos, "altitude", 0.0) or 0.0),
+                    float(_get(pos, "latitude", 0.0) or 0.0),
+                    float(_get(pos, "longitude", 0.0) or 0.0),
+                    float(_get(pos, "speed", 0.0) or 0.0),
+                )
+            else:
+                step_climbs = []
+
         embed = self._build_live_flight_embed(
             registration=target_registration,
             schedule=active_sched,
             position=pos,
             status=flight_status,
             pilot=target_pilot,
+            step_climbs=step_climbs,
         )
 
         try:
@@ -810,6 +922,7 @@ class StoppedFlightMonitor(commands.Cog):
             "destination_icao": str(_get(active_sched, "destination_icao") or ""),
             "callsign": str(_get(active_sched, "callsign") or target_registration),
             "status": "enroute",
+            "v2_flight_id": v2_flight_id,
         }
         if not hasattr(self, "_live_flight_trackers"):
             self._live_flight_trackers = {}
@@ -3120,12 +3233,28 @@ class StoppedFlightMonitor(commands.Cog):
             if not user:
                 return
 
+            v2_flight_id = str(_get(position, "v2_flight_id") or "").strip()
+            step_climbs = None
+            if v2_flight_id and position:
+                fpl_items = await self._get_flight_plan_items(v2_flight_id)
+                if fpl_items:
+                    step_climbs = _parse_step_climbs_from_flight_plan(
+                        fpl_items,
+                        float(_get(position, "altitude", 0.0) or 0.0),
+                        float(_get(position, "latitude", 0.0) or 0.0),
+                        float(_get(position, "longitude", 0.0) or 0.0),
+                        float(_get(position, "speed", 0.0) or 0.0),
+                    )
+                else:
+                    step_climbs = []
+
             embed = self._build_live_flight_embed(
                 registration=registration,
                 schedule=schedule,
                 position=position,
                 status="ENROUTE",
                 pilot=pilot,
+                step_climbs=step_climbs,
             )
             msg = await user.send(embed=embed)
             origin_icao = str(_get(schedule, "origin_icao") or "").strip().upper()
@@ -3142,6 +3271,7 @@ class StoppedFlightMonitor(commands.Cog):
                 "destination_icao": destination_icao,
                 "callsign": callsign,
                 "status": "enroute",
+                "v2_flight_id": v2_flight_id,
             }
             self._live_flight_trackers[str(aircraft_id)] = tracker_data
             if hasattr(model, "save_live_flight_tracker"):
@@ -3166,6 +3296,29 @@ class StoppedFlightMonitor(commands.Cog):
                 schedule_id,
             )
 
+    async def _get_flight_plan_items(self, v2_flight_id: str) -> list:
+        if not v2_flight_id:
+            return []
+        if not hasattr(self, "_flight_plan_cache"):
+            self._flight_plan_cache = {}
+        cached = self._flight_plan_cache.get(v2_flight_id)
+        if cached is not None:
+            return cached
+        if_api = getattr(self.bot, "if_api_manager", None)
+        if not if_api or not hasattr(if_api, "get_flight_plan"):
+            return []
+        try:
+            res = if_api.get_flight_plan(v2_flight_id)
+            if asyncio.iscoroutine(res):
+                res = await res
+            if res and isinstance(res, dict):
+                items = res.get("result", {}).get("flightPlanItems") or []
+                self._flight_plan_cache[v2_flight_id] = items
+                return items
+        except Exception:
+            log.exception("Could not fetch flight plan for flight %s", v2_flight_id)
+        return []
+
     def _build_live_flight_embed(
         self,
         registration: str,
@@ -3173,6 +3326,7 @@ class StoppedFlightMonitor(commands.Cog):
         position: Any,
         status: str = "ENROUTE",
         pilot: Optional[Dict[str, Any]] = None,
+        step_climbs: Optional[List[Dict[str, Any]]] = None,
     ) -> discord.Embed:
         origin = str(_get(schedule, "origin_icao") or "???").strip().upper()
         destination = str(_get(schedule, "destination_icao") or "???").strip().upper()
@@ -3307,6 +3461,34 @@ class StoppedFlightMonitor(commands.Cog):
                 value=tod_value,
                 inline=False,
             )
+            if step_climbs:
+                sc_lines = []
+                for sc in step_climbs:
+                    target_fl = sc["target_fl"]
+                    wpt = sc["waypoint"]
+                    min_rem = sc["min_remaining"]
+                    ts = sc["step_ts"]
+                    zulu = sc["step_zulu"]
+                    if min_rem <= 10:
+                        online_str = f"**Immediate / NOW!** ({zulu} · <t:{ts}:t> Local)"
+                    else:
+                        online_str = f"**{zulu}** (<t:{ts}:t> Local)"
+                    sc_lines.append(
+                        f"**Climb to FL{target_fl} at {wpt}**: ~{min_rem} min remaining (<t:{ts}:R>)\n"
+                        f"Come Online: {online_str}"
+                    )
+                sc_value = "\n\n".join(sc_lines) + "\n*Come online at the specified time to adjust autopilot altitude.*"
+                embed.add_field(
+                    name="Step Climbs (Come Online)",
+                    value=sc_value,
+                    inline=False,
+                )
+            elif step_climbs is not None and alt >= 20000:
+                embed.add_field(
+                    name="Step Climbs",
+                    value=f"Final Cruise: **FL{fl}** (No upcoming step climbs in flight plan)",
+                    inline=False,
+                )
             embed.add_field(
                 name="Remaining Distance",
                 value=f"**{dist_str}**",
@@ -3398,12 +3580,31 @@ class StoppedFlightMonitor(commands.Cog):
 
                 if channel:
                     try:
+                        v2_flight_id = str(_get(position, "v2_flight_id") or tracker.get("v2_flight_id") or "").strip()
+                        if v2_flight_id and not tracker.get("v2_flight_id"):
+                            tracker["v2_flight_id"] = v2_flight_id
+
+                        step_climbs = None
+                        if v2_flight_id and status == "ENROUTE" and position:
+                            fpl_items = await self._get_flight_plan_items(v2_flight_id)
+                            if fpl_items:
+                                step_climbs = _parse_step_climbs_from_flight_plan(
+                                    fpl_items,
+                                    float(_get(position, "altitude", 0.0) or 0.0),
+                                    float(_get(position, "latitude", 0.0) or 0.0),
+                                    float(_get(position, "longitude", 0.0) or 0.0),
+                                    float(_get(position, "speed", 0.0) or 0.0),
+                                )
+                            else:
+                                step_climbs = []
+
                         msg = await channel.fetch_message(int(message_id))
                         embed = self._build_live_flight_embed(
                             registration=registration,
                             schedule=current_schedule or tracker,
                             position=position,
                             status=status,
+                            step_climbs=step_climbs,
                         )
                         await msg.edit(embed=embed)
                     except discord.NotFound:

@@ -8,6 +8,8 @@ import discord
 from cogs.stopped_flight_monitor import (
     StoppedFlightMonitor,
     _flight_progress,
+    _parse_step_climbs_from_flight_plan,
+    _flatten_fpl_items,
 )
 
 
@@ -234,6 +236,111 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         interaction.followup.send.assert_awaited_once()
         self.assertIn("A7-BCB", interaction.followup.send.call_args[0][0])
         self.assertIn("ac-uuid-1", self.cog._live_flight_trackers)
+
+    def test_parse_step_climbs_from_flight_plan(self):
+        fpl_items = [
+            {"name": "DOH", "location": {"latitude": 25.0, "longitude": 52.0}, "altitude": 32000},
+            {"name": "PASOV", "location": {"latitude": 22.0, "longitude": 60.0}, "altitude": 34000},
+            {"name": "MABOD", "location": {"latitude": 18.0, "longitude": 75.0}, "altitude": 36000},
+            {"name": "GIVAL", "location": {"latitude": 15.0, "longitude": 85.0}, "altitude": 38000},
+            {"name": "IDASO", "location": {"latitude": 12.0, "longitude": 90.0}, "altitude": 38000},
+            {"name": "PUDET", "location": {"latitude": 8.5, "longitude": 98.0}, "altitude": 5000},
+        ]
+        # Current aircraft near PASOV at FL340 (34,000 ft), speed 450 kts
+        step_climbs = _parse_step_climbs_from_flight_plan(
+            flight_plan_items=fpl_items,
+            current_alt=34000.0,
+            current_lat=22.0,
+            current_lon=60.0,
+            current_speed=450.0,
+        )
+
+        self.assertEqual(len(step_climbs), 2)
+        # First step: FL360 at MABOD
+        self.assertEqual(step_climbs[0]["target_fl"], 360)
+        self.assertEqual(step_climbs[0]["waypoint"], "MABOD")
+        self.assertGreater(step_climbs[0]["dist_nm"], 0)
+        self.assertGreater(step_climbs[0]["min_remaining"], 0)
+        self.assertTrue(step_climbs[0]["step_zulu"].endswith("Z"))
+
+        # Second step: FL380 at GIVAL
+        self.assertEqual(step_climbs[1]["target_fl"], 380)
+        self.assertEqual(step_climbs[1]["waypoint"], "GIVAL")
+        self.assertGreater(step_climbs[1]["dist_nm"], step_climbs[0]["dist_nm"])
+        self.assertGreater(step_climbs[1]["min_remaining"], step_climbs[0]["min_remaining"])
+
+    def test_build_live_flight_embed_with_step_climbs(self):
+        step_climbs = [
+            {
+                "target_fl": 360,
+                "target_alt": 36000,
+                "waypoint": "PASOV",
+                "dist_nm": 600,
+                "min_remaining": 81,
+                "step_ts": 1762015320,
+                "step_zulu": "16:20Z",
+            },
+            {
+                "target_fl": 380,
+                "target_alt": 38000,
+                "waypoint": "MABOD",
+                "dist_nm": 40,
+                "min_remaining": 5,
+                "step_ts": 1762011000,
+                "step_zulu": "15:05Z",
+            },
+        ]
+        embed = self.cog._build_live_flight_embed(
+            registration="A7-BCB",
+            schedule=self.schedule,
+            position=self.position,
+            status="ENROUTE",
+            pilot=self.pilot,
+            step_climbs=step_climbs,
+        )
+
+        field_names = [f.name for f in embed.fields]
+        self.assertIn("Step Climbs (Come Online)", field_names)
+
+        sc_field = next(f for f in embed.fields if f.name == "Step Climbs (Come Online)")
+        # Check standard timing
+        self.assertIn("Climb to FL360 at PASOV", sc_field.value)
+        self.assertIn("16:20Z", sc_field.value)
+        # Check immediate timing (min_remaining <= 10)
+        self.assertIn("Climb to FL380 at MABOD", sc_field.value)
+        self.assertIn("Immediate / NOW!", sc_field.value)
+        self.assertIn("15:05Z", sc_field.value)
+
+    def test_build_live_flight_embed_final_cruise_step_climbs(self):
+        embed = self.cog._build_live_flight_embed(
+            registration="A7-BCB",
+            schedule=self.schedule,
+            position=self.position,
+            status="ENROUTE",
+            pilot=self.pilot,
+            step_climbs=[],
+        )
+
+        field_names = [f.name for f in embed.fields]
+        self.assertIn("Step Climbs", field_names)
+        sc_field = next(f for f in embed.fields if f.name == "Step Climbs")
+        self.assertIn("Final Cruise: **FL380**", sc_field.value)
+
+    async def test_get_flight_plan_items_cached(self):
+        self.bot.if_api_manager = MagicMock()
+        self.bot.if_api_manager.get_flight_plan = AsyncMock(
+            return_value={"result": {"flightPlanItems": [{"name": "PASOV", "altitude": 36000}]}}
+        )
+
+        items1 = await self.cog._get_flight_plan_items("flight-12345")
+        self.assertEqual(len(items1), 1)
+        self.assertEqual(items1[0]["name"], "PASOV")
+        self.bot.if_api_manager.get_flight_plan.assert_awaited_once_with("flight-12345")
+
+        # Second call should hit the cache
+        items2 = await self.cog._get_flight_plan_items("flight-12345")
+        self.assertEqual(len(items2), 1)
+        self.bot.if_api_manager.get_flight_plan.assert_awaited_once()
 
 
 if __name__ == "__main__":
