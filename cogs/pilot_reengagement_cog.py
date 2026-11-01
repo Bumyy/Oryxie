@@ -14,14 +14,26 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.airline_hubs import RETIRED_REGISTRATIONS
+from cogs.airline_hubs import (
+    RETIRED_REGISTRATIONS,
+    hubs_for_registration,
+    is_cargo_registration,
+)
 from cogs.available_aircraft_cog import (
     _active_schedules,
     _aircraft_model,
     _get,
+    _is_unavailable_status,
     _next_claimable_index,
 )
 from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
+from cogs.request_flight_cog import (
+    _build_cargo_route_chain,
+    _build_connected_route_chain,
+    _connected_routes,
+    _crew_user_id,
+    _schedules_for_aircraft,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,11 +71,20 @@ def _now_ast() -> datetime:
 class ReengagementPromptView(discord.ui.View):
     """Interactive view attached to the re-engagement DM without emojis."""
 
-    def __init__(self, schedule_id: str, registration: str, route_str: str):
+    def __init__(
+        self,
+        aircraft_id: str = "",
+        schedule_id: str = "",
+        registration: str = "",
+        route_str: str = "",
+        cog: Optional[Any] = None,
+    ):
         super().__init__(timeout=None)
+        self.aircraft_id = aircraft_id
         self.schedule_id = schedule_id
         self.registration = registration
         self.route_str = route_str
+        self.cog = cog
 
     @discord.ui.button(
         label="Request & Fly This Route",
@@ -73,21 +94,177 @@ class ReengagementPromptView(discord.ui.View):
     async def request_flight_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        await interaction.response.defer(ephemeral=True)
+
         model = getattr(interaction.client, "reengagement_model", None)
+        pilots_model = getattr(interaction.client, "pilots_model", None)
+        manager = getattr(interaction.client, "if_live_manager", None)
+
+        if not pilots_model:
+            await interaction.followup.send(
+                "Pilot database service is currently unavailable. Please try again shortly.",
+                ephemeral=True,
+            )
+            return
+
+        pilot = await pilots_model.get_pilot_by_discord_id(str(interaction.user.id))
+        if not pilot or not pilot.get("ifuserid"):
+            await interaction.followup.send(
+                "Your Discord account is not linked to an active Infinite Flight pilot record. Please link your account or contact a staff member.",
+                ephemeral=True,
+            )
+            return
+
+        aircraft_id = self.aircraft_id
+        registration = self.registration
+        if (not aircraft_id or not registration) and model and interaction.message:
+            try:
+                nudge_row = await model.get_nudge_by_message_id(str(interaction.message.id))
+                if nudge_row:
+                    aircraft_id = aircraft_id or str(nudge_row.get("aircraft_id") or "")
+                    registration = registration or str(nudge_row.get("registration") or "")
+            except Exception:
+                log.exception("Could not look up nudge record from message id")
+
+        if not aircraft_id or not registration:
+            await interaction.followup.send(
+                "Aircraft details could not be resolved. Please use `/request-flight` to book manually.",
+                ephemeral=True,
+            )
+            return
+
+        if not manager:
+            await interaction.followup.send(
+                "Infinite Flight live manager is currently unavailable. Please try again shortly.",
+                ephemeral=True,
+            )
+            return
+
+        cog = self.cog or interaction.client.get_cog("PilotReengagementCog")
+
+        try:
+            async with await manager.get_client(TOKEN_OWNER_ID) as client:
+                raw_schedules = await client.list_aircraft_schedules(aircraft_id)
+                schedules = _schedules_for_aircraft(_active_schedules(raw_schedules), aircraft_id)
+
+                if not schedules:
+                    await interaction.followup.send(
+                        f"**{registration}** has no active scheduled routes. Please check the Flight Board or contact staff.",
+                        ephemeral=True,
+                    )
+                    return
+
+                first_leg = schedules[0]
+                if _is_unavailable_status(first_leg) or bool(_get(first_leg, "crew", []) or []):
+                    await interaction.followup.send(
+                        f"The upcoming flight for **{registration}** has already been claimed by another pilot or is no longer available.",
+                        ephemeral=True,
+                    )
+                    return
+
+                # Build chain of legs (outbound + inbound)
+                is_cargo = is_cargo_registration(registration)
+                hubs = hubs_for_registration(registration)
+                if is_cargo:
+                    routes_to_assign = _build_cargo_route_chain(schedules, start_index=0, max_routes=2)
+                else:
+                    routes_to_assign = _build_connected_route_chain(schedules, start_index=0, hub_icao=hubs)
+
+                if not routes_to_assign:
+                    routes_to_assign = [first_leg]
+                    if (
+                        len(schedules) > 1
+                        and not bool(_get(schedules[1], "crew", []) or [])
+                        and not _is_unavailable_status(schedules[1])
+                        and _connected_routes(first_leg, schedules[1])
+                    ):
+                        routes_to_assign.append(schedules[1])
+
+                for r in routes_to_assign:
+                    if bool(_get(r, "crew", []) or []) or _is_unavailable_status(r):
+                        await interaction.followup.send(
+                            f"One or more routes for **{registration}** are no longer available. Nothing was assigned; please run `/request-flight`.",
+                            ephemeral=True,
+                        )
+                        return
+
+                pilot_if_user_id = str(pilot["ifuserid"])
+                assigned_routes = []
+                for current in routes_to_assign:
+                    r_id = str(_get(current, "id"))
+                    updated = await client.assign_crew(
+                        r_id,
+                        pilot_if_user_id,
+                        0,  # Captain role
+                    )
+                    crew = _get(updated, "crew", []) or []
+                    if not any(_crew_user_id(m) == pilot_if_user_id for m in crew):
+                        log.error("Pilot %s was not verified on route %s", pilot_if_user_id, r_id)
+                        break
+                    assigned_routes.append(current)
+
+                if not assigned_routes:
+                    await interaction.followup.send(
+                        "Could not complete the flight assignment in Infinite Flight. Please try again or contact staff.",
+                        ephemeral=True,
+                    )
+                    return
+
+        except Exception as e:
+            log.exception("Error assigning re-engagement flight for %s", registration)
+            await interaction.followup.send(
+                f"An error occurred while booking this flight: {e}. Please contact a staff member or try `/request-flight`.",
+                ephemeral=True,
+            )
+            return
+
+        # Update nudge status to 'claimed'
         if model and interaction.message:
             try:
-                await model.update_nudge_status(
-                    str(interaction.message.id), "clicked"
-                )
+                await model.update_nudge_status(str(interaction.message.id), "claimed")
             except Exception:
                 log.exception("Could not update nudge click status")
 
-        await interaction.response.send_message(
-            f"Fantastic to have you back! **{self.registration}** is currently on the ramp for **{self.route_str}**.\n\n"
-            "To book this flight, please run `/request-flight` in the server and select this aircraft, "
-            "or check the Flight Board. We look forward to seeing you in the skies!",
+        # Terminate active campaign for this aircraft since it's now booked
+        if cog and hasattr(cog, "_active_campaigns") and registration in cog._active_campaigns:
+            del cog._active_campaigns[registration]
+            cog._last_session_finished_at = _utcnow()
+
+        # Disable button on message
+        button.disabled = True
+        button.label = "Claimed & Booked"
+        if interaction.message:
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
+
+        pilot_callsign = pilot.get("callsign", "Captain")
+        route_lines = "\n".join(
+            f"• **{_get(r, 'callsign') or registration}**: {_get(r, 'origin_icao')} → {_get(r, 'destination_icao')}"
+            for r in assigned_routes
+        )
+
+        await interaction.followup.send(
+            f"Flight booked successfully, Captain {pilot_callsign}!\n\n"
+            f"You have been assigned as Captain to **{registration}** for the following leg(s):\n"
+            f"{route_lines}\n\n"
+            "Welcome back to the skies!",
             ephemeral=True,
         )
+
+        staff_lines = [
+            "**Pilot Re-engagement Claimed**",
+            f"• **Pilot:** <@{interaction.user.id}> ({pilot_callsign})",
+            f"• **Aircraft:** **{registration}**",
+            f"• **Assigned Legs ({len(assigned_routes)}):**",
+            route_lines,
+        ]
+        if cog and hasattr(cog, "_post_staff_report"):
+            try:
+                await cog._post_staff_report("\n".join(staff_lines))
+            except Exception:
+                log.exception("Could not post staff report for claimed re-engagement flight")
 
     @discord.ui.button(
         label="Snooze for 30 Days",
@@ -258,7 +435,7 @@ class PilotReengagementCog(commands.Cog):
 
         embed.add_field(
             name="Ready Now Aircraft",
-            value=f"{ac_val}\nCallsign: `{aircraft['callsign']}`",
+            value=f"{ac_val}\nFlight number: `{aircraft['callsign']}`",
             inline=False,
         )
         embed.add_field(
@@ -533,9 +710,11 @@ class PilotReengagementCog(commands.Cog):
         route_str = f"{aircraft['origin_icao']} → {aircraft['destination_icao']}"
         embed = self._build_nudge_embed(candidate, aircraft, wave=wave)
         view = ReengagementPromptView(
+            aircraft_id=aircraft["aircraft_id"],
             schedule_id=aircraft["schedule_id"],
             registration=aircraft["registration"],
             route_str=route_str,
+            cog=self,
         )
 
         try:
@@ -647,4 +826,6 @@ class PilotReengagementCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(PilotReengagementCog(bot))
+    cog = PilotReengagementCog(bot)
+    await bot.add_cog(cog)
+    bot.add_view(ReengagementPromptView(cog=cog))

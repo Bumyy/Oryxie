@@ -169,22 +169,165 @@ class PilotReengagementCogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(chosen_fallback)
         self.assertEqual(chosen_fallback["discordid"], "222")
 
-    async def test_reengagement_view_claim_button(self):
-        view = ReengagementPromptView("s1", "A7-BAC", "OTHH → EGLL")
+    async def test_reengagement_view_claim_button_assigns_outbound_and_inbound_legs(self):
+        cog_mock = MagicMock()
+        cog_mock._active_campaigns = {"A7-BAC": {"wave": 1}}
+        cog_mock._post_staff_report = AsyncMock()
+
+        view = ReengagementPromptView(
+            aircraft_id="ac-1",
+            schedule_id="s1",
+            registration="A7-BAC",
+            route_str="OTHH → EGLL",
+            cog=cog_mock,
+        )
+
         interaction = MagicMock()
+        interaction.user.id = 123456789
+        interaction.message.id = 999
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+
+        # Mock pilot model
+        interaction.client.pilots_model = MagicMock()
+        interaction.client.pilots_model.get_pilot_by_discord_id = AsyncMock(
+            return_value={"id": 42, "callsign": "QRV042", "ifuserid": "pilot-guid-1"}
+        )
+
+        # Mock reengagement model
         interaction.client.reengagement_model = MagicMock()
         interaction.client.reengagement_model.update_nudge_status = AsyncMock()
-        interaction.message.id = 999
-        interaction.response.send_message = AsyncMock()
+
+        # Mock live manager and client
+        leg1 = {
+            "id": "s1",
+            "aircraft_id": "ac-1",
+            "callsign": "QR001",
+            "origin_icao": "OTHH",
+            "destination_icao": "EGLL",
+            "status": 1,
+            "crew": [],
+        }
+        leg2 = {
+            "id": "s2",
+            "aircraft_id": "ac-1",
+            "callsign": "QR002",
+            "origin_icao": "EGLL",
+            "destination_icao": "OTHH",
+            "status": 1,
+            "crew": [],
+        }
+
+        manager = MagicMock()
+        client_mock = AsyncMock()
+        client_mock.list_aircraft_schedules = AsyncMock(return_value=[leg1, leg2])
+
+        def mock_assign_crew(schedule_id, user_id, role):
+            # return updated route with assigned crew
+            return {
+                "id": schedule_id,
+                "crew": [{"userId": user_id, "role": role}],
+            }
+
+        client_mock.assign_crew = AsyncMock(side_effect=mock_assign_crew)
+
+        # Async context manager for manager.get_client()
+        ctx_mock = AsyncMock()
+        ctx_mock.__aenter__ = AsyncMock(return_value=client_mock)
+        ctx_mock.__aexit__ = AsyncMock(return_value=None)
+        manager.get_client = AsyncMock(return_value=ctx_mock)
+
+        interaction.client.if_live_manager = manager
 
         await view.request_flight_button.callback(interaction)
 
+        # Verify assign_crew called for both leg 1 and leg 2
+        self.assertEqual(client_mock.assign_crew.await_count, 2)
+        client_mock.assign_crew.assert_any_await("s1", "pilot-guid-1", 0)
+        client_mock.assign_crew.assert_any_await("s2", "pilot-guid-1", 0)
+
+        # Verify database status updated to 'claimed'
         interaction.client.reengagement_model.update_nudge_status.assert_awaited_once_with(
-            "999", "clicked"
+            "999", "claimed"
         )
-        interaction.response.send_message.assert_awaited_once()
-        self.assertIn("A7-BAC", interaction.response.send_message.await_args.args[0])
-        self.assertIn("/request-flight", interaction.response.send_message.await_args.args[0])
+
+        # Verify active campaign was removed
+        self.assertNotIn("A7-BAC", cog_mock._active_campaigns)
+
+        # Verify response sent to pilot
+        interaction.followup.send.assert_awaited_once()
+        sent_text = interaction.followup.send.await_args.args[0]
+        self.assertIn("QRV042", sent_text)
+        self.assertIn("A7-BAC", sent_text)
+        self.assertIn("OTHH → EGLL", sent_text)
+        self.assertIn("EGLL → OTHH", sent_text)
+
+        # Verify staff report posted
+        cog_mock._post_staff_report.assert_awaited_once()
+
+    async def test_reengagement_view_claim_unlinked_pilot_rejected(self):
+        view = ReengagementPromptView(
+            aircraft_id="ac-1",
+            schedule_id="s1",
+            registration="A7-BAC",
+            route_str="OTHH → EGLL",
+        )
+        interaction = MagicMock()
+        interaction.user.id = 123456789
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+
+        # Pilot has no IF linked account
+        interaction.client.pilots_model = MagicMock()
+        interaction.client.pilots_model.get_pilot_by_discord_id = AsyncMock(
+            return_value={"id": 42, "callsign": "QRV042", "ifuserid": None}
+        )
+
+        await view.request_flight_button.callback(interaction)
+
+        interaction.followup.send.assert_awaited_once()
+        msg = interaction.followup.send.await_args.args[0]
+        self.assertIn("not linked", msg)
+
+    async def test_reengagement_view_claim_already_claimed_rejected(self):
+        view = ReengagementPromptView(
+            aircraft_id="ac-1",
+            schedule_id="s1",
+            registration="A7-BAC",
+            route_str="OTHH → EGLL",
+        )
+        interaction = MagicMock()
+        interaction.user.id = 123456789
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+
+        interaction.client.pilots_model = MagicMock()
+        interaction.client.pilots_model.get_pilot_by_discord_id = AsyncMock(
+            return_value={"id": 42, "callsign": "QRV042", "ifuserid": "pilot-guid-1"}
+        )
+
+        # First leg already has crew assigned
+        leg1 = {
+            "id": "s1",
+            "aircraft_id": "ac-1",
+            "status": 1,
+            "crew": [{"userId": "other-pilot"}],
+        }
+        manager = MagicMock()
+        client_mock = AsyncMock()
+        client_mock.list_aircraft_schedules = AsyncMock(return_value=[leg1])
+
+        ctx_mock = AsyncMock()
+        ctx_mock.__aenter__ = AsyncMock(return_value=client_mock)
+        ctx_mock.__aexit__ = AsyncMock(return_value=None)
+        manager.get_client = AsyncMock(return_value=ctx_mock)
+        interaction.client.if_live_manager = manager
+
+        await view.request_flight_button.callback(interaction)
+
+        interaction.followup.send.assert_awaited_once()
+        msg = interaction.followup.send.await_args.args[0]
+        self.assertIn("already been claimed", msg)
 
     async def test_reengagement_view_snooze_button(self):
         view = ReengagementPromptView("s1", "A7-BAC", "OTHH → EGLL")
