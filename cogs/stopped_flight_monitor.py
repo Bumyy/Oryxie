@@ -2255,6 +2255,32 @@ class StoppedFlightMonitor(commands.Cog):
         )
         return row
 
+    async def _original_pilot_callsign(self, row):
+        if not isinstance(row, dict):
+            return None
+        crew_ids = []
+        try:
+            crew_ids = json.loads(str(row.get("original_crew_json") or "[]"))
+        except (TypeError, ValueError):
+            crew_ids = []
+        if not isinstance(crew_ids, list):
+            return None
+        for if_user_id in crew_ids:
+            if not if_user_id:
+                continue
+            try:
+                pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(str(if_user_id))
+            except Exception:
+                log.exception(
+                    "Could not resolve original pilot callsign for schedule %s",
+                    row.get("schedule_id"),
+                )
+                continue
+            callsign = str((pilot or {}).get("callsign") or "").strip().upper()
+            if callsign:
+                return callsign
+        return None
+
     async def _send_public_recovery_offer(self, model, row):
         if row.get("alert_message_id"):
             return True
@@ -2271,25 +2297,33 @@ class StoppedFlightMonitor(commands.Cog):
                 RECOVERY_PING_ROLE_ID,
             )
             return False
+        original_pilot_callsign = await self._original_pilot_callsign(row)
         try:
             channel = self.bot.get_channel(RECOVERY_ALERT_CHANNEL_ID)
             if channel is None:
                 channel = await self.bot.fetch_channel(RECOVERY_ALERT_CHANNEL_ID)
+            original_line = (
+                f"Original pilot: **{original_pilot_callsign}**\n"
+                if original_pilot_callsign
+                else ""
+            )
             embed = discord.Embed(
                 title="Stopped flight available to claim",
                 description=(
                     f"**{row['registration']} · {row['callsign']}**\n"
+                    f"{original_line}"
                     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n\n"
                     "Stopped in the air for at least one hour. Any Fleet pilot may "
                     "claim it with the button below. Recovery assignments bypass the "
                     "normal two-aircraft limit."
-                ),
+                ).strip(),
                 color=discord.Color(QATAR_MAROON),
             )
             content = (
                 f"<@&{RECOVERY_PING_ROLE_ID}> **Stopped flight available to claim**\n"
-                f"**{row['registration']} · {row['callsign']}** "
-                f"({row['origin_icao']} → {row['destination_icao']})\n"
+                f"**{row['registration']} · {row['callsign']}**\n"
+                f"{original_line if original_line else ''}"
+                f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
                 "Stopped in the air for at least one hour. Any Fleet pilot may "
                 "claim it with the button below. Recovery assignments bypass the "
                 "normal two-aircraft limit."
@@ -2491,13 +2525,16 @@ class StoppedFlightMonitor(commands.Cog):
             user = self.bot.get_user(int(discord_id))
             if user is None:
                 user = await self.bot.fetch_user(int(discord_id))
+            original_pilot_callsign = await self._original_pilot_callsign(row)
             message = await user.send(
                 f"Your assignment on "
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']}) was "
                 "removed because the aircraft remained stopped in the air "
-                "for one hour. Another pilot will land the aircraft, and "
-                "you can continue the next leg if it is booked. Flight hours "
+                "for one hour. Another pilot will land the aircraft, and you can "
+                "continue the next leg if it is booked. "
+                f"The original assigned pilot on this flight was "
+                f"**{original_pilot_callsign or 'Unknown'}**. Flight hours "
                 "for this flight will be split 50/50 between you and the "
                 "recovery pilot."
             )
@@ -2785,9 +2822,11 @@ class StoppedFlightMonitor(commands.Cog):
                     if executive_crew_ids
                     else "The previous crew was removed. "
                 )
+                original_pilot_callsign = await self._original_pilot_callsign(row)
                 message = await member.send(
                     f"**Stopped flight available now**\n"
                     f"**{row['registration']} · {row['callsign']}**\n"
+                    f"Original assigned pilot: **{original_pilot_callsign or 'Unknown'}**\n"
                     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
                     "The aircraft has been stopped in the air for at least one "
                     "hour. "
@@ -3037,6 +3076,7 @@ class StoppedFlightMonitor(commands.Cog):
             message = await channel.fetch_message(int(message_id))
             await message.edit(
                 content=self._strike_out_claim_message(content),
+                embed=None,
                 view=None,
             )
             if reply_text and str(reply_text).strip():
