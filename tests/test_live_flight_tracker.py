@@ -10,6 +10,8 @@ from cogs.stopped_flight_monitor import (
     _flight_progress,
     _parse_step_climbs_from_flight_plan,
     _flatten_fpl_items,
+    LiveFlightCompletedView,
+    LivePirepConfirmationView,
 )
 
 
@@ -446,6 +448,81 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         header = buf.read(8)
         # Verify valid PNG signature
         self.assertEqual(header[:4], b"\x89PNG")
+
+
+    async def test_live_flight_completed_view_and_pirep_confirmation(self):
+        # Test LiveFlightCompletedView initialization
+        view = LiveFlightCompletedView(
+            bot=self.bot,
+            registration="A7-BCB",
+            schedule=self.schedule,
+            pilot_discord_id=987654321,
+        )
+        self.assertEqual(view.registration, "A7-BCB")
+        self.assertEqual(view.origin_icao, "OTHH")
+        self.assertEqual(view.destination_icao, "VTSP")
+
+        # Test ACARS button interaction
+        mock_pirep_service = AsyncMock()
+        mock_pirep_service.fetch_if_flights.return_value = {
+            "success": True,
+            "flights": [
+                {
+                    "departure": "OTHH",
+                    "arrival": "VTSP",
+                    "duration": "05:30",
+                    "date": "2026-11-01",
+                }
+            ],
+        }
+        mock_pirep_service.submit_fleet_pirep.return_value = {
+            "success": True,
+            "pilot1_result": {"success": True, "duration": "05:30"},
+        }
+        self.bot.pirep_filing_service = mock_pirep_service
+
+        interaction = AsyncMock()
+        interaction.user.id = 987654321
+        interaction.user.display_name = "Bumy"
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+
+        button = MagicMock()
+        await view.file_pirep_button.callback(interaction)
+
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        mock_pirep_service.fetch_if_flights.assert_awaited_once_with(987654321)
+        interaction.followup.send.assert_awaited_once()
+
+        # Check the confirmation view was sent
+        sent_call = interaction.followup.send.call_args[1]
+        confirm_view = sent_call.get("view")
+        self.assertIsInstance(confirm_view, LivePirepConfirmationView)
+        self.assertEqual(confirm_view.origin_icao, "OTHH")
+        self.assertEqual(confirm_view.destination_icao, "VTSP")
+        self.assertEqual(confirm_view.duration_str, "05:30")
+        self.assertEqual(confirm_view.hours, 5)
+        self.assertEqual(confirm_view.minutes, 30)
+
+        # Test Confirm & File button
+        confirm_interaction = AsyncMock()
+        confirm_interaction.user.id = 987654321
+        confirm_interaction.response.defer = AsyncMock()
+        confirm_interaction.edit_original_response = AsyncMock()
+
+        await confirm_view.confirm_button.callback(confirm_interaction)
+        mock_pirep_service.submit_fleet_pirep.assert_awaited_once_with(
+            pilot1_discord_id=987654321,
+            pilot2_discord_id=None,
+            frame_data={"name": "A7-BCB"},
+            dep_icao="OTHH",
+            arr_icao="VTSP",
+            total_duration_hours=5,
+            total_duration_minutes=30,
+            pilot1_name="Bumy",
+            pilot2_name=None,
+        )
+        confirm_interaction.edit_original_response.assert_awaited_once()
 
 
 if __name__ == "__main__":

@@ -197,6 +197,7 @@ class MyBot(commands.Bot):
             "cogs.stopped_flight_monitor",
             "cogs.route_ready_notifications",
             "cogs.pilot_reengagement_cog",
+            "cogs.takeoff_window_monitor",
         )
         loaded_extensions = []
         for extension in extensions:

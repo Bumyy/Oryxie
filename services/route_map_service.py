@@ -266,15 +266,24 @@ class RouteMapService:
             min_lon -= diff / 2
             max_lon += diff / 2
 
+        # Clamp latitude and longitude bounds to Mercator projection limits
+        min_lat = max(float(min_lat), -80.0)
+        max_lat = min(float(max_lat), 84.0)
+        if max_lat <= min_lat:
+            max_lat = min_lat + 1.0
+        width = min(float(max_lon - min_lon), 350.0)
+
         fig = Figure(figsize=(10, 5), dpi=90, facecolor='#2f3136')
         canvas = FigureCanvasAgg(fig)
 
         mid_lon_raw = (min_lon + max_lon) / 2
         mid_lon_clamped = (mid_lon_raw + 180) % 360 - 180
         projection = ccrs.Mercator(central_longitude=mid_lon_clamped)
+        data_crs = ccrs.PlateCarree(central_longitude=mid_lon_clamped)
 
         ax = fig.add_subplot(1, 1, 1, projection=projection)
-        ax.set_extent([min_lon, max_lon, min_lat, max_lat], crs=ccrs.PlateCarree())
+        # Symmetrical extent centered on mid_lon_clamped eliminates antimeridian seam issues
+        ax.set_extent([-width / 2, width / 2, min_lat, max_lat], crs=data_crs)
 
         ax.set_facecolor='#2f3136'
         if self.land_low:
@@ -285,17 +294,18 @@ class RouteMapService:
             ax.add_feature(self.coast_low)
 
         # Plot route line (Qatar maroon)
-        ax.plot(lons_unwrapped, lats, color='#800020', linewidth=2.5, transform=ccrs.PlateCarree(), zorder=5)
+        plot_lons = lons_unwrapped - mid_lon_raw
+        ax.plot(plot_lons, lats, color='#800020', linewidth=2.5, transform=data_crs, zorder=5)
 
         # Plot waypoint dots if flight plan was provided
         if len(route_pts) >= 2 and len(route_pts) <= 120:
             ax.plot(
-                lons_unwrapped[1:-1], lats[1:-1],
+                plot_lons[1:-1], lats[1:-1],
                 color='#D0D0D0',
                 marker='.',
                 markersize=4,
                 linestyle='None',
-                transform=ccrs.PlateCarree(),
+                transform=data_crs,
                 zorder=6,
             )
 
@@ -304,6 +314,7 @@ class RouteMapService:
 
         # Plot Aircraft or Midpoint Arrow
         if current_lat is not None and curr_lon_unwrapped is not None:
+            curr_x = curr_lon_unwrapped - mid_lon_raw
             if heading is not None:
                 # Math angle for '>' marker (default points East = 0 deg math):
                 angle = 90.0 - float(heading)
@@ -322,41 +333,41 @@ class RouteMapService:
 
             # Glowing badge / circle under aircraft
             ax.plot(
-                curr_lon_unwrapped, current_lat,
+                curr_x, current_lat,
                 marker='o',
                 color='#800020',
                 markersize=14,
-                transform=ccrs.PlateCarree(),
+                transform=data_crs,
                 zorder=11,
             )
             # Plane / directional marker
             ax.plot(
-                curr_lon_unwrapped, current_lat,
+                curr_x, current_lat,
                 marker=marker_style,
                 color='#FFFFFF',
                 markeredgecolor='black',
                 markeredgewidth=1,
                 markersize=18,
-                transform=ccrs.PlateCarree(),
+                transform=data_crs,
                 zorder=12,
             )
             if registration:
                 ax.text(
-                    curr_lon_unwrapped, current_lat + label_offset * 0.8,
+                    curr_x, current_lat + label_offset * 0.8,
                     registration,
                     color='#FFFFFF',
                     fontweight='bold',
                     fontsize=9,
                     ha='center',
                     va='bottom',
-                    transform=ccrs.PlateCarree(),
+                    transform=data_crs,
                     bbox=dict(boxstyle='round,pad=0.25', facecolor='#202225', edgecolor='#800020', alpha=0.9),
                     zorder=13,
                 )
         else:
             # Static midpoint arrow (Flight Board mode)
             mid_idx = len(lons_unwrapped) // 2
-            mid_lon = lons_unwrapped[mid_idx]
+            mid_lon_plot = plot_lons[mid_idx]
             mid_lat = lats[mid_idx]
             d_lon = lons_unwrapped[mid_idx + 1] - lons_unwrapped[mid_idx]
             d_lat = lats[mid_idx + 1] - lats[mid_idx]
@@ -364,13 +375,13 @@ class RouteMapService:
             marker_style = MarkerStyle(marker='>', fillstyle='full')
             marker_style._transform = marker_style.get_transform().rotate_deg(angle)
             ax.plot(
-                mid_lon, mid_lat, 
+                mid_lon_plot, mid_lat, 
                 marker=marker_style, 
                 color='#E0E0E0',
                 markeredgecolor='black',
                 markeredgewidth=1,
                 markersize=20,
-                transform=ccrs.PlateCarree(), 
+                transform=data_crs, 
                 zorder=10,
             )
 
@@ -390,10 +401,12 @@ class RouteMapService:
                         w_lon = float(wp_lon)
                         if abs(w_lat) < 0.01 and abs(w_lon) < 0.01:
                             continue
-                        if min_lat + label_offset * 0.5 <= w_lat <= max_lat - label_offset * 0.5 and min_lon <= w_lon <= max_lon:
+                        k = round((mid_lon_raw - w_lon) / 360.0)
+                        w_x = (w_lon + k * 360.0) - mid_lon_raw
+                        if min_lat + label_offset * 0.5 <= w_lat <= max_lat - label_offset * 0.5 and -width / 2 <= w_x <= width / 2:
                             if wp_name not in (dep_icao, arr_icao) and labeled_count < 10:
-                                ax.plot(w_lon, w_lat, marker='^', color='#A0A0A0', markersize=4, transform=ccrs.PlateCarree(), zorder=8)
-                                ax.text(w_lon, w_lat + label_offset * 0.35, wp_name, color='#C0C0C0', fontsize=7, fontweight='bold', ha='center', va='bottom', transform=ccrs.PlateCarree(), zorder=9)
+                                ax.plot(w_x, w_lat, marker='^', color='#A0A0A0', markersize=4, transform=data_crs, zorder=8)
+                                ax.text(w_x, w_lat + label_offset * 0.35, wp_name, color='#C0C0C0', fontsize=7, fontweight='bold', ha='center', va='bottom', transform=data_crs, zorder=9)
                                 labeled_count += 1
                     except (ValueError, TypeError):
                         pass
@@ -413,14 +426,17 @@ class RouteMapService:
             )
 
         # Origin / Destination Dots & Labels
-        if min_lon <= lons_unwrapped[0] <= max_lon and min_lat <= lats[0] <= max_lat:
-            ax.plot(lons_unwrapped[0], lats[0], color='white', marker='o', markersize=6, transform=ccrs.PlateCarree(), zorder=10)
-            ax.text(lons_unwrapped[0], lats[0] - label_offset, dep_icao, color='white', 
-                    ha='center', va='top', transform=ccrs.PlateCarree(), fontweight='bold', fontsize=11, zorder=10)
+        dep_x = plot_lons[0]
+        arr_x = plot_lons[-1]
+        if -width / 2 <= dep_x <= width / 2 and min_lat <= lats[0] <= max_lat:
+            ax.plot(dep_x, lats[0], color='white', marker='o', markersize=6, transform=data_crs, zorder=10)
+            ax.text(dep_x, lats[0] - label_offset, dep_icao, color='white', 
+                    ha='center', va='top', transform=data_crs, fontweight='bold', fontsize=11, zorder=10)
 
-        ax.plot(lons_unwrapped[-1], lats[-1], color='white', marker='o', markersize=6, transform=ccrs.PlateCarree(), zorder=10)
-        ax.text(lons_unwrapped[-1], lats[-1] - label_offset, arr_icao, color='white', 
-                ha='center', va='top', transform=ccrs.PlateCarree(), fontweight='bold', fontsize=11, zorder=10)
+        if -width / 2 <= arr_x <= width / 2 and min_lat <= lats[-1] <= max_lat:
+            ax.plot(arr_x, lats[-1], color='white', marker='o', markersize=6, transform=data_crs, zorder=10)
+            ax.text(arr_x, lats[-1] - label_offset, arr_icao, color='white', 
+                    ha='center', va='top', transform=data_crs, fontweight='bold', fontsize=11, zorder=10)
 
         ax.axis('off')
         fig.subplots_adjust(left=0, right=1, top=1, bottom=0)

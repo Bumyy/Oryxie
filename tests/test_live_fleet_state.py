@@ -149,6 +149,96 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.cache_hits, 1)
         self.assertEqual(snapshot2.cache_age_seconds >= 0.0, True)
 
+    async def test_exclusive_v2_flight_matching_does_not_ghost_to_historical_aircraft(self):
+        v3_manager = MagicMock()
+        client = AsyncMock()
+        client_ctx = MagicMock()
+        client_ctx.__aenter__ = AsyncMock(return_value=client)
+        client_ctx.__aexit__ = AsyncMock(return_value=None)
+        v3_manager.get_client = AsyncMock(return_value=client_ctx)
+
+        # Two aircraft in organization: AC1 (A7-BAE) and AC2 (A7-BCB)
+        # Pilot 'user-bumy' previously flew BOTH aircraft, so both have last_pilot_id = 'user-bumy'
+        client.list_organization_aircraft.return_value = [
+            IFAircraft(
+                id="ac-bae",
+                aircraft_id="content-1",
+                organization_id="org-1",
+                registration="A7-BAE",
+                status=0,
+                visibility=1,
+            ),
+            IFAircraft(
+                id="ac-bcb",
+                aircraft_id="content-2",
+                organization_id="org-1",
+                registration="A7-BCB",
+                status=0,
+                visibility=1,
+            ),
+        ]
+        client.list_organization_schedules.return_value = SimpleNamespace(
+            items=[
+                {"id": "sch-1", "aircraft_id": "ac-bae", "callsign": "QR655", "origin_icao": "VCBI", "destination_icao": "OTHH", "status": 6},
+                {"id": "sch-2", "aircraft_id": "ac-bcb", "callsign": "QR927", "origin_icao": "RPMD", "destination_icao": "OTHH", "status": 1},
+            ],
+            total_pages=1,
+        )
+
+        client.get_aircraft_position.side_effect = lambda aid: IFAircraftPosition(
+            id=aid,
+            aircraft_id="content-1" if aid == "ac-bae" else "content-2",
+            user_id="user-bumy",
+            latitude=25.0,
+            longitude=51.0,
+            altitude=0.0,
+            heading=0.0,
+            speed=0.0,
+            state=1,
+            is_on_ground=True,
+            last_pilot_id="user-bumy",
+            last_pilot_username="Bumy",
+        )
+
+        # Pilot is currently flying ONLY ONE flight in multiplayer (QR655 on A7-BAE)
+        v2_api = AsyncMock()
+        v2_api.get_sessions.return_value = {"result": [{"id": "session-expert", "name": "Expert Server"}]}
+        v2_api.get_flights.return_value = {
+            "result": [
+                {
+                    "flightId": "flight-bae-live",
+                    "userId": "user-bumy",
+                    "callsign": "QR655",
+                    "username": "Bumy",
+                    "latitude": 10.0,
+                    "longitude": 60.0,
+                    "altitude": 38000.0,
+                    "speed": 460.0,
+                    "heading": 310.0,
+                    "verticalSpeed": 0.0,
+                }
+            ]
+        }
+
+        service = LiveFleetService(v3_manager, v2_api=v2_api)
+        snapshot = await service.get_live_fleet("org-1")
+
+        ac_bae = snapshot.get("A7-BAE")
+        ac_bcb = snapshot.get("A7-BCB")
+
+        self.assertIsNotNone(ac_bae)
+        self.assertIsNotNone(ac_bcb)
+
+        # A7-BAE must match the live flight
+        self.assertTrue(ac_bae.is_in_multiplayer)
+        self.assertTrue(ac_bae.is_actively_flying)
+        self.assertEqual(ac_bae.v2_flight_id, "flight-bae-live")
+
+        # A7-BCB MUST NOT mirror the live flight or claim the same flightId
+        self.assertFalse(ac_bcb.is_in_multiplayer)
+        self.assertFalse(ac_bcb.is_actively_flying)
+        self.assertIsNone(ac_bcb.v2_flight_id)
+
 
 if __name__ == "__main__":
     unittest.main()

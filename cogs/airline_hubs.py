@@ -43,3 +43,14 @@ def hubs_for_registration(registration):
 def is_cargo_registration(registration):
     normalized = str(registration or "").strip().upper()
     return normalized in CARGO_REGISTRATIONS
+
+
+def takeoff_window_hours(registration, airport_icao=None):
+    """Determine takeoff window in hours: 6h at hub, 12h elsewhere."""
+    normalized_registration = str(registration or "").strip().upper()
+    airport = str(airport_icao or "").strip().upper()
+    if airport and airport in hubs_for_registration(normalized_registration):
+        return 6
+    if airport and airport not in hubs_for_registration(normalized_registration):
+        return 12
+    return 6 if not normalized_registration else 12
