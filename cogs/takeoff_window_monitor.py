@@ -139,7 +139,8 @@ class TakeoffWindowMonitor(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._table_initialized = False
+        self._table_ready = False
+        self._warned_missing_table = False
         self._memory_state: Dict[str, Dict[str, Any]] = {}
         self.monitor_takeoff_windows.start()
 
@@ -147,15 +148,37 @@ class TakeoffWindowMonitor(commands.Cog):
         self.monitor_takeoff_windows.cancel()
 
     async def _ensure_table(self):
-        if self._table_initialized:
-            return
+        if self._table_ready:
+            return True
         db = getattr(self.bot, "db_manager", None)
-        if db is not None and getattr(db, "_pool", None) is not None:
-            try:
-                await db.execute(TABLE_DDL)
-                self._table_initialized = True
-            except Exception:
-                log.exception("Could not initialize if_ground_takeoff_monitor_state table.")
+        if db is None or getattr(db, "_pool", None) is None:
+            return False
+        try:
+            table = await db.fetch_one(
+                "SHOW TABLES LIKE %s", ("if_ground_takeoff_monitor_state",)
+            )
+            if not table:
+                try:
+                    await db.execute(TABLE_DDL)
+                    table = await db.fetch_one(
+                        "SHOW TABLES LIKE %s", ("if_ground_takeoff_monitor_state",)
+                    )
+                except Exception:
+                    pass
+            if table:
+                self._table_ready = True
+                return True
+            else:
+                if not self._warned_missing_table:
+                    log.warning(
+                        "Table 'if_ground_takeoff_monitor_state' does not exist in MySQL. "
+                        "Using in-memory tracking until created. "
+                        "Apply database/takeoff_window_monitor_mysql_schema.sql to persist across restarts."
+                    )
+                    self._warned_missing_table = True
+                return False
+        except Exception:
+            return False
 
     def _nearest_airport_icao(self, position: Any) -> Optional[str]:
         airports = getattr(getattr(self.bot, "flightdata", None), "airports_db", None)
@@ -223,76 +246,79 @@ class TakeoffWindowMonitor(commands.Cog):
         return executive_ids
 
     async def _get_state(self, schedule_id: str) -> Optional[Dict[str, Any]]:
-        db = getattr(self.bot, "db_manager", None)
-        if db is not None and getattr(db, "_pool", None) is not None:
-            try:
-                row = await db.fetch_one(
-                    "SELECT * FROM if_ground_takeoff_monitor_state WHERE schedule_id = %s",
-                    (schedule_id,),
-                )
-                if row:
-                    return dict(row)
-            except Exception:
-                log.exception("Error querying if_ground_takeoff_monitor_state for %s", schedule_id)
+        if self._table_ready:
+            db = getattr(self.bot, "db_manager", None)
+            if db is not None and getattr(db, "_pool", None) is not None:
+                try:
+                    row = await db.fetch_one(
+                        "SELECT * FROM if_ground_takeoff_monitor_state WHERE schedule_id = %s",
+                        (schedule_id,),
+                    )
+                    if row:
+                        return dict(row)
+                except Exception:
+                    log.exception("Error querying if_ground_takeoff_monitor_state for %s", schedule_id)
         return self._memory_state.get(schedule_id)
 
     async def _save_state(self, state: Dict[str, Any]):
         schedule_id = state["schedule_id"]
         self._memory_state[schedule_id] = state
 
-        db = getattr(self.bot, "db_manager", None)
-        if db is not None and getattr(db, "_pool", None) is not None:
-            try:
-                await db.execute(
-                    """
-                    INSERT INTO if_ground_takeoff_monitor_state (
-                        schedule_id, aircraft_id, registration, callsign,
-                        origin_icao, destination_icao, parked_icao, crew_json,
-                        assigned_since, takeoff_limit_hours, warning_sent,
-                        warning_sent_at, unassigned, unassigned_at
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                    ) ON DUPLICATE KEY UPDATE
-                        parked_icao = VALUES(parked_icao),
-                        crew_json = VALUES(crew_json),
-                        assigned_since = VALUES(assigned_since),
-                        takeoff_limit_hours = VALUES(takeoff_limit_hours),
-                        warning_sent = VALUES(warning_sent),
-                        warning_sent_at = VALUES(warning_sent_at),
-                        unassigned = VALUES(unassigned),
-                        unassigned_at = VALUES(unassigned_at)
-                    """,
-                    (
-                        state["schedule_id"],
-                        state["aircraft_id"],
-                        state["registration"],
-                        state["callsign"],
-                        state["origin_icao"],
-                        state["destination_icao"],
-                        state["parked_icao"],
-                        state["crew_json"],
-                        state["assigned_since"],
-                        state["takeoff_limit_hours"],
-                        1 if state.get("warning_sent") else 0,
-                        state.get("warning_sent_at"),
-                        1 if state.get("unassigned") else 0,
-                        state.get("unassigned_at"),
-                    ),
-                )
-            except Exception:
-                log.exception("Error saving if_ground_takeoff_monitor_state for %s", schedule_id)
+        if self._table_ready:
+            db = getattr(self.bot, "db_manager", None)
+            if db is not None and getattr(db, "_pool", None) is not None:
+                try:
+                    await db.execute(
+                        """
+                        INSERT INTO if_ground_takeoff_monitor_state (
+                            schedule_id, aircraft_id, registration, callsign,
+                            origin_icao, destination_icao, parked_icao, crew_json,
+                            assigned_since, takeoff_limit_hours, warning_sent,
+                            warning_sent_at, unassigned, unassigned_at
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        ) ON DUPLICATE KEY UPDATE
+                            parked_icao = VALUES(parked_icao),
+                            crew_json = VALUES(crew_json),
+                            assigned_since = VALUES(assigned_since),
+                            takeoff_limit_hours = VALUES(takeoff_limit_hours),
+                            warning_sent = VALUES(warning_sent),
+                            warning_sent_at = VALUES(warning_sent_at),
+                            unassigned = VALUES(unassigned),
+                            unassigned_at = VALUES(unassigned_at)
+                        """,
+                        (
+                            state["schedule_id"],
+                            state["aircraft_id"],
+                            state["registration"],
+                            state["callsign"],
+                            state["origin_icao"],
+                            state["destination_icao"],
+                            state["parked_icao"],
+                            state["crew_json"],
+                            state["assigned_since"],
+                            state["takeoff_limit_hours"],
+                            1 if state.get("warning_sent") else 0,
+                            state.get("warning_sent_at"),
+                            1 if state.get("unassigned") else 0,
+                            state.get("unassigned_at"),
+                        ),
+                    )
+                except Exception:
+                    log.exception("Error saving if_ground_takeoff_monitor_state for %s", schedule_id)
 
     async def _delete_state(self, schedule_id: str):
         self._memory_state.pop(schedule_id, None)
-        db = getattr(self.bot, "db_manager", None)
-        if db is not None and getattr(db, "_pool", None) is not None:
-            try:
-                await db.execute(
-                    "DELETE FROM if_ground_takeoff_monitor_state WHERE schedule_id = %s",
-                    (schedule_id,),
-                )
-            except Exception:
-                log.exception("Error deleting if_ground_takeoff_monitor_state for %s", schedule_id)
+        if self._table_ready:
+            db = getattr(self.bot, "db_manager", None)
+            if db is not None and getattr(db, "_pool", None) is not None:
+                try:
+                    await db.execute(
+                        "DELETE FROM if_ground_takeoff_monitor_state WHERE schedule_id = %s",
+                        (schedule_id,),
+                    )
+                except Exception:
+                    log.exception("Error deleting if_ground_takeoff_monitor_state for %s", schedule_id)
 
     async def _send_warning_dm(
         self,
@@ -462,14 +488,14 @@ class TakeoffWindowMonitor(commands.Cog):
                 limit_hours = takeoff_window_hours(registration, parked_icao)
                 warning_window_hours = max(0, limit_hours - 2)
 
+                parked_at = _parse_utc(getattr(ac, "v3_updated_at", None))
                 state = await self._get_state(schedule_id)
                 current_crew_json = json.dumps(crew_ids)
 
                 if state is None:
                     # New assignment discovered on a parked aircraft
-                    # Use schedule's updatedAt timestamp if valid and not future
-                    sch_updated = _parse_utc(_get(first_leg, "updated_at"))
-                    assigned_since = sch_updated if (sch_updated and sch_updated <= now and (now - sch_updated) < timedelta(days=7)) else now
+                    # The takeoff timer starts when first tracked while parked
+                    assigned_since = now
                     state = {
                         "schedule_id": schedule_id,
                         "aircraft_id": aircraft_id,
@@ -503,8 +529,14 @@ class TakeoffWindowMonitor(commands.Cog):
                         state["unassigned_at"] = None
                         await self._save_state(state)
 
-                assigned_since = _parse_utc(state["assigned_since"]) or now
-                elapsed = now - assigned_since
+                stored_assigned_since = _parse_utc(state["assigned_since"]) or now
+                # The takeoff window cannot start before the aircraft actually parked at this airport
+                if parked_at and parked_at <= now:
+                    effective_assigned_since = max(stored_assigned_since, parked_at)
+                else:
+                    effective_assigned_since = stored_assigned_since
+
+                elapsed = now - effective_assigned_since
                 elapsed_hours = int(elapsed.total_seconds() // 3600)
 
                 # 1. Warning Check (2 hours before limit)
@@ -592,13 +624,14 @@ class TakeoffWindowMonitor(commands.Cog):
         # Cleanup: Remove tracked schedules that are no longer parked legs with crew
         # (e.g. took off, departed, completed, or crew manually removed)
         all_stored_ids = list(self._memory_state.keys())
-        db = getattr(self.bot, "db_manager", None)
-        if db is not None and getattr(db, "_pool", None) is not None:
-            try:
-                db_rows = await db.fetch_all("SELECT schedule_id FROM if_ground_takeoff_monitor_state")
-                all_stored_ids = list({row["schedule_id"] for row in db_rows or []} | set(all_stored_ids))
-            except Exception:
-                pass
+        if self._table_ready:
+            db = getattr(self.bot, "db_manager", None)
+            if db is not None and getattr(db, "_pool", None) is not None:
+                try:
+                    db_rows = await db.fetch_all("SELECT schedule_id FROM if_ground_takeoff_monitor_state")
+                    all_stored_ids = list({row["schedule_id"] for row in db_rows or []} | set(all_stored_ids))
+                except Exception:
+                    pass
 
         for sid in all_stored_ids:
             if sid not in active_tracked_schedule_ids:
