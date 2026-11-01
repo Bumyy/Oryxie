@@ -84,6 +84,7 @@ class LiveAircraftState:
 
     # v2 Multiplayer Link
     is_in_multiplayer: bool = False
+    v2_flight_id: Optional[str] = None
     multiplayer_session_name: Optional[str] = None
     multiplayer_callsign: Optional[str] = None
     multiplayer_is_connected: Optional[bool] = None
@@ -167,6 +168,7 @@ class LiveAircraftState:
             "speed": self.speed,
             "heading": self.heading,
             "verticalSpeed": self.vertical_speed,
+            "v2_flight_id": self.v2_flight_id,
             "state": (
                 int(AircraftPersistenceState.STOPPED)
                 if self.is_stopped
@@ -566,6 +568,7 @@ class LiveFleetService:
                     if v2_flight is not None:
                         # Case 1: Actively flying in live multiplayer
                         state.is_in_multiplayer = True
+                        state.v2_flight_id = str(v2_flight.get("flightId") or "")
                         state.multiplayer_session_name = v2_flight.get("session_name")
                         state.multiplayer_callsign = v2_flight.get("callsign")
                         state.multiplayer_is_connected = v2_flight.get("isConnected")
