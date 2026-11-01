@@ -988,6 +988,44 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             expire_messages.await_args.args[2],
         )
 
+    async def test_expire_claim_messages_strikes_message_and_replies_with_reason(self):
+        cog, bot = self.make_cog(MagicMock())
+        model = MagicMock()
+        model.get_incident = AsyncMock(
+            return_value={
+                "alert_channel_id": "123",
+                "alert_message_id": "456",
+            }
+        )
+        model.get_dm_events = AsyncMock(return_value=[])
+        channel = MagicMock()
+        message = MagicMock()
+        message.id = 456
+        message.edit = AsyncMock()
+        message.to_reference.return_value = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=message)
+        channel.send = AsyncMock()
+        bot.get_channel.return_value = channel
+
+        await cog._expire_claim_messages(
+            model,
+            "schedule-1",
+            "Aircraft resumed; this claim is no longer available.",
+            reply_text=(
+                "This claim is no longer available because the aircraft resumed."
+            ),
+        )
+
+        message.edit.assert_awaited_once_with(
+            content="~~Aircraft resumed; this claim is no longer available.~~",
+            view=None,
+        )
+        channel.send.assert_awaited_once()
+        self.assertIn(
+            "aircraft resumed",
+            channel.send.await_args.args[0].lower(),
+        )
+
     async def test_eta_warning_uses_aircraft_registration_not_flight_number(self):
         cog, bot = self.make_cog(MagicMock())
         user = MagicMock()
