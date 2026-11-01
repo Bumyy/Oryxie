@@ -1,6 +1,6 @@
 import logging
 from datetime import timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from .manager import DatabaseManager
 
@@ -75,6 +75,26 @@ class StoppedFlightModel:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 COLLATE=utf8mb4_unicode_ci
         """,
+        "if_live_flight_dm_trackers": """
+            CREATE TABLE IF NOT EXISTS if_live_flight_dm_trackers (
+                schedule_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                aircraft_id VARCHAR(64) NOT NULL,
+                registration VARCHAR(32) NOT NULL,
+                discord_user_id VARCHAR(32) NOT NULL,
+                channel_id VARCHAR(32) NOT NULL,
+                message_id VARCHAR(32) NOT NULL,
+                origin_icao VARCHAR(8) NOT NULL,
+                destination_icao VARCHAR(8) NOT NULL,
+                callsign VARCHAR(64) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'enroute',
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_live_tracker_aircraft (aircraft_id),
+                INDEX idx_live_tracker_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                COLLATE=utf8mb4_unicode_ci
+        """,
     }
 
     _INCIDENT_FIELDS = {
@@ -120,6 +140,12 @@ class StoppedFlightModel:
                         "database account or apply "
                         "database/stopped_flight_monitor_mysql_schema.sql."
                     )
+        try:
+            tracker_table = "if_live_flight_dm_trackers"
+            if not await self.db.fetch_one("SHOW TABLES LIKE %s", (tracker_table,)):
+                await self.db.execute(self._TABLE_DDL[tracker_table])
+        except Exception:
+            pass
         await self._ensure_eta_warning_columns()
 
     async def _ensure_eta_warning_columns(self) -> None:
@@ -161,27 +187,35 @@ class StoppedFlightModel:
         max_attempts: int = 2,
     ) -> bool:
         retry_cutoff = attempted_at - timedelta(minutes=retry_after_minutes)
-        changed = await self.db.execute(
-            """
-            UPDATE if_stopped_flight_incidents
-            SET eta_warning_attempts = eta_warning_attempts + 1,
-                eta_warning_last_attempt_at = %s
-            WHERE schedule_id = %s
-              AND eta_warning_sent = 0
-              AND eta_warning_attempts < %s
-              AND (
-                  eta_warning_last_attempt_at IS NULL
-                  OR eta_warning_last_attempt_at <= %s
-              )
-            """,
-            (
-                attempted_at,
-                str(schedule_id),
-                int(max_attempts),
-                retry_cutoff,
-            ),
-        )
-        return bool(changed)
+        try:
+            changed = await self.db.execute(
+                """
+                UPDATE if_stopped_flight_incidents
+                SET eta_warning_attempts = eta_warning_attempts + 1,
+                    eta_warning_last_attempt_at = %s
+                WHERE schedule_id = %s
+                  AND eta_warning_sent = 0
+                  AND eta_warning_attempts < %s
+                  AND (
+                      eta_warning_last_attempt_at IS NULL
+                      OR eta_warning_last_attempt_at <= %s
+                  )
+                """,
+                (
+                    attempted_at,
+                    str(schedule_id),
+                    int(max_attempts),
+                    retry_cutoff,
+                ),
+            )
+            return bool(changed)
+        except Exception:
+            # Fallback if eta_warning_attempts/eta_warning_last_attempt_at columns are missing
+            row = await self.db.fetch_one(
+                "SELECT eta_warning_sent FROM if_stopped_flight_incidents WHERE schedule_id = %s",
+                (str(schedule_id),),
+            )
+            return bool(row and not row.get("eta_warning_sent"))
 
     async def has_aircraft_status_table(self) -> bool:
         return bool(
@@ -491,3 +525,80 @@ class StoppedFlightModel:
             """,
             (str(schedule_id), str(discord_user_id)),
         )
+
+    async def save_live_flight_tracker(
+        self,
+        schedule_id: str,
+        aircraft_id: str,
+        registration: str,
+        discord_user_id: str,
+        channel_id: str,
+        message_id: str,
+        origin_icao: str = "",
+        destination_icao: str = "",
+        callsign: str = "",
+    ) -> None:
+        try:
+            await self.db.execute(
+                """
+                INSERT INTO if_live_flight_dm_trackers (
+                    schedule_id, aircraft_id, registration, discord_user_id,
+                    channel_id, message_id, origin_icao, destination_icao,
+                    callsign, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'enroute')
+                ON DUPLICATE KEY UPDATE
+                    aircraft_id = VALUES(aircraft_id),
+                    registration = VALUES(registration),
+                    discord_user_id = VALUES(discord_user_id),
+                    channel_id = VALUES(channel_id),
+                    message_id = VALUES(message_id),
+                    origin_icao = VALUES(origin_icao),
+                    destination_icao = VALUES(destination_icao),
+                    callsign = VALUES(callsign),
+                    status = 'enroute',
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    str(schedule_id),
+                    str(aircraft_id),
+                    str(registration),
+                    str(discord_user_id),
+                    str(channel_id),
+                    str(message_id),
+                    str(origin_icao),
+                    str(destination_icao),
+                    str(callsign),
+                ),
+            )
+        except Exception:
+            pass
+
+    async def get_active_live_flight_trackers(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            rows = await self.db.fetch_all(
+                """
+                SELECT schedule_id, aircraft_id, registration, discord_user_id,
+                       channel_id, message_id, origin_icao, destination_icao,
+                       callsign, status
+                FROM if_live_flight_dm_trackers
+                WHERE status = 'enroute'
+                """
+            )
+            return {str(row["aircraft_id"]): dict(row) for row in rows or []}
+        except Exception:
+            return {}
+
+    async def update_live_flight_tracker_status(
+        self, schedule_id: str, status: str
+    ) -> None:
+        try:
+            await self.db.execute(
+                """
+                UPDATE if_live_flight_dm_trackers
+                SET status = %s
+                WHERE schedule_id = %s
+                """,
+                (str(status), str(schedule_id)),
+            )
+        except Exception:
+            pass

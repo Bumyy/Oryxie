@@ -8,6 +8,7 @@ import os
 import random
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
 
 import aiohttp
 import discord
@@ -197,13 +198,13 @@ def _distance_nm(lat1, lon1, lat2, lon2):
     return 2 * radius_nm * math.asin(math.sqrt(min(1.0, value)))
 
 
-def _eta_minutes(bot, position, destination_icao):
+def _flight_progress(bot, position, destination_icao):
     airports = getattr(getattr(bot, "flightdata", None), "airports_db", None)
     if not airports:
-        return None
-    airport = airports.get(str(destination_icao or "").upper())
+        return None, None
+    airport = airports.get(str(destination_icao or "").strip().upper())
     if not airport:
-        return None
+        return None, None
     try:
         distance = _distance_nm(
             float(_get(position, "latitude")),
@@ -213,10 +214,33 @@ def _eta_minutes(bot, position, destination_icao):
         )
         speed = float(_get(position, "speed"))
     except (KeyError, TypeError, ValueError):
-        return None
+        return None, None
     if speed <= 30:
-        return None
-    return distance * 60 / speed
+        return distance, None
+    return distance, distance * 60 / speed
+
+
+def _eta_minutes(bot, position, destination_icao):
+    _, eta = _flight_progress(bot, position, destination_icao)
+    return eta
+
+
+def _aircraft_model(item):
+    if not item:
+        return ""
+    for key in (
+        "model",
+        "aircraft_name",
+        "aircraftName",
+        "name",
+        "title",
+        "type_name",
+        "typeName",
+    ):
+        value = _get(item, key)
+        if value and str(value).strip():
+            return str(value).strip()
+    return ""
 
 
 def _nearest_airport_icao(bot, position):
@@ -509,7 +533,6 @@ class StoppedFlightClaimView(discord.ui.View):
         button = discord.ui.Button(
             label="Claim this flight",
             style=discord.ButtonStyle.success,
-            emoji="✈️",
             custom_id=f"stopped-flight:claim:{self.schedule_id}",
         )
         button.callback = self.claim
@@ -528,6 +551,7 @@ class StoppedFlightMonitor(commands.Cog):
         self._warned_status_logging_disabled = False
         self._warned_route_exhaustion_role_disabled = False
         self._status_log_initialized = False
+        self._live_flight_trackers = {}
         self.monitor_stopped_flights.start()
 
     def cog_unload(self):
@@ -612,6 +636,223 @@ class StoppedFlightMonitor(commands.Cog):
             f"Recovery alert opt-in is set up in {interaction.channel.mention}.",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="track-flight",
+        description="Get a live flight tracking DM with automatic updates and time to TOD (Zulu time).",
+    )
+    @app_commands.describe(
+        registration="Aircraft registration (e.g. A7-BCB). If omitted, finds your active flight.",
+    )
+    async def track_flight(
+        self,
+        interaction: discord.Interaction,
+        registration: Optional[str] = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        manager = getattr(self.bot, "if_live_manager", None)
+        if not manager or not ORG_ID:
+            await interaction.followup.send(
+                "Live fleet tracking service is currently unavailable.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            fleet_snapshot = await manager.get_live_fleet(ORG_ID, pilot_id=TOKEN_OWNER_ID)
+        except Exception as exc:
+            log.exception("Could not retrieve live fleet snapshot for /track-flight")
+            await interaction.followup.send(
+                f"Error querying live fleet: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        positions = fleet_snapshot.to_positions_dict()
+        schedules_by_aircraft = fleet_snapshot.schedules_by_aircraft
+
+        matched_ac = None
+        pilot_data = None
+
+        if registration and registration.strip():
+            reg_clean = registration.strip().upper().replace("-", "")
+            matched_ac = next(
+                (
+                    ac for ac in fleet_snapshot
+                    if (ac.registration or "").upper().replace("-", "") == reg_clean
+                    or (ac.registration or "").upper() == registration.strip().upper()
+                ),
+                None,
+            )
+            if matched_ac is None:
+                await interaction.followup.send(
+                    f"Aircraft `{registration}` was not found in the live fleet.",
+                    ephemeral=True,
+                )
+                return
+        else:
+            # Look up the caller's linked pilot account
+            try:
+                pilot_ident = await self.bot.pilots_model.identify_pilot(interaction.user)
+                if pilot_ident and pilot_ident.get("success"):
+                    pilot_data = pilot_ident.get("pilot_data")
+                if not pilot_data:
+                    pilot_data = await self.bot.pilots_model.get_pilot_by_discord_id(
+                        str(interaction.user.id)
+                    )
+            except Exception:
+                log.exception("Could not look up pilot for /track-flight")
+                pilot_data = None
+
+            if not pilot_data:
+                await interaction.followup.send(
+                    "No linked pilot profile was found for your Discord account. "
+                    "Please specify an aircraft registration (e.g. `/track-flight registration:A7-BCB`).",
+                    ephemeral=True,
+                )
+                return
+
+            if_user_id = str(pilot_data.get("ifuserid") or "").strip()
+
+            # Search fleet for an active aircraft piloted by this user
+            for ac in fleet_snapshot:
+                ac_pos = positions.get(ac.aircraft_id)
+                last_pilot = str(getattr(ac, "last_pilot_id", "") or (_get(ac_pos, "last_pilot_id") if ac_pos else "") or "").strip()
+                if if_user_id and last_pilot == if_user_id:
+                    matched_ac = ac
+                    break
+
+                # Also check active schedule crew
+                for s in schedules_by_aircraft.get(ac.aircraft_id, []):
+                    crew = _crew_members(s)
+                    if any(str(_crew_user_id(m) or "").strip() == if_user_id for m in crew):
+                        matched_ac = ac
+                        break
+                if matched_ac:
+                    break
+
+            if matched_ac is None:
+                await interaction.followup.send(
+                    "No active flight was detected for your account. "
+                    "Please specify an aircraft registration (e.g. `/track-flight registration:A7-BCB`).",
+                    ephemeral=True,
+                )
+                return
+
+        target_aircraft_id = matched_ac.aircraft_id
+        target_registration = matched_ac.registration
+        pos = positions.get(target_aircraft_id)
+
+        ac_schedules = schedules_by_aircraft.get(target_aircraft_id, [])
+        active_sched = next(
+            (s for s in ac_schedules if _status(s) == IN_FLIGHT_SCHEDULE_STATUS),
+            None,
+        )
+        if active_sched is None and ac_schedules:
+            active_sched = ac_schedules[0]
+        if active_sched is None:
+            active_sched = {
+                "id": target_aircraft_id,
+                "aircraft_id": target_aircraft_id,
+                "callsign": target_registration,
+                "origin_icao": "???",
+                "destination_icao": "???",
+            }
+
+        pos_state = int(_get(pos, "state", -1)) if pos else -1
+        is_ground = bool(_get(pos, "is_on_ground", False)) if pos else False
+        spd = float(_get(pos, "speed", 0.0)) if pos else 0.0
+
+        if pos_state == STOPPED_POSITION_STATE or (not is_ground and spd < 30 and pos_state != 1):
+            flight_status = "STOPPED"
+        elif is_ground and spd < 30:
+            flight_status = "LANDED"
+        else:
+            flight_status = "ENROUTE"
+
+        target_pilot = pilot_data
+        if not target_pilot:
+            crew = _crew_members(active_sched)
+            pilot_id_candidate = _crew_user_id(crew[0]) if crew else str(_get(pos, "last_pilot_id") or "").strip()
+            if pilot_id_candidate:
+                try:
+                    target_pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(pilot_id_candidate)
+                except Exception:
+                    target_pilot = None
+
+        embed = self._build_live_flight_embed(
+            registration=target_registration,
+            schedule=active_sched,
+            position=pos,
+            status=flight_status,
+            pilot=target_pilot,
+        )
+
+        try:
+            msg = await interaction.user.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "Could not send you a direct message. Please check your Discord privacy "
+                "settings to allow direct messages from server members.",
+                ephemeral=True,
+            )
+            return
+
+        tracker_data = {
+            "schedule_id": str(_get(active_sched, "id") or target_aircraft_id),
+            "aircraft_id": str(target_aircraft_id),
+            "registration": str(target_registration),
+            "discord_user_id": str(interaction.user.id),
+            "channel_id": str(msg.channel.id),
+            "message_id": str(msg.id),
+            "origin_icao": str(_get(active_sched, "origin_icao") or ""),
+            "destination_icao": str(_get(active_sched, "destination_icao") or ""),
+            "callsign": str(_get(active_sched, "callsign") or target_registration),
+            "status": "enroute",
+        }
+        if not hasattr(self, "_live_flight_trackers"):
+            self._live_flight_trackers = {}
+        self._live_flight_trackers[str(target_aircraft_id)] = tracker_data
+
+        model = getattr(self.bot, "stopped_flight_model", None)
+        if model and hasattr(model, "save_live_flight_tracker"):
+            res = model.save_live_flight_tracker(**tracker_data)
+            if asyncio.iscoroutine(res):
+                await res
+
+        callsign_str = str(_get(active_sched, "callsign") or target_registration)
+        await interaction.followup.send(
+            f"Sent live flight tracker for **{target_registration}** ({callsign_str}) "
+            "to your DMs! It will update automatically every ~2 minutes.",
+            ephemeral=True,
+        )
+
+    @track_flight.autocomplete("registration")
+    async def track_flight_registration_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        manager = getattr(self.bot, "if_live_manager", None)
+        if not manager or not ORG_ID:
+            return []
+        try:
+            fleet_snapshot = await manager.get_live_fleet(ORG_ID, pilot_id=TOKEN_OWNER_ID)
+            choices = []
+            curr_clean = current.strip().upper().replace("-", "")
+            for ac in fleet_snapshot:
+                reg = ac.registration or ""
+                reg_clean = reg.upper().replace("-", "")
+                if not curr_clean or curr_clean in reg_clean:
+                    status_desc = ac.formatted_status or "Available"
+                    label = f"{reg} ({status_desc})"[:100]
+                    choices.append(app_commands.Choice(name=label, value=reg))
+                    if len(choices) >= 25:
+                        break
+            return choices
+        except Exception:
+            return []
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
@@ -725,6 +966,10 @@ class StoppedFlightMonitor(commands.Cog):
         try:
             await model.ensure_tables()
             await self._register_active_views(model)
+            if not getattr(self, "_live_flight_trackers_loaded", False):
+                if hasattr(model, "get_active_live_flight_trackers"):
+                    self._live_flight_trackers = await model.get_active_live_flight_trackers()
+                self._live_flight_trackers_loaded = True
             # Query LiveFleetService for consolidated fleet, schedules, and positions
             fleet_snapshot = await manager.get_live_fleet(ORG_ID, pilot_id=TOKEN_OWNER_ID)
             schedules = fleet_snapshot.all_schedules
@@ -859,6 +1104,13 @@ class StoppedFlightMonitor(commands.Cog):
                     fleet,
                     schedules_by_aircraft,
                     position_cache=positions,
+                )
+                await self._update_live_flight_trackers(
+                    client,
+                    model,
+                    fleet,
+                    positions,
+                    schedules_by_aircraft,
                 )
         except Exception:
             log.exception("Stopped-flight monitoring cycle failed.")
@@ -1133,6 +1385,7 @@ class StoppedFlightMonitor(commands.Cog):
                 return positions
         pilot_cache = {}
         rendered_lines = {}
+        resolved_pilots = {}
         for aircraft_id, registration, status_text in changed:
             schedule = _status_schedule(
                 status_text,
@@ -1175,6 +1428,7 @@ class StoppedFlightMonitor(commands.Cog):
                 schedule,
                 pilot,
             )
+            resolved_pilots[aircraft_id] = (schedule, pilot)
 
         chunks = []
         current_entries = []
@@ -1210,6 +1464,24 @@ class StoppedFlightMonitor(commands.Cog):
                     registration,
                     status_text,
                 )
+                prev_status = previous_statuses.get(aircraft_id) or ""
+                if status_text.startswith("ENROUTE") and not prev_status.startswith("ENROUTE"):
+                    sch, plt = resolved_pilots.get(aircraft_id, (None, None))
+                    if sch and plt:
+                        try:
+                            await self._start_live_flight_tracker(
+                                model,
+                                aircraft_id,
+                                registration,
+                                sch,
+                                positions.get(aircraft_id),
+                                plt,
+                            )
+                        except Exception:
+                            log.exception(
+                                "Could not start live flight tracker for %s",
+                                registration,
+                            )
             log.info(
                 "Posted aircraft status changes for %s aircraft to channel %s.",
                 len(chunk),
@@ -1330,10 +1602,10 @@ class StoppedFlightMonitor(commands.Cog):
                 model,
                 schedule_id,
                 (
-                    f"✅ This flight was claimed by <@{claimant_discord_id}> "
+                    f"This flight was claimed by <@{claimant_discord_id}> "
                     f"({pilot.get('callsign')})."
                     if claimant_discord_id and pilot and pilot.get("callsign")
-                    else "✅ This flight has already been claimed by another pilot."
+                    else "This flight has already been claimed by another pilot."
                 ),
             )
             return
@@ -1347,7 +1619,7 @@ class StoppedFlightMonitor(commands.Cog):
                 await self._expire_claim_messages(
                     model,
                     schedule_id,
-                    "✅ This flight has already been claimed by another Fleet pilot.",
+                    "This flight has already been claimed by another Fleet pilot.",
                 )
             return
 
@@ -1487,7 +1759,7 @@ class StoppedFlightMonitor(commands.Cog):
                     if user is None:
                         user = await self.bot.fetch_user(int(discord_id))
                     await user.send(
-                        f"⚠️ **Takeoff window alert**\n"
+                        f"**Takeoff window alert**\n"
                         f"**{registration}** has been parked on the ground at **{parked_icao or 'an unknown airport'}** "
                         f"for {max(1, int(elapsed.total_seconds() // 3600))} hours. "
                         f"If it has not departed within the next 2 hours, this assignment will be unassigned."
@@ -1624,7 +1896,13 @@ class StoppedFlightMonitor(commands.Cog):
         sent_any = False
         delivered_recipients = []
         failed_recipients = []
-        for if_user_id in if_user_ids:
+        target_ids = list(if_user_ids or [])
+        if not target_ids:
+            try:
+                target_ids = json.loads(row.get("original_crew_json") or "[]")
+            except Exception:
+                target_ids = []
+        for if_user_id in target_ids:
             try:
                 pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(
                     if_user_id
@@ -1651,7 +1929,7 @@ class StoppedFlightMonitor(commands.Cog):
                 if user is None:
                     user = await self.bot.fetch_user(int(discord_id))
                 await user.send(
-                    f"🛬 **{row['registration']} is within about 40 minutes of "
+                    f"**{row['registration']} is within about 40 minutes of "
                     f"{row['destination_icao']}** (estimated {max(1, round(eta))} min). "
                     "If the aircraft is stopped in the air, it will be unassigned "
                     "after one hour stopped."
@@ -1929,7 +2207,7 @@ class StoppedFlightMonitor(commands.Cog):
 
     async def _announce_new_stopped_aircraft(self, row):
         message = (
-            f"🛑 **New stopped aircraft detected**\n"
+            f"**New stopped aircraft detected**\n"
             f"**{row['registration']} · {row['callsign']}** "
             f"({row['origin_icao']} → {row['destination_icao']})\n"
             "IF Live reports it stopped airborne. The recovery timer starts now; "
@@ -2013,7 +2291,7 @@ class StoppedFlightMonitor(commands.Cog):
             if user is None:
                 user = await self.bot.fetch_user(int(discord_id))
             message = await user.send(
-                f"⚠️ **Stopped-flight notice · {row['registration']}**\n"
+                f"**Stopped-flight notice · {row['registration']}**\n"
                 f"Flight: **{row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']})\n"
                 "The aircraft has been stopped in the air for one hour. "
@@ -2085,7 +2363,7 @@ class StoppedFlightMonitor(commands.Cog):
             if user is None:
                 user = await self.bot.fetch_user(int(discord_id))
             message = await user.send(
-                f"⚠️ Your assignment on "
+                f"Your assignment on "
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']}) was "
                 "removed because the aircraft remained stopped in the air "
@@ -2379,7 +2657,7 @@ class StoppedFlightMonitor(commands.Cog):
                     else "The previous crew was removed. "
                 )
                 message = await member.send(
-                    f"🚨 **Stopped flight available now**\n"
+                    f"**Stopped flight available now**\n"
                     f"**{row['registration']} · {row['callsign']}**\n"
                     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
                     "The aircraft has been stopped in the air for at least one "
@@ -2419,9 +2697,9 @@ class StoppedFlightMonitor(commands.Cog):
                 if incident_state and incident_state["lifecycle"] != "available":
                     claimant = incident_state.get("claim_user_id")
                     booked_text = (
-                        f"✅ This flight was booked by <@{claimant}>."
+                        f"This flight was booked by <@{claimant}>."
                         if claimant and str(claimant).isdigit()
-                        else "✅ This flight has already been booked."
+                        else "This flight has already been booked."
                     )
                     await self._edit_claim_message(
                         str(message.channel.id), str(message.id), booked_text
@@ -2563,7 +2841,7 @@ class StoppedFlightMonitor(commands.Cog):
         return await post_dm_report(
             self.bot,
             (
-                f"📨 **Stopped-flight DM report · {event_label}**\n"
+                f"**Stopped-flight DM report · {event_label}**\n"
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']})\n"
                 + "\n".join(sections)
@@ -2578,7 +2856,7 @@ class StoppedFlightMonitor(commands.Cog):
             channel = await self.bot.fetch_channel(STAFF_CHANNEL_ID)
         hours = max(4, int(elapsed.total_seconds() // 3600))
         await channel.send(
-            f"🛑 **Stopped flight unresolved for {hours} hours**\n"
+            f"**Stopped flight unresolved for {hours} hours**\n"
             f"Aircraft: **{row['registration']}** · Flight: **{row['callsign']}**\n"
             f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
             "Non-Executive crew were removed after one hour; no recovery pilot "
@@ -2794,7 +3072,7 @@ class StoppedFlightMonitor(commands.Cog):
             model,
             schedule_id,
             (
-                f"✅ This flight was claimed by <@{member.id}> "
+                f"This flight was claimed by <@{member.id}> "
                 f"({pilot.get('callsign') or 'Pilot'})."
             ),
             reply_text=(
@@ -2804,11 +3082,345 @@ class StoppedFlightMonitor(commands.Cog):
             ),
         )
         await interaction.response.send_message(
-            f"✅ **Flight booked.** You are assigned to "
+            f"**Flight booked.** You are assigned to "
             f"{incident['registration']} · {incident['callsign']}. "
             "This recovery assignment bypasses the normal aircraft booking limit.",
             ephemeral=interaction.guild is not None,
         )
+
+    async def _start_live_flight_tracker(
+        self,
+        model,
+        aircraft_id,
+        registration,
+        schedule,
+        position,
+        pilot,
+    ):
+        if not hasattr(self, "_live_flight_trackers"):
+            self._live_flight_trackers = {}
+        if not pilot:
+            return
+        discord_id = str(pilot.get("discordid") or "").strip()
+        if not discord_id.isdigit():
+            return
+        schedule_id = str(_get(schedule, "id") or "")
+        if not schedule_id:
+            return
+
+        if str(aircraft_id) in self._live_flight_trackers:
+            existing = self._live_flight_trackers[str(aircraft_id)]
+            if existing.get("schedule_id") == schedule_id:
+                return
+
+        try:
+            user = self.bot.get_user(int(discord_id))
+            if user is None:
+                user = await self.bot.fetch_user(int(discord_id))
+            if not user:
+                return
+
+            embed = self._build_live_flight_embed(
+                registration=registration,
+                schedule=schedule,
+                position=position,
+                status="ENROUTE",
+                pilot=pilot,
+            )
+            msg = await user.send(embed=embed)
+            origin_icao = str(_get(schedule, "origin_icao") or "").strip().upper()
+            destination_icao = str(_get(schedule, "destination_icao") or "").strip().upper()
+            callsign = str(_get(schedule, "callsign") or registration).strip().upper()
+            tracker_data = {
+                "schedule_id": schedule_id,
+                "aircraft_id": str(aircraft_id),
+                "registration": str(registration),
+                "discord_user_id": str(discord_id),
+                "channel_id": str(msg.channel.id),
+                "message_id": str(msg.id),
+                "origin_icao": origin_icao,
+                "destination_icao": destination_icao,
+                "callsign": callsign,
+                "status": "enroute",
+            }
+            self._live_flight_trackers[str(aircraft_id)] = tracker_data
+            if hasattr(model, "save_live_flight_tracker"):
+                res = model.save_live_flight_tracker(**tracker_data)
+                if asyncio.iscoroutine(res):
+                    await res
+            log.info(
+                "Sent live flight tracker DM for %s (%s) to pilot <@%s>",
+                registration,
+                callsign,
+                discord_id,
+            )
+        except discord.Forbidden:
+            log.warning(
+                "Cannot DM live flight tracker to pilot %s: DMs closed or forbidden.",
+                discord_id,
+            )
+        except Exception:
+            log.exception(
+                "Failed to send live flight tracker for aircraft %s schedule %s",
+                aircraft_id,
+                schedule_id,
+            )
+
+    def _build_live_flight_embed(
+        self,
+        registration: str,
+        schedule: Any,
+        position: Any,
+        status: str = "ENROUTE",
+        pilot: Optional[Dict[str, Any]] = None,
+    ) -> discord.Embed:
+        origin = str(_get(schedule, "origin_icao") or "???").strip().upper()
+        destination = str(_get(schedule, "destination_icao") or "???").strip().upper()
+        callsign = str(_get(schedule, "callsign") or registration).strip().upper()
+
+        airports = getattr(getattr(self.bot, "flightdata", None), "airports_db", None) or {}
+        orig_apt = airports.get(origin)
+        dest_apt = airports.get(destination)
+        orig_name = (orig_apt.get("name") or "").strip() if orig_apt else ""
+        dest_name = (dest_apt.get("name") or "").strip() if dest_apt else ""
+
+        orig_label = orig_apt.get("municipality") or orig_name if orig_apt else ""
+        dest_label = dest_apt.get("municipality") or dest_name if dest_apt else ""
+        route_display = (
+            f"**{origin}**" + (f" *({orig_label})*" if orig_label else "")
+            + " -> "
+            + f"**{destination}**" + (f" *({dest_label})*" if dest_label else "")
+        )
+
+        pilot_callsign = str((pilot or {}).get("callsign") or "").strip()
+        pilot_info = f" · Pilot: **{pilot_callsign}**" if pilot_callsign else ""
+
+        ac_name = ""
+        if hasattr(self.bot, "aircraft_name_map") and self.bot.aircraft_name_map:
+            ac_name = self.bot.aircraft_name_map.get(_get(schedule, "aircraft_id"), "")
+        if not ac_name:
+            ac_name = _aircraft_model(schedule) or ""
+        ac_display = f"**{registration}**" + (f" ({ac_name})" if ac_name else "")
+
+        alt = float(_get(position, "altitude", 0.0) or 0.0)
+        speed = float(_get(position, "speed", 0.0) or 0.0)
+        vs = float(_get(position, "vertical_speed", 0.0) or 0.0)
+
+        fl = round(alt / 100)
+        alt_str = f"FL{fl} ({int(alt):,} ft)" if alt >= 10000 else f"{int(alt):,} ft"
+        spd_str = f"{int(speed)} kts"
+
+        if vs > 300:
+            phase = "Enroute (Climbing)"
+        elif vs < -300:
+            phase = "Enroute (Descending)"
+        else:
+            phase = "Enroute (Cruising)"
+
+        distance, eta = _flight_progress(self.bot, position, destination)
+        dist_str = f"{int(distance):,} NM" if distance is not None else "Calculating..."
+
+        now_utc = _utcnow()
+        now_ts = int(now_utc.timestamp())
+
+        if status == "LANDED":
+            color = discord.Color.green()
+            title = f"Flight Completed · {registration}"
+            tod_value = f"Welcome to **{destination}**! The flight has ended and aircraft is parked."
+            eta_str = "Arrived"
+        elif status == "STOPPED":
+            color = discord.Color.orange()
+            title = f"Aircraft Paused at TOD · {registration}"
+            stopped_at = _parse_utc(_get(position, "updated_at")) or now_utc
+            stopped_zulu = stopped_at.strftime("%H:%M") + "Z"
+            tod_value = (
+                f"**Aircraft paused at Top of Descent (since {stopped_zulu}).**\n"
+                "Please resume your flight within 1 hour to prevent recovery unassignment."
+            )
+            eta_str = f"Paused near {destination}"
+        elif eta is not None:
+            eta_ts = now_ts + int(eta * 60)
+            eta_dt = datetime.fromtimestamp(eta_ts, tz=timezone.utc)
+            eta_zulu = eta_dt.strftime("%H:%M") + "Z"
+            if eta_dt.date() != now_utc.date():
+                eta_zulu = eta_dt.strftime("%d %b %H:%M") + "Z"
+            eta_str = f"**{eta_zulu}** (<t:{eta_ts}:t> Local · <t:{eta_ts}:R>)"
+
+            if eta > 40:
+                color = discord.Color(QATAR_MAROON)
+                title = f"Live Flight Tracker · {registration}"
+                tod_min = eta - 40
+                tod_ts = now_ts + int(tod_min * 60)
+                tod_dt = datetime.fromtimestamp(tod_ts, tz=timezone.utc)
+                tod_zulu = tod_dt.strftime("%H:%M") + "Z"
+                if tod_dt.date() != now_utc.date():
+                    tod_zulu = tod_dt.strftime("%d %b %H:%M") + "Z"
+
+                tod_value = (
+                    f"**~{int(tod_min)} min remaining** (<t:{tod_ts}:R>)\n"
+                    f"Exact TOD Time: **{tod_zulu}** (<t:{tod_ts}:t> Local)\n"
+                    f"*Take controls ~40 min prior to landing for descent.*"
+                )
+            else:
+                color = discord.Color.gold()
+                title = f"Within Arrival Window · {registration}"
+                tod_value = (
+                    f"**Take controls now!**\n"
+                    f"Aircraft is within arrival window (~{int(eta)} min to landing).\n"
+                    f"Estimated Landing: **{eta_zulu}** (<t:{eta_ts}:R>)"
+                )
+        else:
+            color = discord.Color(QATAR_MAROON)
+            title = f"Live Flight Tracker · {registration}"
+            eta_str = "Calculating..."
+            tod_value = "Calculating arrival window based on current ground speed..."
+
+        embed = discord.Embed(
+            title=title,
+            color=color,
+            timestamp=now_utc,
+        )
+        embed.add_field(
+            name="Route & Aircraft",
+            value=f"{route_display}\nAircraft: {ac_display} · Callsign: **{callsign}**{pilot_info}",
+            inline=False,
+        )
+
+        if status == "ENROUTE":
+            embed.add_field(
+                name="Flight Status",
+                value=f"**{phase}**",
+                inline=True,
+            )
+            embed.add_field(
+                name="Altitude",
+                value=f"**{alt_str}**",
+                inline=True,
+            )
+            embed.add_field(
+                name="Ground Speed",
+                value=f"**{spd_str}**",
+                inline=True,
+            )
+            embed.add_field(
+                name="Time Until Take Control (TOD)",
+                value=tod_value,
+                inline=False,
+            )
+            embed.add_field(
+                name="Remaining Distance",
+                value=f"**{dist_str}**",
+                inline=True,
+            )
+            embed.add_field(
+                name="Estimated Arrival",
+                value=f"**{eta_str}**",
+                inline=True,
+            )
+        elif status == "STOPPED":
+            embed.add_field(
+                name="Arrival Window",
+                value=tod_value,
+                inline=False,
+            )
+            embed.add_field(
+                name="Altitude",
+                value=f"**{alt_str}**",
+                inline=True,
+            )
+            embed.add_field(
+                name="Distance Remaining",
+                value=f"**{dist_str}**",
+                inline=True,
+            )
+        elif status == "LANDED":
+            embed.add_field(
+                name="Flight Status",
+                value=tod_value,
+                inline=False,
+            )
+
+        embed.set_footer(
+            text="Oryxie Flight Monitor • Updates automatically every ~2 min"
+        )
+        return embed
+
+    async def _update_live_flight_trackers(
+        self,
+        client,
+        model,
+        fleet,
+        positions,
+        schedules_by_aircraft,
+    ):
+        if not getattr(self, "_live_flight_trackers", None):
+            return
+
+        completed_ids = []
+        for aircraft_id, tracker in list(self._live_flight_trackers.items()):
+            try:
+                schedule_id = tracker.get("schedule_id")
+                registration = tracker.get("registration", "Aircraft")
+                channel_id = tracker.get("channel_id")
+                message_id = tracker.get("message_id")
+                if not channel_id or not message_id:
+                    continue
+
+                position = positions.get(aircraft_id)
+                aircraft_schedules = schedules_by_aircraft.get(aircraft_id, [])
+                current_schedule = next(
+                    (s for s in aircraft_schedules if str(_get(s, "id") or "") == schedule_id),
+                    None,
+                )
+
+                if current_schedule is None:
+                    status = "LANDED"
+                    completed_ids.append(aircraft_id)
+                else:
+                    pos_state = int(_get(position, "state", -1)) if position else -1
+                    is_ground = bool(_get(position, "is_on_ground", False)) if position else False
+                    speed = float(_get(position, "speed", 0.0)) if position else 0.0
+
+                    if pos_state == STOPPED_POSITION_STATE or (not is_ground and speed < 30 and pos_state != 1):
+                        status = "STOPPED"
+                    elif is_ground and speed < 30:
+                        status = "LANDED"
+                        completed_ids.append(aircraft_id)
+                    else:
+                        status = "ENROUTE"
+
+                channel = self.bot.get_channel(int(channel_id))
+                if channel is None:
+                    try:
+                        channel = await self.bot.fetch_channel(int(channel_id))
+                    except Exception:
+                        channel = None
+
+                if channel:
+                    try:
+                        msg = await channel.fetch_message(int(message_id))
+                        embed = self._build_live_flight_embed(
+                            registration=registration,
+                            schedule=current_schedule or tracker,
+                            position=position,
+                            status=status,
+                        )
+                        await msg.edit(embed=embed)
+                    except discord.NotFound:
+                        log.debug("Live flight tracker DM message %s not found; stopping tracking.", message_id)
+                        completed_ids.append(aircraft_id)
+                    except discord.Forbidden:
+                        log.warning("Live flight tracker DM forbidden for user %s; stopping tracking.", tracker.get("discord_user_id"))
+                        completed_ids.append(aircraft_id)
+
+                if status == "LANDED":
+                    if hasattr(model, "update_live_flight_tracker_status"):
+                        await model.update_live_flight_tracker_status(schedule_id, "completed")
+            except Exception:
+                log.exception("Error updating live flight tracker for aircraft %s", aircraft_id)
+
+        for ac_id in completed_ids:
+            self._live_flight_trackers.pop(ac_id, None)
 
 
 async def setup(bot):
