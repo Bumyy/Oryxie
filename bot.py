@@ -23,6 +23,7 @@ from api.crewcenter_manager import CrewCenterAPIManager
 from api.if_live_manager import IFLiveManager
 from database.if_live_tokens_model import IFLiveTokensModel
 from database.stopped_flight_model import StoppedFlightModel
+from database.reengagement_model import ReengagementModel
 try:
     from services.ai_service import AIService
 except ImportError:
@@ -60,6 +61,7 @@ class MyBot(commands.Bot):
         self.mission_db: MissionDB = None
         self.flight_board_model: FlightBoardModel = None
         self.stopped_flight_model: StoppedFlightModel = None
+        self.reengagement_model: ReengagementModel = None
         self.flightdata: FlightData = None
         # VA Data Models
         self.rank_model: RankModel = None
@@ -99,6 +101,7 @@ class MyBot(commands.Bot):
         self.mission_db = MissionDB(self.db_manager)
         self.flight_board_model = FlightBoardModel(self.db_manager)
         self.stopped_flight_model = StoppedFlightModel(self.db_manager)
+        self.reengagement_model = ReengagementModel(self.db_manager)
         
         # Initialize VA Data Models
         self.rank_model = RankModel(self.db_manager)
@@ -193,6 +196,7 @@ class MyBot(commands.Bot):
             "cogs.remove_assignment_cog",
             "cogs.stopped_flight_monitor",
             "cogs.route_ready_notifications",
+            "cogs.pilot_reengagement_cog",
         )
         loaded_extensions = []
         for extension in extensions:
