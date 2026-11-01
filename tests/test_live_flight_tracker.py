@@ -77,31 +77,38 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Live Flight Tracker", embed.title)
-        self.assertIn("A7-BCB", embed.title)
+        self.assertIn("QRV001", embed.title)
+        self.assertIn("OTHH", embed.description)
+        self.assertIn("VTSP", embed.description)
+        self.assertIn("A7-BCB", embed.description)
+
+        # Check telemetry is directly in description without redundant field labels
+        self.assertIn("Enroute", embed.description)
+        self.assertIn("FL380", embed.description)
+        self.assertIn("450 kts", embed.description)
+        self.assertIn("NM", embed.description)
 
         field_names = [f.name for f in embed.fields]
-        self.assertIn("Route & Aircraft", field_names)
-        self.assertIn("Altitude", field_names)
-        self.assertIn("Ground Speed", field_names)
-        self.assertIn("Time Until Take Control (TOD)", field_names)
+        self.assertIn("TOP OF DESCENT (TOD)", field_names)
+        self.assertIn("ESTIMATED ARRIVAL", field_names)
+        # Redundant field labels are removed
+        self.assertNotIn("STATUS", field_names)
+        self.assertNotIn("ALTITUDE", field_names)
+        self.assertNotIn("SPEED", field_names)
+        self.assertNotIn("REMAINING", field_names)
 
-        # Check altitude format FL380
-        alt_field = next(f for f in embed.fields if f.name == "Altitude")
-        self.assertIn("FL380", alt_field.value)
-
-        # Check speed format
-        spd_field = next(f for f in embed.fields if f.name == "Ground Speed")
-        self.assertIn("450 kts", spd_field.value)
-
-        # Check TOD field contains countdown relative tag AND exact Zulu time
-        tod_field = next(f for f in embed.fields if f.name == "Time Until Take Control (TOD)")
+        # Check TOD field contains countdown relative tag AND exact Zulu time and subtext
+        tod_field = next(f for f in embed.fields if f.name == "TOP OF DESCENT (TOD)")
         self.assertIn("<t:", tod_field.value)
-        self.assertIn("Exact TOD Time:", tod_field.value)
         self.assertIn("Z", tod_field.value)
+        self.assertIn("-# Take controls ~40m prior", tod_field.value)
 
         # Check Estimated Arrival field contains exact Zulu time
-        eta_field = next(f for f in embed.fields if f.name == "Estimated Arrival")
+        eta_field = next(f for f in embed.fields if f.name == "ESTIMATED ARRIVAL")
         self.assertIn("Z", eta_field.value)
+
+        # Check footer is removed
+        self.assertIsNone(embed.footer.text)
 
     def test_build_live_flight_embed_within_arrival_window(self):
         # Position very close to VTSP: ~150 NM away, 350 kts -> ~25 min to destination (<40 min)
@@ -123,9 +130,8 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Within Arrival Window", embed.title)
-        tod_field = next(f for f in embed.fields if f.name == "Time Until Take Control (TOD)")
+        tod_field = next(f for f in embed.fields if f.name == "TOP OF DESCENT (TOD)")
         self.assertIn("Take controls now!", tod_field.value)
-        self.assertIn("Z", tod_field.value)
 
     def test_build_live_flight_embed_stopped_at_tod(self):
         embed = self.cog._build_live_flight_embed(
@@ -137,8 +143,8 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Paused at TOD", embed.title)
-        arrival_field = next(f for f in embed.fields if f.name == "Arrival Window")
-        self.assertIn("paused at Top of Descent", arrival_field.value)
+        arrival_field = next(f for f in embed.fields if f.name == "ARRIVAL WINDOW")
+        self.assertIn("Paused since", arrival_field.value)
 
     def test_build_live_flight_embed_landed(self):
         embed = self.cog._build_live_flight_embed(
@@ -150,8 +156,7 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Flight Completed", embed.title)
-        status_field = next(f for f in embed.fields if f.name == "Flight Status")
-        self.assertIn("Welcome to", status_field.value)
+        self.assertIn("Welcome to **VTSP**", embed.description)
 
     async def test_start_and_update_live_flight_tracker(self):
         mock_user = AsyncMock()
@@ -300,18 +305,18 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         field_names = [f.name for f in embed.fields]
-        self.assertIn("Step Climbs (Come Online)", field_names)
+        self.assertIn("STEP CLIMBS", field_names)
 
-        sc_field = next(f for f in embed.fields if f.name == "Step Climbs (Come Online)")
+        sc_field = next(f for f in embed.fields if f.name == "STEP CLIMBS")
         # Check standard timing
-        self.assertIn("Climb to FL360 at PASOV", sc_field.value)
+        self.assertIn("FL360 at PASOV", sc_field.value)
         self.assertIn("16:20Z", sc_field.value)
         # Check immediate timing (min_remaining <= 10)
-        self.assertIn("Climb to FL380 at MABOD", sc_field.value)
+        self.assertIn("FL380 at MABOD", sc_field.value)
         self.assertIn("Immediate / NOW!", sc_field.value)
         self.assertIn("15:05Z", sc_field.value)
 
-    def test_build_live_flight_embed_final_cruise_step_climbs(self):
+    def test_build_live_flight_embed_no_upcoming_step_climbs(self):
         embed = self.cog._build_live_flight_embed(
             registration="A7-BCB",
             schedule=self.schedule,
@@ -322,9 +327,8 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         field_names = [f.name for f in embed.fields]
-        self.assertIn("Step Climbs", field_names)
-        sc_field = next(f for f in embed.fields if f.name == "Step Climbs")
-        self.assertIn("Final Cruise: **FL380**", sc_field.value)
+        # When no step climbs remain, no redundant field is shown
+        self.assertNotIn("STEP CLIMBS", field_names)
 
     async def test_get_flight_plan_items_cached(self):
         self.bot.if_api_manager = MagicMock()
@@ -341,6 +345,34 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         items2 = await self.cog._get_flight_plan_items("flight-12345")
         self.assertEqual(len(items2), 1)
         self.bot.if_api_manager.get_flight_plan.assert_awaited_once()
+
+    async def test_generate_flight_map_file(self):
+        import io
+        fake_buf = io.BytesIO(b"fake_image_bytes")
+        mock_map_service = AsyncMock()
+        mock_map_service.create_route_map = AsyncMock(return_value=fake_buf)
+        self.bot.route_map_service = mock_map_service
+
+        map_file = await self.cog._generate_flight_map_file(
+            schedule=self.schedule,
+            position=self.position,
+            flight_plan_items=[{"name": "PASOV", "location": {"latitude": 20.0, "longitude": 60.0}}],
+            registration="A7-BCB",
+        )
+        self.assertIsNotNone(map_file)
+        self.assertEqual(map_file.filename, "flight_map.png")
+        mock_map_service.create_route_map.assert_awaited_once()
+
+    def test_build_live_flight_embed_has_map(self):
+        embed = self.cog._build_live_flight_embed(
+            registration="A7-BCB",
+            schedule=self.schedule,
+            position=self.position,
+            status="ENROUTE",
+            pilot=self.pilot,
+            has_map=True,
+        )
+        self.assertEqual(embed.image.url, "attachment://flight_map.png")
 
 
 if __name__ == "__main__":
