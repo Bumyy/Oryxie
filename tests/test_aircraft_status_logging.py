@@ -108,6 +108,54 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(parked_text, "PARKED")
 
+    def test_landed_aircraft_taxiing_at_35_knots_does_not_flip_to_enroute(self):
+        landed = {
+            "status": 6,
+            "sequence": 1,
+            "callsign": "QRV136",
+            "destination_icao": "OTHH",
+            "origin_icao": "RJTT",
+        }
+        position = {
+            "state": 1,
+            "is_on_ground": True,
+            "speed": 35.0,
+            "latitude": 25.0,
+            "longitude": 51.0,
+        }
+        status = _aircraft_status_text(
+            MagicMock(),
+            position,
+            [landed],
+            previous_status="LANDED AT OTHH · RJTT → OTHH by QRV136",
+        )
+        self.assertNotIn("ENROUTE", status)
+
+    def test_parked_at_outstation_preserves_airport_when_coordinates_unresolved(self):
+        route = {
+            "status": 1,
+            "sequence": 1,
+            "callsign": "QRV081",
+            "origin_icao": "OTHH",
+            "destination_icao": "NZAA",
+        }
+        position = {
+            "state": 0,
+            "is_on_ground": True,
+            "speed": 0.0,
+            "latitude": 0.0,
+            "longitude": 0.0,
+        }
+        bot = MagicMock()
+        bot.flightdata.airports_db = {}
+        status = _aircraft_status_text(
+            bot,
+            position,
+            [route],
+            previous_status="PARKED AT NZAA",
+        )
+        self.assertEqual(status, "PARKED AT NZAA")
+
     async def test_enroute_transition_posts_and_persists_once(self):
         self.flight["crew"] = [{"userId": "if-user"}]
         channel = MagicMock()
