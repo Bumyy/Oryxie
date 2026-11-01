@@ -129,6 +129,38 @@ class ReengagementModel:
             (str(message_id),),
         )
 
+    async def get_active_nudges_for_registration(
+        self,
+        registration: str,
+        statuses: tuple = ("wave_1", "wave_2", "wave_3", "sent", "delivered", "clicked"),
+    ) -> List[Dict[str, Any]]:
+        """Return all sent nudge records for an aircraft that have not yet been marked expired or claimed."""
+        if not statuses:
+            return []
+        placeholders = ", ".join(["%s"] * len(statuses))
+        query = f"""
+            SELECT id, channel_id, message_id, discord_user_id, delivery_status
+            FROM if_aircraft_reengagement_logs
+            WHERE registration = %s
+              AND channel_id IS NOT NULL
+              AND message_id IS NOT NULL
+              AND delivery_status IN ({placeholders})
+            ORDER BY id DESC
+        """
+        return await self.db.fetch_all(query, (registration, *statuses)) or []
+
+    async def mark_nudges_expired(self, nudge_ids: List[int]) -> int:
+        """Mark a list of nudge log records as expired."""
+        if not nudge_ids:
+            return 0
+        placeholders = ", ".join(["%s"] * len(nudge_ids))
+        query = f"""
+            UPDATE if_aircraft_reengagement_logs
+            SET delivery_status = 'expired'
+            WHERE id IN ({placeholders})
+        """
+        return await self.db.execute(query, tuple(nudge_ids))
+
     async def get_last_session_time(self) -> Optional[datetime]:
         """Return the timestamp of the most recent re-engagement dispatch."""
         row = await self.db.fetch_one(

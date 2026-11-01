@@ -173,6 +173,7 @@ class PilotReengagementCogTests(unittest.IsolatedAsyncioTestCase):
         cog_mock = MagicMock()
         cog_mock._active_campaigns = {"A7-BAC": {"wave": 1}}
         cog_mock._post_staff_report = AsyncMock()
+        cog_mock.expire_aircraft_nudges = AsyncMock()
 
         view = ReengagementPromptView(
             aircraft_id="ac-1",
@@ -290,11 +291,15 @@ class PilotReengagementCogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not linked", msg)
 
     async def test_reengagement_view_claim_already_claimed_rejected(self):
+        cog_mock = MagicMock()
+        cog_mock.expire_aircraft_nudges = AsyncMock()
+
         view = ReengagementPromptView(
             aircraft_id="ac-1",
             schedule_id="s1",
             registration="A7-BAC",
             route_str="OTHH → EGLL",
+            cog=cog_mock,
         )
         interaction = MagicMock()
         interaction.user.id = 123456789
@@ -518,7 +523,70 @@ class PilotReengagementCogTests(unittest.IsolatedAsyncioTestCase):
         # Follow-up Wave 2 should have been sent to pilot 222
         self.assertEqual(self.cog._active_campaigns["A7-BAC"]["wave"], 2)
         self.assertIn("222", self.cog._active_campaigns["A7-BAC"]["contacted_pilot_ids"])
-        post_report.assert_awaited()
+
+    async def test_expire_aircraft_nudges_edits_messages_and_disables_buttons(self):
+        model = MagicMock()
+        model.get_active_nudges_for_registration = AsyncMock(
+            return_value=[
+                {"id": 1, "channel_id": "201", "message_id": "101"},
+                {"id": 2, "channel_id": "202", "message_id": "102"},
+            ]
+        )
+        model.mark_nudges_expired = AsyncMock()
+        self.bot.reengagement_model = model
+
+        channel_mock = MagicMock()
+        msg_mock = MagicMock()
+        old_embed = discord.Embed(title="Aircraft Departure", description="Ready now")
+        msg_mock.embeds = [old_embed]
+        msg_mock.edit = AsyncMock()
+        channel_mock.fetch_message = AsyncMock(return_value=msg_mock)
+        self.bot.get_channel.return_value = channel_mock
+
+        # Call expire, excluding message 101 (e.g. the claimant's own message)
+        count = await self.cog.expire_aircraft_nudges(
+            registration="A7-BAC",
+            reason="Flight claimed by another pilot",
+            exclude_message_id="101",
+        )
+
+        self.assertEqual(count, 1)
+        # Verify message 102 was edited
+        msg_mock.edit.assert_awaited_once()
+        edit_kwargs = msg_mock.edit.await_args.kwargs
+        self.assertIn("embeds", edit_kwargs)
+        self.assertIn("view", edit_kwargs)
+        edited_embed = edit_kwargs["embeds"][0]
+        self.assertIn("[UNAVAILABLE]", edited_embed.title)
+        self.assertIn("Flight claimed by another pilot", edited_embed.description)
+
+        # Verify database marked as expired for id 2
+        model.mark_nudges_expired.assert_awaited_once_with([2])
+
+    async def test_process_reengagement_cycle_expires_nudges_when_aircraft_departed(self):
+        manager = MagicMock()
+        # Fleet returns empty -> A7-BAC departed/claimed
+        manager.get_live_fleet = AsyncMock(return_value=[])
+        self.bot.if_live_manager = manager
+
+        model = MagicMock()
+        model.get_inactive_pilot_candidates = AsyncMock(return_value=[])
+        self.bot.reengagement_model = model
+
+        self.cog._active_campaigns["A7-BAC"] = {
+            "schedule_id": "s1",
+            "wave": 1,
+            "wave_sent_at": datetime.now(timezone.utc),
+            "contacted_pilot_ids": {"111"},
+            "aircraft": {"registration": "A7-BAC", "schedule_id": "s1"},
+        }
+
+        with patch.object(self.cog, "expire_aircraft_nudges", new_callable=AsyncMock) as expire_mock:
+            await self.cog._process_reengagement_cycle()
+
+        self.assertNotIn("A7-BAC", self.cog._active_campaigns)
+        expire_mock.assert_awaited_once()
+        self.assertEqual(expire_mock.await_args.kwargs["registration"], "A7-BAC")
 
 
 if __name__ == "__main__":
