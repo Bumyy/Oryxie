@@ -419,6 +419,47 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.statuses["aircraft-1"], "PARKED AT OTHH")
         self.assertEqual(model.updates, [])
 
+    async def test_claim_message_is_struck_through_when_edited(self):
+        cog, _ = self.make_cog(MagicMock())
+        channel = MagicMock()
+        message = MagicMock()
+        message.edit = AsyncMock()
+        channel.fetch_message = AsyncMock(return_value=message)
+        cog.bot.get_channel.return_value = channel
+
+        await cog._edit_claim_message("123456", "987654", "✅ This flight was claimed by <@42> (QRV004).")
+
+        message.edit.assert_awaited_once()
+        self.assertEqual(
+            message.edit.await_args.kwargs["content"],
+            "~~✅ This flight was claimed by <@42> (QRV004).~~",
+        )
+        self.assertIsNone(message.edit.await_args.kwargs["view"])
+
+    async def test_eta_warning_uses_40_minute_window(self):
+        cog, bot = self.make_cog(MagicMock())
+        user = MagicMock()
+        user.send = AsyncMock()
+        bot.get_user.return_value = user
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "XXX1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+        }
+
+        with patch(
+            "cogs.stopped_flight_monitor.post_dm_report",
+            new_callable=AsyncMock,
+        ):
+            sent = await cog._send_eta_warning(row, ["if-user-1"], 40)
+
+        self.assertTrue(sent)
+        message = user.send.await_args.args[0]
+        self.assertIn("A7BAB is within about 40 minutes of OTHH", message)
+        self.assertNotIn("XXX1302", message)
+
     async def test_stopped_flight_dm_report_includes_selection_diagnostics(self):
         cog, _ = self.make_cog(MagicMock())
         report_poster = AsyncMock(return_value=True)
@@ -968,7 +1009,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(sent)
         message = user.send.await_args.args[0]
-        self.assertIn("A7BAB is within about 30 minutes of OTHH", message)
+        self.assertIn("A7BAB is within about 40 minutes of OTHH", message)
         self.assertNotIn("XXX1302", message)
 
     async def test_eta_warning_attempt_does_not_abort_schedule_processing(self):
