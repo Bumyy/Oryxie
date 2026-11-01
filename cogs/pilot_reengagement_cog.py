@@ -273,7 +273,7 @@ class PilotReengagementCog(commands.Cog):
         )
 
         embed.set_footer(
-            text=f"Qatar Airways Virtual · Re-engagement Wave {wave}/3 · Max 1 alert / week"
+            text=f"Max 1 alert / week"
         )
         return embed
 
