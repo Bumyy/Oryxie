@@ -879,6 +879,7 @@ class StoppedFlightMonitor(commands.Cog):
 
         v2_flight_id = str(_get(pos, "v2_flight_id") or getattr(matched_ac, "v2_flight_id", "") or "").strip()
         step_climbs = None
+        fpl_items = []
         if v2_flight_id and flight_status == "ENROUTE" and pos:
             fpl_items = await self._get_flight_plan_items(v2_flight_id)
             if fpl_items:
@@ -892,6 +893,14 @@ class StoppedFlightMonitor(commands.Cog):
             else:
                 step_climbs = []
 
+        map_file = await self._generate_flight_map_file(
+            schedule=active_sched,
+            position=pos,
+            flight_plan_items=fpl_items,
+            registration=target_registration,
+        )
+        has_map = map_file is not None
+
         embed = self._build_live_flight_embed(
             registration=target_registration,
             schedule=active_sched,
@@ -899,10 +908,14 @@ class StoppedFlightMonitor(commands.Cog):
             status=flight_status,
             pilot=target_pilot,
             step_climbs=step_climbs,
+            has_map=has_map,
         )
 
         try:
-            msg = await interaction.user.send(embed=embed)
+            if map_file:
+                msg = await interaction.user.send(embed=embed, file=map_file)
+            else:
+                msg = await interaction.user.send(embed=embed)
         except discord.Forbidden:
             await interaction.followup.send(
                 "Could not send you a direct message. Please check your Discord privacy "
@@ -911,6 +924,7 @@ class StoppedFlightMonitor(commands.Cog):
             )
             return
 
+        now_ts = int(_utcnow().timestamp())
         tracker_data = {
             "schedule_id": str(_get(active_sched, "id") or target_aircraft_id),
             "aircraft_id": str(target_aircraft_id),
@@ -923,6 +937,8 @@ class StoppedFlightMonitor(commands.Cog):
             "callsign": str(_get(active_sched, "callsign") or target_registration),
             "status": "enroute",
             "v2_flight_id": v2_flight_id,
+            "last_map_ts": now_ts if has_map else 0,
+            "has_map": has_map,
         }
         if not hasattr(self, "_live_flight_trackers"):
             self._live_flight_trackers = {}
@@ -2239,6 +2255,32 @@ class StoppedFlightMonitor(commands.Cog):
         )
         return row
 
+    async def _original_pilot_callsign(self, row):
+        if not isinstance(row, dict):
+            return None
+        crew_ids = []
+        try:
+            crew_ids = json.loads(str(row.get("original_crew_json") or "[]"))
+        except (TypeError, ValueError):
+            crew_ids = []
+        if not isinstance(crew_ids, list):
+            return None
+        for if_user_id in crew_ids:
+            if not if_user_id:
+                continue
+            try:
+                pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(str(if_user_id))
+            except Exception:
+                log.exception(
+                    "Could not resolve original pilot callsign for schedule %s",
+                    row.get("schedule_id"),
+                )
+                continue
+            callsign = str((pilot or {}).get("callsign") or "").strip().upper()
+            if callsign:
+                return callsign
+        return None
+
     async def _send_public_recovery_offer(self, model, row):
         if row.get("alert_message_id"):
             return True
@@ -2255,25 +2297,33 @@ class StoppedFlightMonitor(commands.Cog):
                 RECOVERY_PING_ROLE_ID,
             )
             return False
+        original_pilot_callsign = await self._original_pilot_callsign(row)
         try:
             channel = self.bot.get_channel(RECOVERY_ALERT_CHANNEL_ID)
             if channel is None:
                 channel = await self.bot.fetch_channel(RECOVERY_ALERT_CHANNEL_ID)
+            original_line = (
+                f"Original pilot: **{original_pilot_callsign}**\n"
+                if original_pilot_callsign
+                else ""
+            )
             embed = discord.Embed(
                 title="Stopped flight available to claim",
                 description=(
                     f"**{row['registration']} · {row['callsign']}**\n"
+                    f"{original_line}"
                     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n\n"
                     "Stopped in the air for at least one hour. Any Fleet pilot may "
                     "claim it with the button below. Recovery assignments bypass the "
                     "normal two-aircraft limit."
-                ),
+                ).strip(),
                 color=discord.Color(QATAR_MAROON),
             )
             content = (
                 f"<@&{RECOVERY_PING_ROLE_ID}> **Stopped flight available to claim**\n"
-                f"**{row['registration']} · {row['callsign']}** "
-                f"({row['origin_icao']} → {row['destination_icao']})\n"
+                f"**{row['registration']} · {row['callsign']}**\n"
+                f"{original_line if original_line else ''}"
+                f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
                 "Stopped in the air for at least one hour. Any Fleet pilot may "
                 "claim it with the button below. Recovery assignments bypass the "
                 "normal two-aircraft limit."
@@ -2475,13 +2525,16 @@ class StoppedFlightMonitor(commands.Cog):
             user = self.bot.get_user(int(discord_id))
             if user is None:
                 user = await self.bot.fetch_user(int(discord_id))
+            original_pilot_callsign = await self._original_pilot_callsign(row)
             message = await user.send(
                 f"Your assignment on "
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']}) was "
                 "removed because the aircraft remained stopped in the air "
-                "for one hour. Another pilot will land the aircraft, and "
-                "you can continue the next leg if it is booked. Flight hours "
+                "for one hour. Another pilot will land the aircraft, and you can "
+                "continue the next leg if it is booked. "
+                f"The original assigned pilot on this flight was "
+                f"**{original_pilot_callsign or 'Unknown'}**. Flight hours "
                 "for this flight will be split 50/50 between you and the "
                 "recovery pilot."
             )
@@ -2769,9 +2822,11 @@ class StoppedFlightMonitor(commands.Cog):
                     if executive_crew_ids
                     else "The previous crew was removed. "
                 )
+                original_pilot_callsign = await self._original_pilot_callsign(row)
                 message = await member.send(
                     f"**Stopped flight available now**\n"
                     f"**{row['registration']} · {row['callsign']}**\n"
+                    f"Original assigned pilot: **{original_pilot_callsign or 'Unknown'}**\n"
                     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
                     "The aircraft has been stopped in the air for at least one "
                     "hour. "
@@ -3021,6 +3076,7 @@ class StoppedFlightMonitor(commands.Cog):
             message = await channel.fetch_message(int(message_id))
             await message.edit(
                 content=self._strike_out_claim_message(content),
+                embed=None,
                 view=None,
             )
             if reply_text and str(reply_text).strip():
@@ -3235,6 +3291,7 @@ class StoppedFlightMonitor(commands.Cog):
 
             v2_flight_id = str(_get(position, "v2_flight_id") or "").strip()
             step_climbs = None
+            fpl_items = []
             if v2_flight_id and position:
                 fpl_items = await self._get_flight_plan_items(v2_flight_id)
                 if fpl_items:
@@ -3248,6 +3305,14 @@ class StoppedFlightMonitor(commands.Cog):
                 else:
                     step_climbs = []
 
+            map_file = await self._generate_flight_map_file(
+                schedule=schedule,
+                position=position,
+                flight_plan_items=fpl_items,
+                registration=registration,
+            )
+            has_map = map_file is not None
+
             embed = self._build_live_flight_embed(
                 registration=registration,
                 schedule=schedule,
@@ -3255,11 +3320,16 @@ class StoppedFlightMonitor(commands.Cog):
                 status="ENROUTE",
                 pilot=pilot,
                 step_climbs=step_climbs,
+                has_map=has_map,
             )
-            msg = await user.send(embed=embed)
+            if map_file:
+                msg = await user.send(embed=embed, file=map_file)
+            else:
+                msg = await user.send(embed=embed)
             origin_icao = str(_get(schedule, "origin_icao") or "").strip().upper()
             destination_icao = str(_get(schedule, "destination_icao") or "").strip().upper()
             callsign = str(_get(schedule, "callsign") or registration).strip().upper()
+            now_ts = int(_utcnow().timestamp())
             tracker_data = {
                 "schedule_id": schedule_id,
                 "aircraft_id": str(aircraft_id),
@@ -3272,6 +3342,8 @@ class StoppedFlightMonitor(commands.Cog):
                 "callsign": callsign,
                 "status": "enroute",
                 "v2_flight_id": v2_flight_id,
+                "last_map_ts": now_ts if has_map else 0,
+                "has_map": has_map,
             }
             self._live_flight_trackers[str(aircraft_id)] = tracker_data
             if hasattr(model, "save_live_flight_tracker"):
@@ -3319,6 +3391,44 @@ class StoppedFlightMonitor(commands.Cog):
             log.exception("Could not fetch flight plan for flight %s", v2_flight_id)
         return []
 
+    async def _generate_flight_map_file(
+        self,
+        schedule: Any,
+        position: Any,
+        flight_plan_items: Optional[list] = None,
+        registration: Optional[str] = None,
+    ) -> Optional[discord.File]:
+        map_service = getattr(self.bot, "route_map_service", None)
+        if not map_service or not position:
+            return None
+        dep = str(_get(schedule, "origin_icao") or "").strip().upper()
+        arr = str(_get(schedule, "destination_icao") or "").strip().upper()
+        if not dep or not arr or dep == "???" or arr == "???":
+            return None
+
+        try:
+            curr_lat = float(_get(position, "latitude", 0.0) or 0.0)
+            curr_lon = float(_get(position, "longitude", 0.0) or 0.0)
+            heading = float(_get(position, "heading", 0.0) or 0.0)
+            reg = str(registration or _get(schedule, "callsign") or "").strip().upper()
+            res = map_service.create_route_map(
+                dep=dep,
+                arr=arr,
+                flight_plan_waypoints=flight_plan_items,
+                current_lat=curr_lat,
+                current_lon=curr_lon,
+                heading=heading,
+                registration=reg,
+            )
+            buf = await res if asyncio.iscoroutine(res) else res
+            if buf and hasattr(buf, "read") and not hasattr(buf, "_mock_return_value"):
+                if hasattr(buf, "seek"):
+                    buf.seek(0)
+                return discord.File(buf, filename="flight_map.png")
+        except Exception:
+            log.exception("Could not generate flight map for %s (%s -> %s)", registration, dep, arr)
+        return None
+
     def _build_live_flight_embed(
         self,
         registration: str,
@@ -3327,6 +3437,7 @@ class StoppedFlightMonitor(commands.Cog):
         status: str = "ENROUTE",
         pilot: Optional[Dict[str, Any]] = None,
         step_climbs: Optional[List[Dict[str, Any]]] = None,
+        has_map: bool = False,
     ) -> discord.Embed:
         origin = str(_get(schedule, "origin_icao") or "???").strip().upper()
         destination = str(_get(schedule, "destination_icao") or "???").strip().upper()
@@ -3340,21 +3451,14 @@ class StoppedFlightMonitor(commands.Cog):
 
         orig_label = orig_apt.get("municipality") or orig_name if orig_apt else ""
         dest_label = dest_apt.get("municipality") or dest_name if dest_apt else ""
-        route_display = (
-            f"**{origin}**" + (f" *({orig_label})*" if orig_label else "")
-            + " -> "
-            + f"**{destination}**" + (f" *({dest_label})*" if dest_label else "")
-        )
+
+        orig_label_str = f" *({orig_label})*" if orig_label else ""
+        dest_label_str = f" *({dest_label})*" if dest_label else ""
+        route_desc = f"**{origin}**{orig_label_str} -> **{destination}**{dest_label_str} · **{registration}**"
 
         pilot_callsign = str((pilot or {}).get("callsign") or "").strip()
-        pilot_info = f" · Pilot: **{pilot_callsign}**" if pilot_callsign else ""
-
-        ac_name = ""
-        if hasattr(self.bot, "aircraft_name_map") and self.bot.aircraft_name_map:
-            ac_name = self.bot.aircraft_name_map.get(_get(schedule, "aircraft_id"), "")
-        if not ac_name:
-            ac_name = _aircraft_model(schedule) or ""
-        ac_display = f"**{registration}**" + (f" ({ac_name})" if ac_name else "")
+        if pilot_callsign:
+            route_desc += f" · **{pilot_callsign}**"
 
         alt = float(_get(position, "altitude", 0.0) or 0.0)
         speed = float(_get(position, "speed", 0.0) or 0.0)
@@ -3369,7 +3473,7 @@ class StoppedFlightMonitor(commands.Cog):
         elif vs < -300:
             phase = "Enroute (Descending)"
         else:
-            phase = "Enroute (Cruising)"
+            phase = "Enroute"
 
         distance, eta = _flight_progress(self.bot, position, destination)
         dist_str = f"{int(distance):,} NM" if distance is not None else "Calculating..."
@@ -3379,152 +3483,99 @@ class StoppedFlightMonitor(commands.Cog):
 
         if status == "LANDED":
             color = discord.Color.green()
-            title = f"Flight Completed · {registration}"
-            tod_value = f"Welcome to **{destination}**! The flight has ended and aircraft is parked."
-            eta_str = "Arrived"
+            title = f"Flight Completed · {callsign}"
+            embed = discord.Embed(
+                title=title,
+                description=f"{route_desc}\n\nWelcome to **{destination}**! The flight has ended and aircraft is parked.",
+                color=color,
+                timestamp=now_utc,
+            )
+            return embed
         elif status == "STOPPED":
             color = discord.Color.orange()
-            title = f"Aircraft Paused at TOD · {registration}"
+            title = f"Aircraft Paused at TOD · {callsign}"
             stopped_at = _parse_utc(_get(position, "updated_at")) or now_utc
             stopped_zulu = stopped_at.strftime("%H:%M") + "Z"
-            tod_value = (
-                f"**Aircraft paused at Top of Descent (since {stopped_zulu}).**\n"
-                "Please resume your flight within 1 hour to prevent recovery unassignment."
+            stopped_ts = int(stopped_at.timestamp())
+            embed = discord.Embed(
+                title=title,
+                description=f"{route_desc}\n**Paused at TOD** · **{alt_str}** · **{spd_str}** · **{dist_str}**",
+                color=color,
+                timestamp=now_utc,
             )
-            eta_str = f"Paused near {destination}"
-        elif eta is not None:
+            embed.add_field(
+                name="ARRIVAL WINDOW",
+                value=f"Paused since **{stopped_zulu}** (<t:{stopped_ts}:R>)\n-# Resume flight within 1 hour to prevent recovery unassignment",
+                inline=False,
+            )
+            if has_map:
+                embed.set_image(url="attachment://flight_map.png")
+            return embed
+
+        # ENROUTE status
+        if eta is not None:
             eta_ts = now_ts + int(eta * 60)
             eta_dt = datetime.fromtimestamp(eta_ts, tz=timezone.utc)
             eta_zulu = eta_dt.strftime("%H:%M") + "Z"
             if eta_dt.date() != now_utc.date():
                 eta_zulu = eta_dt.strftime("%d %b %H:%M") + "Z"
-            eta_str = f"**{eta_zulu}** (<t:{eta_ts}:t> Local · <t:{eta_ts}:R>)"
+            eta_val = f"**{eta_zulu}** (<t:{eta_ts}:R>)\n-# Local: <t:{eta_ts}:t>"
 
             if eta > 40:
                 color = discord.Color(QATAR_MAROON)
-                title = f"Live Flight Tracker · {registration}"
+                title = f"Live Flight Tracker · {callsign}"
                 tod_min = eta - 40
                 tod_ts = now_ts + int(tod_min * 60)
                 tod_dt = datetime.fromtimestamp(tod_ts, tz=timezone.utc)
                 tod_zulu = tod_dt.strftime("%H:%M") + "Z"
                 if tod_dt.date() != now_utc.date():
                     tod_zulu = tod_dt.strftime("%d %b %H:%M") + "Z"
-
-                tod_value = (
-                    f"**~{int(tod_min)} min remaining** (<t:{tod_ts}:R>)\n"
-                    f"Exact TOD Time: **{tod_zulu}** (<t:{tod_ts}:t> Local)\n"
-                    f"*Take controls ~40 min prior to landing for descent.*"
-                )
+                tod_val = f"**{tod_zulu}** (<t:{tod_ts}:R>)\n-# Take controls ~40m prior"
             else:
                 color = discord.Color.gold()
-                title = f"Within Arrival Window · {registration}"
-                tod_value = (
-                    f"**Take controls now!**\n"
-                    f"Aircraft is within arrival window (~{int(eta)} min to landing).\n"
-                    f"Estimated Landing: **{eta_zulu}** (<t:{eta_ts}:R>)"
-                )
+                title = f"Within Arrival Window · {callsign}"
+                tod_val = f"**Take controls now!**\n-# Within arrival window (<t:{eta_ts}:R>)"
         else:
             color = discord.Color(QATAR_MAROON)
-            title = f"Live Flight Tracker · {registration}"
-            eta_str = "Calculating..."
-            tod_value = "Calculating arrival window based on current ground speed..."
+            title = f"Live Flight Tracker · {callsign}"
+            tod_val = "Calculating...\n-# Based on ground speed"
+            eta_val = "Calculating...\n-# Based on ground speed"
 
+        telemetry_line = f"**{phase}** · **{alt_str}** · **{spd_str}** · **{dist_str}**"
         embed = discord.Embed(
             title=title,
+            description=f"{route_desc}\n{telemetry_line}",
             color=color,
             timestamp=now_utc,
         )
-        embed.add_field(
-            name="Route & Aircraft",
-            value=f"{route_display}\nAircraft: {ac_display} · Callsign: **{callsign}**{pilot_info}",
-            inline=False,
-        )
 
-        if status == "ENROUTE":
+        # Step climbs row (if any)
+        if step_climbs:
+            sc_lines = []
+            for sc in step_climbs:
+                target_fl = sc["target_fl"]
+                wpt = sc["waypoint"]
+                min_rem = sc["min_remaining"]
+                ts = sc["step_ts"]
+                zulu = sc["step_zulu"]
+                if min_rem <= 10:
+                    sc_lines.append(f"**FL{target_fl} at {wpt}** · **Immediate / NOW!** ({zulu})")
+                else:
+                    sc_lines.append(f"**FL{target_fl} at {wpt}** · {zulu} (<t:{ts}:R>)")
+            sc_value = "\n".join(sc_lines) + "\n-# Adjust autopilot altitude at waypoint"
             embed.add_field(
-                name="Flight Status",
-                value=f"**{phase}**",
-                inline=True,
-            )
-            embed.add_field(
-                name="Altitude",
-                value=f"**{alt_str}**",
-                inline=True,
-            )
-            embed.add_field(
-                name="Ground Speed",
-                value=f"**{spd_str}**",
-                inline=True,
-            )
-            embed.add_field(
-                name="Time Until Take Control (TOD)",
-                value=tod_value,
-                inline=False,
-            )
-            if step_climbs:
-                sc_lines = []
-                for sc in step_climbs:
-                    target_fl = sc["target_fl"]
-                    wpt = sc["waypoint"]
-                    min_rem = sc["min_remaining"]
-                    ts = sc["step_ts"]
-                    zulu = sc["step_zulu"]
-                    if min_rem <= 10:
-                        online_str = f"**Immediate / NOW!** ({zulu} · <t:{ts}:t> Local)"
-                    else:
-                        online_str = f"**{zulu}** (<t:{ts}:t> Local)"
-                    sc_lines.append(
-                        f"**Climb to FL{target_fl} at {wpt}**: ~{min_rem} min remaining (<t:{ts}:R>)\n"
-                        f"Come Online: {online_str}"
-                    )
-                sc_value = "\n\n".join(sc_lines) + "\n*Come online at the specified time to adjust autopilot altitude.*"
-                embed.add_field(
-                    name="Step Climbs (Come Online)",
-                    value=sc_value,
-                    inline=False,
-                )
-            elif step_climbs is not None and alt >= 20000:
-                embed.add_field(
-                    name="Step Climbs",
-                    value=f"Final Cruise: **FL{fl}** (No upcoming step climbs in flight plan)",
-                    inline=False,
-                )
-            embed.add_field(
-                name="Remaining Distance",
-                value=f"**{dist_str}**",
-                inline=True,
-            )
-            embed.add_field(
-                name="Estimated Arrival",
-                value=f"**{eta_str}**",
-                inline=True,
-            )
-        elif status == "STOPPED":
-            embed.add_field(
-                name="Arrival Window",
-                value=tod_value,
-                inline=False,
-            )
-            embed.add_field(
-                name="Altitude",
-                value=f"**{alt_str}**",
-                inline=True,
-            )
-            embed.add_field(
-                name="Distance Remaining",
-                value=f"**{dist_str}**",
-                inline=True,
-            )
-        elif status == "LANDED":
-            embed.add_field(
-                name="Flight Status",
-                value=tod_value,
+                name="STEP CLIMBS",
+                value=sc_value,
                 inline=False,
             )
 
-        embed.set_footer(
-            text="Oryxie Flight Monitor • Updates automatically every ~2 min"
-        )
+        # Focused action row (TOD & ETA)
+        embed.add_field(name="TOP OF DESCENT (TOD)", value=tod_val, inline=True)
+        embed.add_field(name="ESTIMATED ARRIVAL", value=eta_val, inline=True)
+
+        if has_map:
+            embed.set_image(url="attachment://flight_map.png")
+
         return embed
 
     async def _update_live_flight_trackers(
@@ -3584,6 +3635,7 @@ class StoppedFlightMonitor(commands.Cog):
                         if v2_flight_id and not tracker.get("v2_flight_id"):
                             tracker["v2_flight_id"] = v2_flight_id
 
+                        fpl_items = []
                         step_climbs = None
                         if v2_flight_id and status == "ENROUTE" and position:
                             fpl_items = await self._get_flight_plan_items(v2_flight_id)
@@ -3598,6 +3650,33 @@ class StoppedFlightMonitor(commands.Cog):
                             else:
                                 step_climbs = []
 
+                        now_ts = int(_utcnow().timestamp())
+                        last_map_ts = int(tracker.get("last_map_ts") or 0)
+                        has_map = bool(tracker.get("has_map", False))
+
+                        # Regenerate flight plan map every 15 minutes (900s)
+                        should_refresh_map = (
+                            status == "ENROUTE"
+                            and position is not None
+                            and (last_map_ts == 0 or (now_ts - last_map_ts >= 900))
+                        )
+
+                        map_file = None
+                        if should_refresh_map:
+                            map_file = await self._generate_flight_map_file(
+                                schedule=current_schedule or tracker,
+                                position=position,
+                                flight_plan_items=fpl_items,
+                                registration=registration,
+                            )
+                            if map_file:
+                                tracker["last_map_ts"] = now_ts
+                                tracker["has_map"] = True
+                                has_map = True
+
+                        if status == "LANDED":
+                            has_map = False
+
                         msg = await channel.fetch_message(int(message_id))
                         embed = self._build_live_flight_embed(
                             registration=registration,
@@ -3605,8 +3684,12 @@ class StoppedFlightMonitor(commands.Cog):
                             position=position,
                             status=status,
                             step_climbs=step_climbs,
+                            has_map=has_map,
                         )
-                        await msg.edit(embed=embed)
+                        if map_file:
+                            await msg.edit(embed=embed, attachments=[map_file])
+                        else:
+                            await msg.edit(embed=embed)
                     except discord.NotFound:
                         log.debug("Live flight tracker DM message %s not found; stopping tracking.", message_id)
                         completed_ids.append(aircraft_id)
