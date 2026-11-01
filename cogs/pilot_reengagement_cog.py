@@ -5,6 +5,7 @@ Targeted at Middle Eastern peak hours (UTC+3) prioritizing pilots currently acti
 """
 
 from datetime import datetime, timedelta, timezone
+import asyncio
 import logging
 import os
 import random
@@ -156,6 +157,21 @@ class ReengagementPromptView(discord.ui.View):
 
                 first_leg = schedules[0]
                 if _is_unavailable_status(first_leg) or bool(_get(first_leg, "crew", []) or []):
+                    button.disabled = True
+                    button.label = "No Longer Available"
+                    if interaction.message:
+                        try:
+                            await interaction.message.edit(view=self)
+                        except Exception:
+                            pass
+                    if cog and hasattr(cog, "expire_aircraft_nudges"):
+                        try:
+                            await cog.expire_aircraft_nudges(
+                                registration=registration,
+                                reason="This flight has already been claimed by another pilot.",
+                            )
+                        except Exception:
+                            log.exception("Could not expire nudge messages for %s", registration)
                     await interaction.followup.send(
                         f"The upcoming flight for **{registration}** has already been claimed by another pilot or is no longer available.",
                         ephemeral=True,
@@ -240,6 +256,17 @@ class ReengagementPromptView(discord.ui.View):
                 pass
 
         pilot_callsign = pilot.get("callsign", "Captain")
+
+        # Expire any other sent DMs for this aircraft so other pilots see it is booked
+        if cog and hasattr(cog, "expire_aircraft_nudges"):
+            try:
+                await cog.expire_aircraft_nudges(
+                    registration=registration,
+                    reason=f"This flight has been booked by Captain {pilot_callsign}.",
+                    exclude_message_id=str(interaction.message.id) if interaction.message else None,
+                )
+            except Exception:
+                log.exception("Could not expire other nudge messages for %s", registration)
         route_lines = "\n".join(
             f"• **{_get(r, 'callsign') or registration}**: {_get(r, 'origin_icao')} → {_get(r, 'destination_icao')}"
             for r in assigned_routes
@@ -358,6 +385,89 @@ class PilotReengagementCog(commands.Cog):
             except Exception:
                 log.exception("Could not post re-engagement report to channel %s", LOG_CHANNEL_ID)
         return posted
+
+    async def expire_aircraft_nudges(
+        self,
+        registration: str,
+        reason: str = "This flight has already been claimed by another pilot.",
+        exclude_message_id: Optional[str] = None,
+    ) -> int:
+        """Edit previously sent DMs for this aircraft to show it has been taken and disable their buttons."""
+        model = getattr(self.bot, "reengagement_model", None)
+        if not model:
+            return 0
+
+        try:
+            active_nudges = await model.get_active_nudges_for_registration(registration)
+        except Exception:
+            log.exception("Could not fetch active nudges to expire for %s", registration)
+            return 0
+
+        if not active_nudges:
+            return 0
+
+        expired_ids = []
+        for nudge in active_nudges:
+            msg_id_str = str(nudge.get("message_id") or "")
+            chan_id_str = str(nudge.get("channel_id") or "")
+            if not msg_id_str or not chan_id_str:
+                continue
+            if exclude_message_id and msg_id_str == str(exclude_message_id):
+                continue
+
+            expired_ids.append(nudge["id"])
+
+            try:
+                channel = self.bot.get_channel(int(chan_id_str))
+                if channel is None:
+                    channel = await self.bot.fetch_channel(int(chan_id_str))
+                if not channel:
+                    continue
+
+                msg = await channel.fetch_message(int(msg_id_str))
+                if not msg:
+                    continue
+
+                expired_embeds = []
+                for emb in msg.embeds:
+                    emb_dict = emb.to_dict()
+                    orig_title = emb_dict.get("title", "Aircraft Departure")
+                    if not orig_title.startswith("[UNAVAILABLE]"):
+                        emb_dict["title"] = f"[UNAVAILABLE] {orig_title}"
+                    emb_dict["color"] = 0x72767D  # Neutral Discord gray
+                    orig_desc = emb_dict.get("description", "")
+                    if "Notice:" not in orig_desc:
+                        emb_dict["description"] = f"{orig_desc}\n\n**Notice: {reason}**"
+                    emb_dict["footer"] = {
+                        "text": "Qatar Airways Virtual · Re-engagement · Flight No Longer Available"
+                    }
+                    expired_embeds.append(discord.Embed.from_dict(emb_dict))
+
+                disabled_view = discord.ui.View()
+                disabled_view.add_item(
+                    discord.ui.Button(
+                        label="Flight Claimed / Unavailable",
+                        style=discord.ButtonStyle.secondary,
+                        disabled=True,
+                    )
+                )
+
+                await msg.edit(
+                    embeds=expired_embeds if expired_embeds else discord.utils.MISSING,
+                    view=disabled_view,
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                log.debug("Could not edit expired re-engagement message %s", msg_id_str)
+            except Exception:
+                log.warning("Unexpected error expiring re-engagement message %s", msg_id_str, exc_info=True)
+
+        if expired_ids:
+            try:
+                await model.mark_nudges_expired(expired_ids)
+            except Exception:
+                log.exception("Could not mark nudges as expired in database for %s", registration)
+
+        return len(expired_ids)
 
     def _get_ready_now_aircraft(self, fleet_snapshot) -> List[Dict[str, Any]]:
         """Identify aircraft that are Ready now (unassigned first leg, zero queue)."""
@@ -565,6 +675,13 @@ class PilotReengagementCog(commands.Cog):
         for reg in finished_regs:
             del self._active_campaigns[reg]
             self._last_session_finished_at = now
+            try:
+                await self.expire_aircraft_nudges(
+                    registration=reg,
+                    reason="This aircraft is no longer available on the ramp (claimed or departed).",
+                )
+            except Exception:
+                log.exception("Error expiring nudges for finished campaign %s", reg)
 
         # 3. Query inactive pilot candidates
         try:

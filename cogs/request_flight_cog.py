@@ -1,4 +1,4 @@
-﻿﻿"""Command to request an Infinite Flight flight assignment from the VA fleet and schedule."""
+﻿"""Command to request an Infinite Flight flight assignment from the VA fleet and schedule."""
 
 import asyncio
 import logging
