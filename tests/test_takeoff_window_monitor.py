@@ -329,6 +329,58 @@ class TakeoffWindowMonitorTests(unittest.IsolatedAsyncioTestCase):
         state = await cog._get_state("sch-103")
         self.assertIsNone(state)
 
+    async def test_aircraft_landed_one_hour_ago_does_not_unassign_with_old_schedule(self):
+        """Simulate G-ZBKC at WMKK: landed 1 hour ago, schedule created 3 days ago."""
+        cog = TakeoffWindowMonitor(self.bot)
+        now = _utcnow()
+        landed_at = now - timedelta(hours=1)
+
+        schedule = {
+            "id": "sch-ba34",
+            "sequence": 1,
+            "status": 1,
+            "callsign": "BA34",
+            "origin_icao": "WMKK",
+            "destination_icao": "YMML",
+            "created_at": (now - timedelta(days=5)).isoformat(),
+            "updated_at": (now - timedelta(days=3)).isoformat(),
+            "crew": [{"userId": "ansel-if-id", "role": 0}],
+        }
+        ac = LiveAircraftState(
+            aircraft_id="ac-gzbkc",
+            content_aircraft_id="content-789",
+            registration="G-ZBKC",
+            organization_id="org-ba",
+            status=0,
+            is_on_ground=True,
+            is_parked=True,
+            v3_updated_at=landed_at,
+            schedules=[schedule],
+        )
+        snapshot = LiveFleetSnapshot(aircraft_by_id={"ac-gzbkc": ac})
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.remove_crew = AsyncMock()
+
+        manager = MagicMock()
+        manager.get_live_fleet = AsyncMock(return_value=snapshot)
+        manager.get_client = AsyncMock(return_value=client)
+        self.bot.if_live_manager = manager
+
+        with patch("cogs.takeoff_window_monitor.post_dm_report", new_callable=AsyncMock):
+            await cog._run_cycle()
+
+        # Crew must NOT be unassigned because aircraft only parked 1 hour ago
+        client.remove_crew.assert_not_called()
+        self.mock_user.send.assert_not_called()
+
+        state = await cog._get_state("sch-ba34")
+        self.assertIsNotNone(state)
+        self.assertEqual(state["warning_sent"], 0)
+        self.assertEqual(state["unassigned"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
