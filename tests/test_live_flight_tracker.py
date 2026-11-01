@@ -363,6 +363,52 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(map_file.filename, "flight_map.png")
         mock_map_service.create_route_map.assert_awaited_once()
 
+    async def test_generate_flight_map_file_focus_approach(self):
+        import io
+        fake_buf = io.BytesIO(b"fake_image_bytes")
+        mock_map_service = AsyncMock()
+        mock_map_service.create_route_map = AsyncMock(return_value=fake_buf)
+        self.bot.route_map_service = mock_map_service
+
+        map_file = await self.cog._generate_flight_map_file(
+            schedule=self.schedule,
+            position=self.position,
+            flight_plan_items=[{"name": "PASOV", "location": {"latitude": 20.0, "longitude": 60.0}}],
+            registration="A7-BCB",
+            focus_approach=True,
+        )
+        self.assertIsNotNone(map_file)
+        mock_map_service.create_route_map.assert_awaited_with(
+            dep="OTHH",
+            arr="VTSP",
+            flight_plan_waypoints=[{"name": "PASOV", "location": {"latitude": 20.0, "longitude": 60.0}}],
+            current_lat=18.0,
+            current_lon=75.0,
+            heading=0.0,
+            registration="A7-BCB",
+            focus_approach=True,
+        )
+
+    def test_null_island_waypoints_filtered(self):
+        from services.route_map_service import _flatten_waypoints
+        raw_items = [
+            {"name": "OTHH", "location": {"latitude": 25.27, "longitude": 51.60}},
+            # Procedure container / dummy fix at 0, 0
+            {"name": "ALVE1A", "location": {"latitude": 0.0, "longitude": 0.0}, "children": [
+                {"name": "DOH", "location": {"latitude": 25.20, "longitude": 51.55}},
+            ]},
+            # Corrupt fix at 0, 0
+            {"name": "NULL_FIX", "location": {"latitude": 0.0, "longitude": 0.0}},
+            {"name": "VCBI", "location": {"latitude": 7.18, "longitude": 79.88}},
+        ]
+        flat = _flatten_waypoints(raw_items)
+        names = [f["name"] for f in flat]
+        self.assertNotIn("ALVE1A", names)
+        self.assertNotIn("NULL_FIX", names)
+        self.assertIn("OTHH", names)
+        self.assertIn("DOH", names)
+        self.assertIn("VCBI", names)
+
     def test_build_live_flight_embed_has_map(self):
         embed = self.cog._build_live_flight_embed(
             registration="A7-BCB",
@@ -373,6 +419,33 @@ class LiveFlightTrackerTests(unittest.IsolatedAsyncioTestCase):
             has_map=True,
         )
         self.assertEqual(embed.image.url, "attachment://flight_map.png")
+
+    async def test_route_map_service_focus_approach_generates_image(self):
+        from services.route_map_service import RouteMapService, HAS_MAP_LIBS
+        map_service = RouteMapService()
+        if not HAS_MAP_LIBS or not map_service.geod:
+            self.skipTest("cartopy / pyproj not installed in test environment")
+        fpl_items = [
+            {"name": "OTHH", "location": {"latitude": 25.27, "longitude": 51.60}},
+            {"name": "APPROACH_FIX", "location": {"latitude": 8.5, "longitude": 98.0}},
+            {"name": "FINAL_FIX", "location": {"latitude": 8.2, "longitude": 98.2}},
+            {"name": "VTSP", "location": {"latitude": 8.11, "longitude": 98.31}},
+        ]
+        buf = await map_service.create_route_map(
+            dep="OTHH",
+            arr="VTSP",
+            flight_plan_waypoints=fpl_items,
+            current_lat=8.6,
+            current_lon=97.8,
+            heading=120.0,
+            registration="A7-BCB",
+            focus_approach=True,
+        )
+        self.assertIsNotNone(buf)
+        buf.seek(0)
+        header = buf.read(8)
+        # Verify valid PNG signature
+        self.assertEqual(header[:4], b"\x89PNG")
 
 
 if __name__ == "__main__":

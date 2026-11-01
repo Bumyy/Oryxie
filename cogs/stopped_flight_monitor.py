@@ -270,11 +270,15 @@ def _parse_step_climbs_from_flight_plan(
         lon = loc.get("longitude")
         if lat is not None and lon is not None:
             try:
+                lat_f = float(lat)
+                lon_f = float(lon)
+                if abs(lat_f) < 0.01 and abs(lon_f) < 0.01:
+                    continue
                 waypoints.append({
                     "name": str(item.get("name") or "").strip().upper(),
                     "altitude": float(item.get("altitude", -1) or -1),
-                    "lat": float(lat),
-                    "lon": float(lon),
+                    "lat": lat_f,
+                    "lon": lon_f,
                 })
             except (TypeError, ValueError):
                 continue
@@ -893,11 +897,16 @@ class StoppedFlightMonitor(commands.Cog):
             else:
                 step_climbs = []
 
+        target_destination = str(_get(active_sched, "destination_icao") or "").strip().upper()
+        dist_nm, eta_m = _flight_progress(self.bot, pos, target_destination)
+        is_approach = (eta_m is not None and eta_m <= 40) or (dist_nm is not None and dist_nm <= 150)
+
         map_file = await self._generate_flight_map_file(
             schedule=active_sched,
             position=pos,
             flight_plan_items=fpl_items,
             registration=target_registration,
+            focus_approach=is_approach,
         )
         has_map = map_file is not None
 
@@ -939,6 +948,7 @@ class StoppedFlightMonitor(commands.Cog):
             "v2_flight_id": v2_flight_id,
             "last_map_ts": now_ts if has_map else 0,
             "has_map": has_map,
+            "is_approach": is_approach,
         }
         if not hasattr(self, "_live_flight_trackers"):
             self._live_flight_trackers = {}
@@ -3305,11 +3315,16 @@ class StoppedFlightMonitor(commands.Cog):
                 else:
                     step_climbs = []
 
+            dest_icao = str(_get(schedule, "destination_icao") or "").strip().upper()
+            dist_nm, eta_m = _flight_progress(self.bot, position, dest_icao)
+            is_approach = (eta_m is not None and eta_m <= 40) or (dist_nm is not None and dist_nm <= 150)
+
             map_file = await self._generate_flight_map_file(
                 schedule=schedule,
                 position=position,
                 flight_plan_items=fpl_items,
                 registration=registration,
+                focus_approach=is_approach,
             )
             has_map = map_file is not None
 
@@ -3344,6 +3359,7 @@ class StoppedFlightMonitor(commands.Cog):
                 "v2_flight_id": v2_flight_id,
                 "last_map_ts": now_ts if has_map else 0,
                 "has_map": has_map,
+                "is_approach": is_approach,
             }
             self._live_flight_trackers[str(aircraft_id)] = tracker_data
             if hasattr(model, "save_live_flight_tracker"):
@@ -3397,6 +3413,7 @@ class StoppedFlightMonitor(commands.Cog):
         position: Any,
         flight_plan_items: Optional[list] = None,
         registration: Optional[str] = None,
+        focus_approach: bool = False,
     ) -> Optional[discord.File]:
         map_service = getattr(self.bot, "route_map_service", None)
         if not map_service or not position:
@@ -3407,18 +3424,25 @@ class StoppedFlightMonitor(commands.Cog):
             return None
 
         try:
-            curr_lat = float(_get(position, "latitude", 0.0) or 0.0)
-            curr_lon = float(_get(position, "longitude", 0.0) or 0.0)
+            curr_lat_val = _get(position, "latitude")
+            curr_lon_val = _get(position, "longitude")
+            curr_lat = float(curr_lat_val) if curr_lat_val is not None else None
+            curr_lon = float(curr_lon_val) if curr_lon_val is not None else None
+            if curr_lat is not None and curr_lon is not None:
+                if abs(curr_lat) < 0.01 and abs(curr_lon) < 0.01:
+                    curr_lat = None
+                    curr_lon = None
             heading = float(_get(position, "heading", 0.0) or 0.0)
             reg = str(registration or _get(schedule, "callsign") or "").strip().upper()
             res = map_service.create_route_map(
                 dep=dep,
                 arr=arr,
-                flight_plan_waypoints=flight_plan_items,
+                flight_plan_waypoints=_flatten_fpl_items(flight_plan_items),
                 current_lat=curr_lat,
                 current_lon=curr_lon,
                 heading=heading,
                 registration=reg,
+                focus_approach=focus_approach,
             )
             buf = await res if asyncio.iscoroutine(res) else res
             if buf and hasattr(buf, "read") and not hasattr(buf, "_mock_return_value"):
@@ -3650,15 +3674,25 @@ class StoppedFlightMonitor(commands.Cog):
                             else:
                                 step_climbs = []
 
+                        dest_icao = str(_get(current_schedule or tracker, "destination_icao") or "").strip().upper()
+                        dist_nm, eta_m = _flight_progress(self.bot, position, dest_icao)
+                        is_approach = (eta_m is not None and eta_m <= 40) or (dist_nm is not None and dist_nm <= 150)
+                        was_approach = bool(tracker.get("is_approach", False))
+
                         now_ts = int(_utcnow().timestamp())
                         last_map_ts = int(tracker.get("last_map_ts") or 0)
                         has_map = bool(tracker.get("has_map", False))
 
-                        # Regenerate flight plan map every 15 minutes (900s)
+                        # Regenerate flight plan map every 15 minutes (900s),
+                        # or immediately if transitioning to approach mode
                         should_refresh_map = (
                             status == "ENROUTE"
                             and position is not None
-                            and (last_map_ts == 0 or (now_ts - last_map_ts >= 900))
+                            and (
+                                last_map_ts == 0
+                                or (is_approach and not was_approach)
+                                or (now_ts - last_map_ts >= 900)
+                            )
                         )
 
                         map_file = None
@@ -3668,11 +3702,15 @@ class StoppedFlightMonitor(commands.Cog):
                                 position=position,
                                 flight_plan_items=fpl_items,
                                 registration=registration,
+                                focus_approach=is_approach,
                             )
                             if map_file:
                                 tracker["last_map_ts"] = now_ts
                                 tracker["has_map"] = True
+                                tracker["is_approach"] = is_approach
                                 has_map = True
+                        elif is_approach != was_approach:
+                            tracker["is_approach"] = is_approach
 
                         if status == "LANDED":
                             has_map = False
