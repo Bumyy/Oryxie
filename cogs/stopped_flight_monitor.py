@@ -20,6 +20,7 @@ from api.if_live_manager import (
     PersistentFlightCrewMemberRole,
     ScheduledFlightStatus,
 )
+from cogs.airline_hubs import hubs_for_registration
 from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
 
 log = logging.getLogger(__name__)
@@ -245,6 +246,16 @@ def _nearest_airport_icao(bot, position):
             nearest_icao = str(icao).upper()
 
     return nearest_icao if nearest_distance <= 25 else None
+
+
+def _takeoff_window_hours(registration, airport_icao=None):
+    normalized_registration = str(registration or "").strip().upper()
+    airport = str(airport_icao or "").strip().upper()
+    if airport and airport in hubs_for_registration(normalized_registration):
+        return 6
+    if airport and airport not in hubs_for_registration(normalized_registration):
+        return 12
+    return 6 if not normalized_registration else 12
 
 
 def _aircraft_status_text(bot, position, schedules, previous_status=None):
@@ -513,6 +524,7 @@ class StoppedFlightMonitor(commands.Cog):
         self.bot = bot
         self._registered_views = set()
         self._activity_cache = {}
+        self._takeoff_limit_warning_cache = set()
         self._warned_status_logging_disabled = False
         self._warned_route_exhaustion_role_disabled = False
         self._status_log_initialized = False
@@ -1420,7 +1432,7 @@ class StoppedFlightMonitor(commands.Cog):
             eta = _eta_minutes(
                 self.bot, position, _get(schedule, "destination_icao")
             )
-            if eta is not None and 0 <= eta <= 30:
+            if eta is not None and 0 <= eta <= 40:
                 attempt_started = await model.try_start_eta_warning_attempt(
                     schedule_id,
                     _utcnow(),
@@ -1442,6 +1454,70 @@ class StoppedFlightMonitor(commands.Cog):
         if stopped_since is None:
             return
         elapsed = _utcnow() - stopped_since
+        original_ids = json.loads(row["original_crew_json"] or "[]")
+        parked_icao = (
+            _nearest_airport_icao(self.bot, position)
+            or str(_get(schedule, "destination_icao") or "").strip().upper()
+        )
+        takeoff_limit_hours = _takeoff_window_hours(registration, parked_icao)
+        warning_window_hours = max(0, takeoff_limit_hours - 2)
+        if (
+            not stopped_airborne
+            and elapsed >= timedelta(hours=warning_window_hours)
+            and elapsed < timedelta(hours=takeoff_limit_hours)
+            and schedule_id not in self._takeoff_limit_warning_cache
+        ):
+            self._takeoff_limit_warning_cache.add(schedule_id)
+            for if_user_id in original_ids:
+                try:
+                    pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(if_user_id)
+                except Exception:
+                    continue
+                discord_id = str((pilot or {}).get("discordid") or "")
+                if not discord_id.isdigit():
+                    continue
+                try:
+                    user = self.bot.get_user(int(discord_id))
+                    if user is None:
+                        user = await self.bot.fetch_user(int(discord_id))
+                    await user.send(
+                        f"⚠️ **Takeoff window alert**\n"
+                        f"**{registration}** has been parked on the ground at **{parked_icao or 'an unknown airport'}** "
+                        f"for {max(1, int(elapsed.total_seconds() // 3600))} hours. "
+                        f"If it has not departed within the next 2 hours, this assignment will be unassigned."
+                    )
+                except Exception:
+                    log.exception(
+                        "Could not DM takeoff-window warning for IF user %s on schedule %s",
+                        if_user_id,
+                        schedule_id,
+                    )
+        if (
+            not stopped_airborne
+            and elapsed >= timedelta(hours=takeoff_limit_hours)
+            and row["lifecycle"] in {"monitoring", "available"}
+        ):
+            if row["lifecycle"] == "monitoring":
+                await self._unassign_and_alert(
+                    client,
+                    model,
+                    schedule,
+                    row,
+                    executive_ids=set(await self._executive_crew_ids(original_ids)),
+                )
+            elif row["lifecycle"] == "available":
+                await self._send_public_recovery_offer(
+                    model,
+                    {**row, "registration": registration, "callsign": str(_get(schedule, "callsign") or row.get("callsign") or "Unknown flight")},
+                )
+                await self._send_dm_recipient_report(
+                    row,
+                    "Parked on ground takeoff timeout",
+                    [],
+                    notes=[
+                        f"The aircraft has been parked on the ground at **{parked_icao or 'an unknown airport'}** for {takeoff_limit_hours} hours; the assignment has been reopened for recovery pilots."
+                    ],
+                )
         if elapsed >= timedelta(hours=1) and not row["one_hour_sent"]:
             if row["lifecycle"] == "monitoring":
                 executive_ids = set(
@@ -1569,7 +1645,7 @@ class StoppedFlightMonitor(commands.Cog):
                 if user is None:
                     user = await self.bot.fetch_user(int(discord_id))
                 await user.send(
-                    f"🛬 **{row['registration']} is within about 30 minutes of "
+                    f"🛬 **{row['registration']} is within about 40 minutes of "
                     f"{row['destination_icao']}** (estimated {max(1, round(eta))} min). "
                     "If the aircraft is stopped in the air, it will be unassigned "
                     "after one hour stopped."
@@ -1586,7 +1662,7 @@ class StoppedFlightMonitor(commands.Cog):
                         "member of this server."
                     )
                     log.warning(
-                        "Cannot send 30-minute arrival warning to IF user %s "
+                        "Cannot send 40-minute arrival warning to IF user %s "
                         "(Discord %s): no mutual guild.",
                         if_user_id,
                         discord_id,
@@ -1597,7 +1673,7 @@ class StoppedFlightMonitor(commands.Cog):
                         "privacy settings."
                     )
                     log.warning(
-                        "Discord rejected 30-minute arrival warning to IF user %s "
+                        "Discord rejected 40-minute arrival warning to IF user %s "
                         "(Discord %s), error code %s.",
                         if_user_id,
                         discord_id,
@@ -1609,7 +1685,7 @@ class StoppedFlightMonitor(commands.Cog):
                 )
             except discord.HTTPException:
                 log.exception(
-                    "Could not send 30-minute arrival warning to IF user %s",
+                    "Could not send 40-minute arrival warning to IF user %s",
                     if_user_id,
                 )
                 failed_recipients.append(
@@ -1618,7 +1694,7 @@ class StoppedFlightMonitor(commands.Cog):
                 )
             except Exception:
                 log.exception(
-                    "Unexpected error sending 30-minute arrival warning to IF user %s",
+                    "Unexpected error sending 40-minute arrival warning to IF user %s",
                     if_user_id,
                 )
                 failed_recipients.append(
@@ -1628,7 +1704,7 @@ class StoppedFlightMonitor(commands.Cog):
         if delivered_recipients or failed_recipients:
             await self._send_dm_recipient_report(
                 row,
-                "30-minute arrival warning",
+                "40-minute arrival warning",
                 delivered_recipients,
                 failed_recipients=failed_recipients,
             )
@@ -1786,13 +1862,28 @@ class StoppedFlightMonitor(commands.Cog):
             channel = self.bot.get_channel(RECOVERY_ALERT_CHANNEL_ID)
             if channel is None:
                 channel = await self.bot.fetch_channel(RECOVERY_ALERT_CHANNEL_ID)
-            message = await channel.send(
+            embed = discord.Embed(
+                title="Stopped flight available to claim",
+                description=(
+                    f"**{row['registration']} · {row['callsign']}**\n"
+                    f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n\n"
+                    "Stopped in the air for at least one hour. Any Fleet pilot may "
+                    "claim it with the button below. Recovery assignments bypass the "
+                    "normal two-aircraft limit."
+                ),
+                color=discord.Color(QATAR_MAROON),
+            )
+            content = (
                 f"<@&{RECOVERY_PING_ROLE_ID}> **Stopped flight available to claim**\n"
                 f"**{row['registration']} · {row['callsign']}** "
                 f"({row['origin_icao']} → {row['destination_icao']})\n"
                 "Stopped in the air for at least one hour. Any Fleet pilot may "
                 "claim it with the button below. Recovery assignments bypass the "
-                "normal two-aircraft limit.",
+                "normal two-aircraft limit."
+            )
+            message = await channel.send(
+                content,
+                embed=embed,
                 view=self._claim_view(str(row["schedule_id"])),
                 allowed_mentions=discord.AllowedMentions(
                     roles=[role],
@@ -2511,13 +2602,24 @@ class StoppedFlightMonitor(commands.Cog):
                 event["channel_id"], event["message_id"], content
             )
 
+    def _strike_out_claim_message(self, content):
+        text = str(content or "").strip()
+        if not text:
+            return text
+        if text.startswith("~~") and text.endswith("~~"):
+            return text
+        return f"~~{text}~~"
+
     async def _edit_claim_message(self, channel_id, message_id, content):
         try:
             channel = self.bot.get_channel(int(channel_id))
             if channel is None:
                 channel = await self.bot.fetch_channel(int(channel_id))
             message = await channel.fetch_message(int(message_id))
-            await message.edit(content=content, view=None)
+            await message.edit(
+                content=self._strike_out_claim_message(content),
+                view=None,
+            )
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             log.warning(
                 "Could not expire stopped-flight claim message %s", message_id,

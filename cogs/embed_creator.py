@@ -4,6 +4,7 @@ from discord import app_commands
 import logging
 
 logger = logging.getLogger(__name__)
+QATAR_MAROON = 0x8A1538
 
 # ------------------------------------------------------------------
 # 1. CREATE EMBED MODAL (Moved outside the Cog)
@@ -47,13 +48,13 @@ class CreateEmbedModal(discord.ui.Modal, title='Create New Embed'):
 
         try:
             # 1. Resolve Color
-            resolved_color = discord.Color.default()
+            resolved_color = discord.Color(QATAR_MAROON)
             if self.color.value:
                 color_map = {
                     'red': discord.Color.red(), 'green': discord.Color.green(),
                     'blue': discord.Color.blue(), 'yellow': discord.Color.gold(),
                     'purple': discord.Color.purple(), 'orange': discord.Color.orange(),
-                    'black': 0x000000, 'white': 0xFFFFFF
+                    'black': 0x000000, 'white': 0xFFFFFF, 'maroon': discord.Color(QATAR_MAROON)
                 }
                 
                 raw_color = self.color.value.lower().strip()
@@ -160,7 +161,7 @@ class EditEmbedModal(discord.ui.Modal, title="Edit Message Content"):
                 color_map = {
                     'red': 0xff0000, 'green': 0x00ff00, 'blue': 0x0000ff,
                     'yellow': 0xffff00, 'purple': 0x800080, 'orange': 0xffa500,
-                    'white': 0xffffff, 'black': 0x000000
+                    'white': 0xffffff, 'black': 0x000000, 'maroon': QATAR_MAROON
                 }
                 if raw_color in color_map:
                     embed.color = color_map[raw_color]
