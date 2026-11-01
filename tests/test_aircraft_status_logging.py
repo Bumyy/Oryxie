@@ -1018,6 +1018,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
 
         message.edit.assert_awaited_once_with(
             content="~~Aircraft resumed; this claim is no longer available.~~",
+            embed=None,
             view=None,
         )
         channel.send.assert_awaited_once()

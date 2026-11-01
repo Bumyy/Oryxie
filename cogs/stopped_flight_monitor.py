@@ -3060,6 +3060,7 @@ class StoppedFlightMonitor(commands.Cog):
             message = await channel.fetch_message(int(message_id))
             await message.edit(
                 content=self._strike_out_claim_message(content),
+                embed=None,
                 view=None,
             )
             if reply_text and str(reply_text).strip():
