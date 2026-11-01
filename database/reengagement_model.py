@@ -115,6 +115,20 @@ class ReengagementModel:
             (str(registration),),
         )
 
+    async def get_nudge_by_message_id(
+        self, message_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the nudge record for a specific sent nudge message ID."""
+        return await self.db.fetch_one(
+            """
+            SELECT * FROM if_aircraft_reengagement_logs
+            WHERE message_id = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (str(message_id),),
+        )
+
     async def get_last_session_time(self) -> Optional[datetime]:
         """Return the timestamp of the most recent re-engagement dispatch."""
         row = await self.db.fetch_one(
