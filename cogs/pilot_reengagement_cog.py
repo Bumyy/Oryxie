@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.airline_hubs import (
+    DEFAULT_HUB_ICAO,
     RETIRED_REGISTRATIONS,
     hubs_for_registration,
     is_cargo_registration,
@@ -28,15 +29,88 @@ from cogs.available_aircraft_cog import (
     _next_claimable_index,
 )
 from cogs.dm_logging import DM_LOG_CHANNEL_ID, post_dm_report
-from cogs.request_flight_cog import (
-    _build_cargo_route_chain,
-    _build_connected_route_chain,
-    _connected_routes,
-    _crew_user_id,
-    _schedules_for_aircraft,
-)
 
 log = logging.getLogger(__name__)
+
+
+def _crew_user_id(member: Any) -> str:
+    for key in ("userId", "user_id", "ifuserid", "id"):
+        value = _get(member, key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _connected_routes(first: Dict[str, Any], second: Dict[str, Any]) -> bool:
+    dest = str(_get(first, "destination_icao", "") or "").strip().upper()
+    orig = str(_get(second, "origin_icao", "") or "").strip().upper()
+    return bool(dest and orig and dest == orig)
+
+
+def _schedules_for_aircraft(schedules: List[Any], aircraft_id: str) -> List[Any]:
+    expected_id = str(aircraft_id)
+    return [r for r in schedules or [] if str(_get(r, "aircraft_id") or "") == expected_id]
+
+
+def _route_status(route: Any) -> Optional[int]:
+    try:
+        return int(_get(route, "status"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_cargo_route_chain(
+    schedules: List[Any], start_index: int = 0, max_routes: int = 2
+) -> List[Any]:
+    if start_index < 0 or start_index >= len(schedules):
+        return []
+    routes = []
+    previous = None
+    for route in schedules[start_index:]:
+        if len(routes) >= max_routes:
+            break
+        if (
+            _is_unavailable_status(route)
+            or _route_status(route) in {6, 7, 10}
+            or (_get(route, "crew", []) or [])
+        ):
+            break
+        orig = str(_get(route, "origin_icao", "") or "").strip().upper()
+        dest = str(_get(route, "destination_icao", "") or "").strip().upper()
+        if not orig or not dest:
+            break
+        if previous is not None and not _connected_routes(previous, route):
+            break
+        routes.append(route)
+        previous = route
+    return routes
+
+
+def _build_connected_route_chain(
+    schedules: List[Any], start_index: int, hub_icao: Any
+) -> List[Any]:
+    if start_index < 0 or start_index >= len(schedules):
+        return []
+    if isinstance(hub_icao, str):
+        hubs = {hub_icao.strip().upper()}
+    else:
+        hubs = {str(hub).strip().upper() for hub in (hub_icao or (DEFAULT_HUB_ICAO,)) if hub}
+    routes = []
+    previous = None
+    for route in schedules[start_index:]:
+        if _is_unavailable_status(route) or (_get(route, "crew", []) or []):
+            return []
+        orig = str(_get(route, "origin_icao", "") or "").strip().upper()
+        dest = str(_get(route, "destination_icao", "") or "").strip().upper()
+        if not orig or not dest:
+            return []
+        if previous is not None and not _connected_routes(previous, route):
+            return []
+        routes.append(route)
+        if dest in hubs:
+            return routes
+        previous = route
+    return []
 
 ORG_ID = os.getenv("IF_ORGANIZATION_ID", "").strip()
 TOKEN_OWNER_ID = 1
