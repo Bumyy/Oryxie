@@ -479,17 +479,52 @@ class LiveFleetService:
                 for aid, sch_list in schedules_by_aircraft.items():
                     sch_list.sort(key=_get_seq)
 
+                # Build lookup indexes for matching v2 multiplayer flights to organization aircraft
+                v2_by_user: Dict[str, Dict[str, Any]] = {}
+                v2_by_callsign: Dict[str, Dict[str, Any]] = {}
+                for f in v2_flights.values() if isinstance(v2_flights, dict) else []:
+                    if isinstance(f, dict):
+                        uid = str(f.get("userId") or "").strip()
+                        if uid:
+                            v2_by_user[uid] = f
+                        cs = str(f.get("callsign") or "").strip().upper().replace(" ", "")
+                        if cs:
+                            v2_by_callsign[cs] = f
+
+                def _find_v2_flight(ac_id: str, pos: Optional[IFAircraftPosition], reg: str) -> Optional[Dict[str, Any]]:
+                    if ac_id in v2_flights:
+                        return v2_flights[ac_id]
+                    if pos and pos.last_pilot_id and str(pos.last_pilot_id).strip() in v2_by_user:
+                        return v2_by_user[str(pos.last_pilot_id).strip()]
+                    for sch in schedules_by_aircraft.get(ac_id, []):
+                        crew_list = getattr(sch, "crew", []) or (sch.get("crew", []) if isinstance(sch, dict) else [])
+                        for member in crew_list:
+                            m_uid = str(member.get("userId") if isinstance(member, dict) else getattr(member, "userId", "") or "").strip()
+                            if m_uid and m_uid in v2_by_user:
+                                return v2_by_user[m_uid]
+                        sch_cs = str(sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "") or "").strip().upper().replace(" ", "")
+                        if sch_cs and sch_cs in v2_by_callsign:
+                            return v2_by_callsign[sch_cs]
+                    norm_reg = reg.replace("-", "").strip().upper()
+                    if norm_reg and norm_reg in v2_by_callsign:
+                        return v2_by_callsign[norm_reg]
+                    if reg in v2_by_callsign:
+                        return v2_by_callsign[reg]
+                    return None
+
                 # Identify stopped/AP+ aircraft that require v2 route breadcrumbs
                 route_fetch_ids = []
                 for ac in fleet:
                     ac_id = str(ac.id)
+                    reg = str(ac.registration or "Unknown").strip().upper()
                     pos = v3_positions.get(ac_id)
                     if not pos:
                         continue
                     is_ground = bool(pos.is_on_ground)
                     state_val = int(pos.state)
-                    # Airborne but not reporting in v2 live multiplayer
-                    if ac_id not in v2_flights and (not is_ground or state_val == int(AircraftPersistenceState.IN_FLIGHT)):
+                    matched_v2 = _find_v2_flight(ac_id, pos, reg)
+                    # Airborne but not reporting in v2 live multiplayer => stopped / AP+ TOD
+                    if not matched_v2 and (not is_ground or state_val == int(AircraftPersistenceState.IN_FLIGHT) or state_val == int(AircraftPersistenceState.STOPPED)):
                         route_fetch_ids.append(ac_id)
 
                 route_last_points: Dict[str, Any] = {}
@@ -508,7 +543,7 @@ class LiveFleetService:
                     ac_id = str(ac.id)
                     reg = str(ac.registration or "Unknown").strip().upper()
                     pos = v3_positions.get(ac_id)
-                    v2_flight = v2_flights.get(ac_id)
+                    v2_flight = _find_v2_flight(ac_id, pos, reg)
                     route_pt = route_last_points.get(ac_id)
 
                     state = LiveAircraftState(

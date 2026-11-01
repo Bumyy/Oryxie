@@ -1,3 +1,4 @@
+import os
 import csv
 import json
 from haversine import haversine, Unit
@@ -15,12 +16,16 @@ class FlightData:
         """Load airport database from CSV file using built-in csv library"""
         try:
             self.airports_db = {}
-            with open("assets/airport_database_processed.csv", 'r', encoding='utf-8') as file:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            csv_path = os.path.join(base_dir, "assets", "airport_database_processed.csv")
+            if not os.path.exists(csv_path):
+                csv_path = "assets/airport_database_processed.csv"
+            with open(csv_path, 'r', encoding='utf-8') as file:
                 reader = csv.DictReader(file)
                 for row in reader:
                     icao = row.get('ident') or list(row.values())[0]  # First column as ICAO
-                    if icao and len(icao) == 4:  # Only 4-letter ICAO codes
-                        self.airports_db[icao.upper()] = row
+                    if icao:
+                        self.airports_db[icao.strip().upper()] = row
         except (FileNotFoundError, Exception):
             self.airports_db = None
     

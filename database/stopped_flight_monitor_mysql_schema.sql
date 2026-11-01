@@ -55,3 +55,22 @@ CREATE TABLE IF NOT EXISTS if_aircraft_status_logs (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS if_live_flight_dm_trackers (
+    schedule_id VARCHAR(64) NOT NULL PRIMARY KEY,
+    aircraft_id VARCHAR(64) NOT NULL,
+    registration VARCHAR(32) NOT NULL,
+    discord_user_id VARCHAR(32) NOT NULL,
+    channel_id VARCHAR(32) NOT NULL,
+    message_id VARCHAR(32) NOT NULL,
+    origin_icao VARCHAR(8) NOT NULL,
+    destination_icao VARCHAR(8) NOT NULL,
+    callsign VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'enroute',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_live_tracker_aircraft (aircraft_id),
+    INDEX idx_live_tracker_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
