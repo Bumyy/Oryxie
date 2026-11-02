@@ -46,6 +46,7 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
             organization_id="org-1",
             status=0,
             is_actively_flying=True,
+            is_in_multiplayer=True,
             is_on_ground=False,
         )
         ac3 = LiveAircraftState(
@@ -567,6 +568,112 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
             previous_status="PARKED AT OTHH",
         )
         self.assertEqual(status_text2, "PARKED AT OTHH")
+
+    async def test_ap_plus_stopped_at_tod_resolves_route_point_and_updates_coordinates(self):
+        """Aircraft stopped at TOD with stale v3 position coordinates (e.g. AP+ flight)
+
+        verifies that:
+        1. ac.status == 4 (STOPPED / 'Needs a pilot') is recognized even if pos.state is IN_FLIGHT.
+        2. Session flight_id is resolved via list_aircraft_flights or get_user_flights.
+        3. v2 route breadcrumb is queried using the resolved flight_id.
+        4. Real final coordinates near TOD/destination overwrite the stale cruise coordinates.
+        5. Position state becomes STOPPED (4) and speed is 0 kts.
+        """
+        client = AsyncMock()
+        client_ctx = AsyncMock()
+        client_ctx.__aenter__.return_value = client
+        client_ctx.__aexit__.return_value = None
+
+        v3_manager = MagicMock()
+        v3_manager.get_client = AsyncMock(return_value=client_ctx)
+
+        # Organization fleet shows A7BCB with status=4 (STOPPED / Needs a pilot)
+        client.list_organization_aircraft.return_value = [
+            IFAircraft(
+                id="ac-bcb-id",
+                aircraft_id="content-788",
+                organization_id="org-1",
+                registration="A7-BCB",
+                status=int(AircraftPersistenceState.STOPPED),  # 4
+                visibility=1,
+            )
+        ]
+        client.list_organization_schedules.return_value = SimpleNamespace(
+            items=[],
+            total_pages=1,
+        )
+        client.list_organization_members = AsyncMock(return_value=[])
+
+        # v3 position has stale coordinates south of India with 478 kts from when pilot left app
+        client.get_aircraft_position.return_value = IFAircraftPosition(
+            id="ac-bcb-id",
+            state=int(AircraftPersistenceState.IN_FLIGHT),  # Still 2 in stale v3 position!
+            is_on_ground=False,
+            latitude=8.0,
+            longitude=75.0,
+            altitude=40000.0,
+            heading=305.0,
+            speed=478.0,
+            vertical_speed=0.0,
+            updated_at="2026-11-02T10:00:00Z",
+        )
+
+        # Aircraft flight history provides the session flight ID
+        client.list_aircraft_flights = AsyncMock(return_value=SimpleNamespace(
+            items=[{"id": "session-flight-uuid-bcb-999"}]
+        ))
+
+        # Public v2 API mock
+        v2_api = AsyncMock()
+        v2_api.get_sessions.return_value = {"result": [{"id": "s1", "name": "Expert"}]}
+        v2_api.get_flights.return_value = {"result": []}  # not in active multiplayer
+        # Breadcrumb route endpoint returns final TOD holding point near Doha (OTHH)
+        v2_api.get_flight_route.return_value = {
+            "result": [
+                {
+                    "latitude": 8.0,
+                    "longitude": 75.0,
+                    "altitude": 40000.0,
+                    "groundSpeed": 478.0,
+                    "track": 305.0,
+                    "date": "2026-11-02T10:00:00Z",
+                },
+                {
+                    "latitude": 25.27,
+                    "longitude": 51.56,
+                    "altitude": 40000.0,
+                    "groundSpeed": 0.0,
+                    "track": 310.0,
+                    "date": "2026-11-02T13:40:00Z",
+                },
+            ]
+        }
+
+        service = LiveFleetService(v3_manager, v2_api=v2_api)
+        snapshot = await service.get_live_fleet("org-1")
+
+        ac = snapshot.get("A7BCB")
+        self.assertIsNotNone(ac)
+        # 1. Stopped flags
+        self.assertTrue(ac.is_stopped)
+        self.assertFalse(ac.is_actively_flying)
+        self.assertFalse(ac.is_parked)
+        self.assertTrue(ac.stopped_at_tod)
+
+        # 2. Coordinates updated from breadcrumb at SODEX/OTHH, NOT stale Indian Ocean coords
+        self.assertAlmostEqual(ac.latitude, 25.27)
+        self.assertAlmostEqual(ac.longitude, 51.56)
+        self.assertEqual(ac.speed, 0.0)
+
+        # 3. Flight ID resolved and passed to get_flight_route
+        v2_api.get_flight_route.assert_awaited_with("session-flight-uuid-bcb-999")
+
+        # 4. Position dict reflects STOPPED status
+        pos_dict = ac.to_position_dict()
+        self.assertEqual(pos_dict["state"], int(AircraftPersistenceState.STOPPED))
+        self.assertEqual(pos_dict["v2_flight_id"], "session-flight-uuid-bcb-999")
+        self.assertAlmostEqual(pos_dict["latitude"], 25.27)
+        self.assertAlmostEqual(pos_dict["longitude"], 51.56)
 
 
 if __name__ == "__main__":

@@ -422,7 +422,7 @@ class LiveFleetSnapshot:
 
     def get_active_flights(self) -> List[LiveAircraftState]:
         """All aircraft currently actively flying in multiplayer."""
-        return [ac for ac in self.aircraft_by_id.values() if ac.is_actively_flying]
+        return [ac for ac in self.aircraft_by_id.values() if ac.is_actively_flying and ac.is_in_multiplayer]
 
     def get_parked_aircraft(self) -> List[LiveAircraftState]:
         """All aircraft currently on the ground."""
@@ -464,6 +464,9 @@ class LiveFleetService:
 
         self._v2_routes: Dict[str, Dict[str, Any]] = {}
         self._v2_routes_fetched_at: Dict[str, float] = {}
+
+        # Known mapping of aircraft_id -> active/last known v2 flight_id
+        self._aircraft_flight_ids: Dict[str, str] = {}
 
         # Cached consolidated snapshot
         self._cached_snapshot: Optional[LiveFleetSnapshot] = None
@@ -620,25 +623,83 @@ class LiveFleetService:
         self._v2_flights_fetched_at = now
         return self._v2_flights
 
-    async def _get_v2_last_route_point(self, aircraft_id: str, force: bool = False) -> Optional[Dict[str, Any]]:
-        if not self.v2_api:
+    async def _resolve_flight_id_for_aircraft(
+        self,
+        client: Any,
+        aircraft_id: str,
+        pilot_user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        # 1. In-memory cache from active or recent multiplayer detection
+        cached = self._aircraft_flight_ids.get(aircraft_id)
+        if cached:
+            return cached
+
+        # 2. Check organization flight history for this aircraft
+        if hasattr(client, "list_aircraft_flights"):
+            try:
+                page = await client.list_aircraft_flights(aircraft_id, page=1, page_size=1)
+                items = (
+                    getattr(page, "items", None)
+                    or (page.get("items") if isinstance(page, dict) else None)
+                    or []
+                )
+                if items:
+                    f = items[0]
+                    fid = str(
+                        f.get("id")
+                        if isinstance(f, dict)
+                        else getattr(f, "id", None)
+                        or (f.get("flightId") if isinstance(f, dict) else getattr(f, "flightId", None))
+                        or ""
+                    ).strip()
+                    if fid:
+                        self._aircraft_flight_ids[aircraft_id] = fid
+                        return fid
+            except Exception as e:
+                log.debug("Could not resolve flight_id from list_aircraft_flights for %s: %s", aircraft_id, e)
+
+        # 3. Check pilot's recent flights via public v2 API
+        if pilot_user_id and self.v2_api:
+            try:
+                resp = None
+                if hasattr(self.v2_api, "get_user_flights"):
+                    resp = await self.v2_api.get_user_flights(pilot_user_id)
+                elif hasattr(self.v2_api, "get_user_flights_page"):
+                    resp = await self.v2_api.get_user_flights_page(pilot_user_id)
+                if isinstance(resp, dict):
+                    res = resp.get("result")
+                    data = res.get("data") if isinstance(res, dict) else res
+                    if isinstance(data, list) and data:
+                        f = data[0]
+                        fid = str(f.get("id") or f.get("flightId") or "").strip()
+                        if fid:
+                            self._aircraft_flight_ids[aircraft_id] = fid
+                            return fid
+            except Exception as e:
+                log.debug("Could not resolve flight_id from get_user_flights for %s: %s", pilot_user_id, e)
+
+        # Fallback to aircraft_id directly in case test mocks or legacy setups used it
+        return aircraft_id
+
+    async def _get_v2_last_route_point(self, flight_id: str, force: bool = False) -> Optional[Dict[str, Any]]:
+        if not self.v2_api or not flight_id:
             return None
 
         now = time.monotonic()
-        fetched_at = self._v2_routes_fetched_at.get(aircraft_id, 0.0)
-        if not force and aircraft_id in self._v2_routes and (now - fetched_at < TTL_ROUTES_SECONDS):
-            return self._v2_routes[aircraft_id]
+        fetched_at = self._v2_routes_fetched_at.get(flight_id, 0.0)
+        if not force and flight_id in self._v2_routes and (now - fetched_at < TTL_ROUTES_SECONDS):
+            return self._v2_routes[flight_id]
 
         try:
             self.api_call_counts["v2_routes"] += 1
-            resp = await self.v2_api.get_flight_route(aircraft_id)
+            resp = await self.v2_api.get_flight_route(flight_id)
             points = resp.get("result", []) if resp else []
             last_pt = points[-1] if points else None
-            self._v2_routes[aircraft_id] = last_pt
-            self._v2_routes_fetched_at[aircraft_id] = now
+            self._v2_routes[flight_id] = last_pt
+            self._v2_routes_fetched_at[flight_id] = now
             return last_pt
         except Exception as e:
-            log.debug("Could not fetch v2 route for %s: %s", aircraft_id, e)
+            log.debug("Could not fetch v2 route for flight %s: %s", flight_id, e)
             return None
 
     async def get_live_fleet(
@@ -948,12 +1009,14 @@ class LiveFleetService:
                         chosen_id = str(best_ac.id)
                         matched_v2_by_aircraft[chosen_id] = cand
                         claimed_v2_flight_ids.add(cand_id)
+                        if cand_id:
+                            self._aircraft_flight_ids[chosen_id] = str(cand_id)
 
                 def _find_v2_flight(ac_id: str, pos: Optional[IFAircraftPosition] = None, reg: str = "") -> Optional[Dict[str, Any]]:
                     return matched_v2_by_aircraft.get(ac_id)
 
                 # Identify stopped/AP+ aircraft that require v2 route breadcrumbs
-                route_fetch_ids = []
+                candidate_aircraft: List[Tuple[str, Optional[str]]] = []  # (ac_id, pilot_user_id)
                 for ac in fleet:
                     ac_id = str(ac.id)
                     reg = str(ac.registration or "Unknown").strip().upper()
@@ -962,17 +1025,32 @@ class LiveFleetService:
                         continue
                     is_ground = bool(pos.is_on_ground)
                     state_val = int(pos.state)
+                    ac_status = int(ac.status)
+                    is_stopped = (
+                        ac_status == int(AircraftPersistenceState.STOPPED)
+                        or state_val == int(AircraftPersistenceState.STOPPED)
+                    )
                     matched_v2 = _find_v2_flight(ac_id, pos, reg)
-                    # Airborne but not reporting in v2 live multiplayer => stopped / AP+ TOD
-                    if not matched_v2 and (not is_ground or state_val == int(AircraftPersistenceState.IN_FLIGHT) or state_val == int(AircraftPersistenceState.STOPPED)):
-                        route_fetch_ids.append(ac_id)
+                    # Airborne or stopped but not reporting in v2 live multiplayer => stopped / AP+ TOD
+                    if not matched_v2 and (is_stopped or not is_ground or state_val == int(AircraftPersistenceState.IN_FLIGHT)):
+                        pilot_user_id = str(pos.last_pilot_id) if pos.last_pilot_id else None
+                        candidate_aircraft.append((ac_id, pilot_user_id))
 
                 route_last_points: Dict[str, Any] = {}
-                if route_fetch_ids and self.v2_api:
-                    route_results = await asyncio.gather(
-                        *(self._get_v2_last_route_point(aid, force=force_refresh) for aid in route_fetch_ids)
+                if candidate_aircraft and self.v2_api:
+                    resolved_fids = await asyncio.gather(
+                        *(self._resolve_flight_id_for_aircraft(client, aid, pilot_user_id=pid) for aid, pid in candidate_aircraft)
                     )
-                    route_last_points = dict(zip(route_fetch_ids, route_results))
+                    route_fetch_targets = [
+                        (aid, fid) for (aid, _), fid in zip(candidate_aircraft, resolved_fids) if fid
+                    ]
+                    if route_fetch_targets:
+                        route_results = await asyncio.gather(
+                            *(self._get_v2_last_route_point(fid, force=force_refresh) for _, fid in route_fetch_targets)
+                        )
+                        for (aid, _), pt in zip(route_fetch_targets, route_results):
+                            if pt:
+                                route_last_points[aid] = pt
 
                 # Build consolidated LiveAircraftState for every aircraft
                 snapshot_time = utcnow()
@@ -1007,6 +1085,8 @@ class LiveFleetService:
                         # Case 1: Actively flying in live multiplayer
                         state.is_in_multiplayer = True
                         state.v2_flight_id = str(v2_flight.get("flightId") or "")
+                        if state.v2_flight_id:
+                            self._aircraft_flight_ids[ac_id] = state.v2_flight_id
                         state.multiplayer_session_name = v2_flight.get("session_name")
                         state.multiplayer_callsign = v2_flight.get("callsign")
                         state.multiplayer_is_connected = v2_flight.get("isConnected")
@@ -1034,12 +1114,17 @@ class LiveFleetService:
                         not bool(pos.is_on_ground)
                         or int(pos.state) == int(AircraftPersistenceState.IN_FLIGHT)
                         or int(pos.state) == int(AircraftPersistenceState.STOPPED)
+                        or int(ac.status) == int(AircraftPersistenceState.STOPPED)
                     ):
                         pos_spd = float(pos.speed or 0.0)
                         pos_state = int(pos.state)
-                        # An aircraft is truly stopped (e.g. AP+ holding at TOD) if Infinite Flight marked
-                        # it STOPPED or its airborne ground speed dropped below flight threshold (< 50 kts).
-                        is_truly_stopped = pos_state == int(AircraftPersistenceState.STOPPED) or (pos_spd < 50 and pos_state != int(AircraftPersistenceState.ON_GROUND))
+                        ac_status = int(ac.status)
+                        is_truly_stopped = (
+                            ac_status == int(AircraftPersistenceState.STOPPED)
+                            or pos_state == int(AircraftPersistenceState.STOPPED)
+                            or (pos_spd < 50 and pos_state != int(AircraftPersistenceState.ON_GROUND))
+                            or (route_pt is not None and float(route_pt.get("groundSpeed", 0.0)) < 50)
+                        )
 
                         if is_truly_stopped:
                             # AP+ holding at TOD or flight paused
@@ -1062,9 +1147,9 @@ class LiveFleetService:
                                 state.latitude = float(pos.latitude)
                                 state.longitude = float(pos.longitude)
                                 state.altitude = float(pos.altitude)
-                                state.speed = float(pos.speed)
+                                state.speed = 0.0
+                                state.vertical_speed = 0.0
                                 state.heading = float(pos.heading)
-                                state.vertical_speed = float(pos.vertical_speed)
                                 state.stopped_since = state.v3_updated_at
                         else:
                             # Actively cruising on AP+ in background (not stopped)
@@ -1090,6 +1175,11 @@ class LiveFleetService:
                         state.altitude = float(pos.altitude)
                         state.speed = float(pos.speed)
                         state.heading = float(pos.heading)
+
+                    if not state.v2_flight_id:
+                        cached_fid = self._aircraft_flight_ids.get(ac_id)
+                        if cached_fid:
+                            state.v2_flight_id = cached_fid
 
                     # Associate schedules and route availability
                     ac_schedules = schedules_by_aircraft.get(ac_id, [])
