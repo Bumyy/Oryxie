@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -56,6 +57,95 @@ def parse_utc(value: Any) -> Optional[datetime]:
 def utcnow() -> datetime:
     """Current UTC datetime without tzinfo."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+_CALLSIGN_STRIP_SUFFIXES = {
+    "HISTORIC",
+    "CARGO",
+    "CHARTER",
+    "VIP",
+    "FERRY",
+    "TRAINING",
+    "TEST",
+    "OPERATED",
+    "BY",
+}
+
+_AIRLINE_ICAO_IATA = {
+    "QR": "QTR",
+    "QTR": "QR",
+    "BA": "BAW",
+    "BAW": "BA",
+    "EK": "UAE",
+    "UAE": "EK",
+    "EY": "ETD",
+    "ETD": "EY",
+    "WY": "OMA",
+    "OMA": "WY",
+    "SV": "SVA",
+    "SVA": "SV",
+    "MS": "MSR",
+    "MSR": "MS",
+    "RJ": "RJA",
+    "RJA": "RJ",
+    "LH": "DLH",
+    "DLH": "LH",
+    "AF": "AFR",
+    "AFR": "AF",
+    "KL": "KLM",
+    "KLM": "KL",
+}
+
+
+def clean_callsign_tokens(raw: str) -> Set[str]:
+    """Generate normalized lookup tokens for a callsign or registration.
+
+    Handles:
+    - Suffixes like ' HISTORIC', ' CARGO'
+    - Spaces and hyphens ('QR 843', 'A7-BCB' -> 'QR843', 'A7BCB')
+    - Airline code interchangeability (IATA 'QR843' <-> ICAO 'QTR843')
+    """
+    if not raw:
+        return set()
+    cleaned = str(raw).strip().upper()
+    if not cleaned:
+        return set()
+
+    tokens: Set[str] = set()
+
+    # Exact cleaned variant with spaces/hyphens removed
+    no_space_hyphen = cleaned.replace(" ", "").replace("-", "")
+    if no_space_hyphen:
+        tokens.add(no_space_hyphen)
+
+    # Word-based extraction: e.g. 'QR843 HISTORIC' -> 'QR843', 'QR 843 HISTORIC' -> 'QR843'
+    parts = [p.replace("-", "") for p in cleaned.split() if p.replace("-", "")]
+    if parts:
+        first = parts[0]
+        if first not in _CALLSIGN_STRIP_SUFFIXES:
+            tokens.add(first)
+
+        # Check if first word is airline code and second word is flight number (e.g. 'QR 843')
+        if len(parts) >= 2 and parts[1].isdigit():
+            tokens.add(first + parts[1])
+
+        # Filter out trailing descriptor tokens
+        content_parts = [p for p in parts if p not in _CALLSIGN_STRIP_SUFFIXES]
+        if content_parts:
+            tokens.add("".join(content_parts))
+
+    # Expand each token with IATA/ICAO airline code mapping
+    expanded: Set[str] = set()
+    for tok in tokens:
+        expanded.add(tok)
+        m = re.match(r"^([A-Z]{2,3})(\d+[A-Z]?)$", tok)
+        if m:
+            airline_code, flt_num = m.groups()
+            mapped = _AIRLINE_ICAO_IATA.get(airline_code)
+            if mapped:
+                expanded.add(f"{mapped}{flt_num}")
+
+    return expanded
 
 
 @dataclass
@@ -482,19 +572,16 @@ class LiveFleetService:
                     sch_list.sort(key=_get_seq)
 
                 # Build lookup indexes for matching v2 multiplayer flights to organization aircraft
-                v2_by_user: Dict[str, Dict[str, Any]] = {}
+                v2_by_user: Dict[str, List[Dict[str, Any]]] = {}
                 v2_by_callsign: Dict[str, Dict[str, Any]] = {}
                 for f in v2_flights.values() if isinstance(v2_flights, dict) else []:
                     if isinstance(f, dict):
                         uid = str(f.get("userId") or "").strip()
                         if uid:
-                            v2_by_user[uid] = f
-                        cs = str(f.get("callsign") or "").strip().upper().replace(" ", "")
-                        if cs:
-                            v2_by_callsign[cs] = f
-
-                def _normalize_cs(callsign_str: str) -> str:
-                    return str(callsign_str or "").strip().upper().replace(" ", "").replace("-", "")
+                            v2_by_user.setdefault(uid, []).append(f)
+                        raw_cs = str(f.get("callsign") or "").strip()
+                        for tok in clean_callsign_tokens(raw_cs):
+                            v2_by_callsign[tok] = f
 
                 matched_v2_by_aircraft: Dict[str, Dict[str, Any]] = {}
                 claimed_v2_flight_ids: Set[str] = set()
@@ -503,58 +590,148 @@ class LiveFleetService:
                 for ac in fleet:
                     ac_id = str(ac.id)
                     reg = str(ac.registration or "Unknown").strip().upper()
-                    norm_reg = _normalize_cs(reg)
+                    reg_tokens = clean_callsign_tokens(reg)
 
-                    flight = v2_by_callsign.get(norm_reg) or v2_by_callsign.get(reg.replace(" ", ""))
-                    if flight and flight.get("flightId") not in claimed_v2_flight_ids:
+                    flight = None
+                    for token in reg_tokens:
+                        cand = v2_by_callsign.get(token)
+                        if cand and cand.get("flightId") not in claimed_v2_flight_ids:
+                            flight = cand
+                            break
+
+                    if flight:
                         matched_v2_by_aircraft[ac_id] = flight
                         claimed_v2_flight_ids.add(flight["flightId"])
                         continue
 
                     for sch in schedules_by_aircraft.get(ac_id, []):
-                        sch_cs = _normalize_cs(sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "") or "")
-                        if sch_cs and sch_cs in v2_by_callsign:
-                            cand = v2_by_callsign[sch_cs]
-                            if cand.get("flightId") not in claimed_v2_flight_ids:
-                                matched_v2_by_aircraft[ac_id] = cand
-                                claimed_v2_flight_ids.add(cand["flightId"])
+                        sch_raw = sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "") or ""
+                        sch_tokens = clean_callsign_tokens(sch_raw)
+                        matched_sch_flight = None
+                        for tok in sch_tokens:
+                            cand = v2_by_callsign.get(tok)
+                            if cand and cand.get("flightId") not in claimed_v2_flight_ids:
+                                matched_sch_flight = cand
                                 break
+                        if matched_sch_flight:
+                            matched_v2_by_aircraft[ac_id] = matched_sch_flight
+                            claimed_v2_flight_ids.add(matched_sch_flight["flightId"])
+                            break
 
                 # Pass 2: Pilot User ID matches (for pilots who fly without matching callsign)
-                # Enforces that a single multiplayer flight cannot be claimed by multiple aircraft
-                for ac in fleet:
-                    ac_id = str(ac.id)
-                    if ac_id in matched_v2_by_aircraft:
-                        continue
-                    pos = v3_positions.get(ac_id)
-                    reg = str(ac.registration or "Unknown").strip().upper()
-                    norm_reg = _normalize_cs(reg)
+                # Evaluates all candidate aircraft for each unclaimed flight and assigns the flight
+                # to the aircraft that best matches the aircraft model, flight phase, and route.
+                unclaimed_flights = [
+                    f for f in (v2_flights.values() if isinstance(v2_flights, dict) else [])
+                    if isinstance(f, dict) and f.get("flightId") and f.get("flightId") not in claimed_v2_flight_ids
+                ]
 
-                    matched = None
+                # Precompute pilot UIDs for each unmatched aircraft
+                unmatched_ac = [ac for ac in fleet if str(ac.id) not in matched_v2_by_aircraft]
+                ac_pilot_map: Dict[str, Set[str]] = {}
+                for ac in unmatched_ac:
+                    ac_id = str(ac.id)
+                    uids: Set[str] = set()
                     for sch in schedules_by_aircraft.get(ac_id, []):
                         crew_list = getattr(sch, "crew", []) or (sch.get("crew", []) if isinstance(sch, dict) else [])
                         for member in crew_list:
                             m_uid = str(member.get("userId") if isinstance(member, dict) else getattr(member, "userId", "") or "").strip()
-                            if m_uid and m_uid in v2_by_user:
-                                cand = v2_by_user[m_uid]
-                                if cand.get("flightId") not in claimed_v2_flight_ids:
-                                    matched = cand
-                                    break
-                        if matched:
-                            break
-
-                    if not matched and pos and pos.last_pilot_id:
+                            if m_uid:
+                                uids.add(m_uid)
+                    pos = v3_positions.get(ac_id)
+                    if pos and pos.last_pilot_id:
                         p_uid = str(pos.last_pilot_id).strip()
-                        if p_uid in v2_by_user:
-                            cand = v2_by_user[p_uid]
-                            if cand.get("flightId") not in claimed_v2_flight_ids:
-                                cand_cs = _normalize_cs(cand.get("callsign"))
-                                if not bool(cand_cs and cand_cs.startswith("A7") and cand_cs != norm_reg):
-                                    matched = cand
+                        if p_uid:
+                            uids.add(p_uid)
+                    ac_pilot_map[ac_id] = uids
 
-                    if matched and matched.get("flightId") not in claimed_v2_flight_ids:
-                        matched_v2_by_aircraft[ac_id] = matched
-                        claimed_v2_flight_ids.add(matched["flightId"])
+                for cand in unclaimed_flights:
+                    cand_id = cand.get("flightId")
+                    if not cand_id or cand_id in claimed_v2_flight_ids:
+                        continue
+                    cand_uid = str(cand.get("userId") or "").strip()
+                    if not cand_uid:
+                        continue
+
+                    cand_cs = str(cand.get("callsign") or "").strip().upper()
+                    cand_tokens = clean_callsign_tokens(cand_cs)
+                    cand_aircraft_type = str(cand.get("aircraftId") or "").strip()
+                    cand_speed = float(cand.get("speed", 0.0) or 0.0)
+                    cand_alt = float(cand.get("altitude", 0.0) or 0.0)
+                    is_cand_airborne = cand_speed >= 50 or cand_alt >= 1000
+
+                    # Find all candidate aircraft associated with this pilot
+                    best_ac = None
+                    best_score = 0
+
+                    for ac in unmatched_ac:
+                        ac_id = str(ac.id)
+                        if ac_id in matched_v2_by_aircraft:
+                            continue
+                        if cand_uid not in ac_pilot_map.get(ac_id, set()):
+                            continue
+
+                        pos = v3_positions.get(ac_id)
+                        reg = str(ac.registration or "Unknown").strip().upper()
+                        reg_tokens = clean_callsign_tokens(reg)
+
+                        # Hard contradiction: callsign starts with A7 but is a different registration
+                        if cand_cs.startswith("A7") and not cand_tokens.intersection(reg_tokens):
+                            continue
+
+                        score = 20  # Base match for pilot ID
+
+                        # 1. Aircraft Model / Type match
+                        if cand_aircraft_type and str(ac.aircraft_id):
+                            if cand_aircraft_type == str(ac.aircraft_id):
+                                score += 150  # Strong model match
+                            else:
+                                score -= 150  # Different aircraft model penalty
+
+                        # 2. Airborne vs Ground match
+                        if pos:
+                            pos_is_ground = bool(pos.is_on_ground)
+                            pos_state = int(pos.state)
+                            pos_airborne = not pos_is_ground or pos_state in {
+                                int(AircraftPersistenceState.IN_FLIGHT),
+                                int(AircraftPersistenceState.STOPPED),
+                            }
+                            if is_cand_airborne:
+                                if pos_airborne:
+                                    score += 100  # Both airborne
+                                elif pos_is_ground or pos_state == int(AircraftPersistenceState.ON_GROUND):
+                                    score -= 150  # Cruising flight should never match a parked ground aircraft
+                            else:
+                                if pos_is_ground:
+                                    score += 50
+
+                        # 3. Schedule status and route match
+                        ac_schedules = schedules_by_aircraft.get(ac_id, [])
+                        for sch in ac_schedules:
+                            sch_stat = None
+                            try:
+                                sch_stat = int(sch.get("status") if isinstance(sch, dict) else getattr(sch, "status"))
+                            except (TypeError, ValueError):
+                                pass
+                            if sch_stat == int(ScheduledFlightStatus.IN_FLIGHT):
+                                score += 100
+                                break
+
+                        # 4. Schedule callsign token match
+                        for sch in ac_schedules:
+                            s_cs = sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "")
+                            if cand_tokens.intersection(clean_callsign_tokens(s_cs)):
+                                score += 200
+                                break
+
+                        if score > best_score:
+                            best_score = score
+                            best_ac = ac
+
+                    if best_ac and best_score > 0:
+                        chosen_id = str(best_ac.id)
+                        matched_v2_by_aircraft[chosen_id] = cand
+                        claimed_v2_flight_ids.add(cand_id)
 
                 def _find_v2_flight(ac_id: str, pos: Optional[IFAircraftPosition] = None, reg: str = "") -> Optional[Dict[str, Any]]:
                     return matched_v2_by_aircraft.get(ac_id)
@@ -642,30 +819,49 @@ class LiveFleetService:
                         or int(pos.state) == int(AircraftPersistenceState.IN_FLIGHT)
                         or int(pos.state) == int(AircraftPersistenceState.STOPPED)
                     ):
-                        # Case 2: Airborne but not in multiplayer => STOPPED / AP+ TOD paused
-                        state.is_stopped = True
-                        state.is_actively_flying = False
-                        state.is_parked = False
-                        state.is_on_ground = False
+                        pos_spd = float(pos.speed or 0.0)
+                        pos_state = int(pos.state)
+                        # An aircraft is truly stopped (e.g. AP+ holding at TOD) if Infinite Flight marked
+                        # it STOPPED or its airborne ground speed dropped below flight threshold (< 50 kts).
+                        is_truly_stopped = pos_state == int(AircraftPersistenceState.STOPPED) or (pos_spd < 50 and pos_state != int(AircraftPersistenceState.ON_GROUND))
 
-                        if route_pt is not None:
-                            # True final position from v2 route breadcrumb
-                            state.route_last_point = route_pt
-                            state.stopped_at_tod = True
-                            state.latitude = float(route_pt.get("latitude", 0.0))
-                            state.longitude = float(route_pt.get("longitude", 0.0))
-                            state.altitude = float(route_pt.get("altitude", 0.0))
-                            state.speed = float(route_pt.get("groundSpeed", 0.0))
-                            state.heading = float(route_pt.get("track", 0.0))
-                            state.stopped_since = parse_utc(route_pt.get("date"))
+                        if is_truly_stopped:
+                            # AP+ holding at TOD or flight paused
+                            state.is_stopped = True
+                            state.is_actively_flying = False
+                            state.is_parked = False
+                            state.is_on_ground = False
+
+                            if route_pt is not None:
+                                # True final position from v2 route breadcrumb
+                                state.route_last_point = route_pt
+                                state.stopped_at_tod = True
+                                state.latitude = float(route_pt.get("latitude", 0.0))
+                                state.longitude = float(route_pt.get("longitude", 0.0))
+                                state.altitude = float(route_pt.get("altitude", 0.0))
+                                state.speed = float(route_pt.get("groundSpeed", 0.0))
+                                state.heading = float(route_pt.get("track", 0.0))
+                                state.stopped_since = parse_utc(route_pt.get("date"))
+                            else:
+                                state.latitude = float(pos.latitude)
+                                state.longitude = float(pos.longitude)
+                                state.altitude = float(pos.altitude)
+                                state.speed = float(pos.speed)
+                                state.heading = float(pos.heading)
+                                state.vertical_speed = float(pos.vertical_speed)
+                                state.stopped_since = state.v3_updated_at
                         else:
+                            # Actively cruising on AP+ in background (not stopped)
+                            state.is_stopped = False
+                            state.is_actively_flying = True
+                            state.is_parked = False
+                            state.is_on_ground = False
                             state.latitude = float(pos.latitude)
                             state.longitude = float(pos.longitude)
                             state.altitude = float(pos.altitude)
                             state.speed = float(pos.speed)
                             state.heading = float(pos.heading)
                             state.vertical_speed = float(pos.vertical_speed)
-                            state.stopped_since = state.v3_updated_at
 
                     elif pos:
                         # Case 3: Parked on the ground
@@ -706,6 +902,16 @@ class LiveFleetService:
                             (sch for sch in ac_schedules if _sch_status(sch) == int(ScheduledFlightStatus.IN_FLIGHT)),
                             None
                         )
+                        if state.active_schedule is None:
+                            # Prefer crewed active schedule in sequence order
+                            state.active_schedule = next(
+                                (
+                                    sch for sch in ac_schedules
+                                    if _sch_status(sch) not in terminal_statuses
+                                    and (sch.get("crew") if isinstance(sch, dict) else getattr(sch, "crew", None))
+                                ),
+                                None
+                            )
                         if state.active_schedule is None and ac_schedules:
                             state.active_schedule = ac_schedules[0]
                     elif state.is_actively_flying:
@@ -713,6 +919,27 @@ class LiveFleetService:
                             (sch for sch in ac_schedules if _sch_status(sch) in {int(ScheduledFlightStatus.IN_FLIGHT), int(ScheduledFlightStatus.DIVERTED)}),
                             None
                         )
+                        if state.active_schedule is None and v2_flight and v2_flight.get("callsign"):
+                            cs_tokens = clean_callsign_tokens(v2_flight.get("callsign"))
+                            state.active_schedule = next(
+                                (
+                                    sch for sch in ac_schedules
+                                    if clean_callsign_tokens(sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "")).intersection(cs_tokens)
+                                ),
+                                None
+                            )
+                        if state.active_schedule is None:
+                            # Prefer crewed active schedule in sequence order
+                            state.active_schedule = next(
+                                (
+                                    sch for sch in ac_schedules
+                                    if _sch_status(sch) not in terminal_statuses
+                                    and (sch.get("crew") if isinstance(sch, dict) else getattr(sch, "crew", None))
+                                ),
+                                None
+                            )
+                        if state.active_schedule is None and ac_schedules:
+                            state.active_schedule = ac_schedules[0]
 
                     aircraft_by_id[ac_id] = state
                     aircraft_by_reg[reg] = state

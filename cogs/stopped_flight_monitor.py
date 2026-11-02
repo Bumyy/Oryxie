@@ -507,10 +507,24 @@ def _status_schedule(status_text, schedules):
         if schedule:
             return schedule
 
+    crewed_schedule = next(
+        (
+            schedule
+            for schedule in ordered_schedules
+            if _status(schedule) not in {8, 9, 11}
+            and _crew_members(schedule)
+            and _get(schedule, "origin_icao")
+            and _get(schedule, "destination_icao")
+        ),
+        None,
+    )
+    if crewed_schedule:
+        return crewed_schedule
+
     return next(
         (
             schedule
-            for schedule in reversed(ordered_schedules)
+            for schedule in ordered_schedules
             if _status(schedule) not in {8, 9, 11}
             and _get(schedule, "origin_icao")
             and _get(schedule, "destination_icao")
