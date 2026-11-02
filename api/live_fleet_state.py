@@ -41,6 +41,7 @@ TTL_FLIGHTS_SECONDS = 20.0          # 20 seconds (>= 15s rule)
 TTL_ROUTES_SECONDS = 60.0           # 60 seconds (>= 15s rule)
 TTL_ORGANIZATION_AIRCRAFT = 300.0   # 5 minutes
 TTL_ORGANIZATION_SCHEDULES = 60.0   # 60 seconds (open schedules list)
+TTL_ORGANIZATION_MEMBERS = 900.0     # 15 minutes
 TTL_AIRCRAFT_POSITIONS = 30.0       # 30 seconds
 MAX_CACHE_EXPIRY_SECONDS = 3600.0   # 1 hour maximum lifetime
 
@@ -452,6 +453,9 @@ class LiveFleetService:
         self._schedules: List[Any] = []
         self._schedules_fetched_at: float = 0.0
 
+        self._org_members: Optional[List[Any]] = None
+        self._org_members_fetched_at: float = 0.0
+
         self._v2_sessions: List[Dict[str, Any]] = []
         self._v2_sessions_fetched_at: float = 0.0
 
@@ -473,6 +477,7 @@ class LiveFleetService:
             "v3_aircraft": 0,
             "v3_schedules": 0,
             "v3_positions": 0,
+            "v3_members": 0,
             "v2_sessions": 0,
             "v2_flights": 0,
             "v2_routes": 0,
@@ -496,6 +501,7 @@ class LiveFleetService:
         self._fleet_list_fetched_at = 0.0
         self._v3_positions_fetched_at = 0.0
         self._schedules_fetched_at = 0.0
+        self._org_members_fetched_at = 0.0
         self._v2_sessions_fetched_at = 0.0
         self._v2_flights_fetched_at = 0.0
         self._v2_routes_fetched_at.clear()
@@ -553,6 +559,26 @@ class LiveFleetService:
         self._schedules = schedules
         self._schedules_fetched_at = now
         return self._schedules
+
+    async def _get_organization_members(self, client, org_id: str, force: bool = False) -> List[Any]:
+        now = time.monotonic()
+        if not force and self._org_members is not None and (now - self._org_members_fetched_at < TTL_ORGANIZATION_MEMBERS):
+            return self._org_members
+
+        if hasattr(client, "list_organization_members"):
+            try:
+                self.api_call_counts["v3_members"] += 1
+                members = await client.list_organization_members(org_id)
+                if isinstance(members, list):
+                    self._org_members = members
+                else:
+                    self._org_members = []
+                self._org_members_fetched_at = now
+                return self._org_members
+            except Exception as e:
+                log.warning("Could not fetch organization members: %s", e)
+                return self._org_members or []
+        return self._org_members or []
 
     async def _get_v2_active_flights(self, force: bool = False) -> Dict[str, Dict[str, Any]]:
         if not self.v2_api:
@@ -672,7 +698,7 @@ class LiveFleetService:
 
                 # Build lookup indexes for matching v2 multiplayer flights to organization aircraft
                 v2_by_user: Dict[str, List[Dict[str, Any]]] = {}
-                v2_by_callsign: Dict[str, Dict[str, Any]] = {}
+                v2_by_callsign: Dict[str, List[Dict[str, Any]]] = {}
                 for f in v2_flights.values() if isinstance(v2_flights, dict) else []:
                     if isinstance(f, dict):
                         uid = str(f.get("userId") or "").strip()
@@ -680,7 +706,27 @@ class LiveFleetService:
                             v2_by_user.setdefault(uid, []).append(f)
                         raw_cs = str(f.get("callsign") or "").strip()
                         for tok in clean_callsign_tokens(raw_cs):
-                            v2_by_callsign[tok] = f
+                            v2_by_callsign.setdefault(tok, []).append(f)
+
+                # Precompute known organization user IDs
+                known_org_uids: Set[str] = set()
+                org_members = await self._get_organization_members(client, org_id, force=force_refresh)
+                if isinstance(org_members, list):
+                    for m in org_members:
+                        uid = str(getattr(m, "user_id", None) or (m.get("userId") if isinstance(m, dict) else "") or "").strip()
+                        if uid:
+                            known_org_uids.add(uid)
+                for sch in schedules_list:
+                    crew_list = getattr(sch, "crew", []) or (sch.get("crew", []) if isinstance(sch, dict) else [])
+                    for member in crew_list:
+                        m_uid = str(member.get("userId") if isinstance(member, dict) else getattr(member, "userId", "") or "").strip()
+                        if m_uid:
+                            known_org_uids.add(m_uid)
+                for pos in v3_positions.values():
+                    if pos and pos.last_pilot_id:
+                        p_uid = str(pos.last_pilot_id).strip()
+                        if p_uid:
+                            known_org_uids.add(p_uid)
 
                 matched_v2_by_aircraft: Dict[str, Dict[str, Any]] = {}
                 claimed_v2_flight_ids: Set[str] = set()
@@ -690,12 +736,35 @@ class LiveFleetService:
                     ac_id = str(ac.id)
                     reg = str(ac.registration or "Unknown").strip().upper()
                     reg_tokens = clean_callsign_tokens(reg)
+                    pos = v3_positions.get(ac_id)
+                    ac_last_pilot_uid = str(pos.last_pilot_id).strip() if (pos and pos.last_pilot_id) else None
+
+                    ac_crew_uids: Set[str] = set()
+                    for sch in schedules_by_aircraft.get(ac_id, []):
+                        crew_list = getattr(sch, "crew", []) or (sch.get("crew", []) if isinstance(sch, dict) else [])
+                        for member in crew_list:
+                            m_uid = str(member.get("userId") if isinstance(member, dict) else getattr(member, "userId", "") or "").strip()
+                            if m_uid:
+                                ac_crew_uids.add(m_uid)
+
+                    ac_assigned_uids = set(ac_crew_uids)
+                    if not ac_assigned_uids and ac_last_pilot_uid:
+                        ac_assigned_uids.add(ac_last_pilot_uid)
 
                     flight = None
                     for token in reg_tokens:
-                        cand = v2_by_callsign.get(token)
-                        if cand and cand.get("flightId") not in claimed_v2_flight_ids:
+                        for cand in v2_by_callsign.get(token, []):
+                            cand_id = cand.get("flightId")
+                            if not cand_id or cand_id in claimed_v2_flight_ids:
+                                continue
+                            cand_uid = str(cand.get("userId") or "").strip()
+                            if ac_assigned_uids and cand_uid not in ac_assigned_uids:
+                                continue
+                            if known_org_uids and cand_uid not in known_org_uids:
+                                continue
                             flight = cand
+                            break
+                        if flight:
                             break
 
                     if flight:
@@ -706,12 +775,34 @@ class LiveFleetService:
                     for sch in schedules_by_aircraft.get(ac_id, []):
                         sch_raw = sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "") or ""
                         sch_tokens = clean_callsign_tokens(sch_raw)
+                        sch_crew_uids: Set[str] = set()
+                        crew_list = getattr(sch, "crew", []) or (sch.get("crew", []) if isinstance(sch, dict) else [])
+                        for member in crew_list:
+                            m_uid = str(member.get("userId") if isinstance(member, dict) else getattr(member, "userId", "") or "").strip()
+                            if m_uid:
+                                sch_crew_uids.add(m_uid)
+
                         matched_sch_flight = None
                         for tok in sch_tokens:
-                            cand = v2_by_callsign.get(tok)
-                            if cand and cand.get("flightId") not in claimed_v2_flight_ids:
+                            for cand in v2_by_callsign.get(tok, []):
+                                cand_id = cand.get("flightId")
+                                if not cand_id or cand_id in claimed_v2_flight_ids:
+                                    continue
+                                cand_uid = str(cand.get("userId") or "").strip()
+                                # If the schedule is crewed, candidate MUST be the assigned crew member!
+                                if sch_crew_uids and cand_uid not in sch_crew_uids:
+                                    continue
+                                # If the aircraft has assigned crew, candidate MUST be associated with this aircraft
+                                if ac_assigned_uids and cand_uid not in ac_assigned_uids:
+                                    continue
+                                # In all cases, candidate must be a known org member
+                                if known_org_uids and cand_uid not in known_org_uids:
+                                    continue
                                 matched_sch_flight = cand
                                 break
+                            if matched_sch_flight:
+                                break
+
                         if matched_sch_flight:
                             matched_v2_by_aircraft[ac_id] = matched_sch_flight
                             claimed_v2_flight_ids.add(matched_sch_flight["flightId"])
@@ -738,7 +829,7 @@ class LiveFleetService:
                             if m_uid:
                                 uids.add(m_uid)
                     pos = v3_positions.get(ac_id)
-                    if pos and pos.last_pilot_id:
+                    if not uids and pos and pos.last_pilot_id:
                         p_uid = str(pos.last_pilot_id).strip()
                         if p_uid:
                             uids.add(p_uid)

@@ -98,13 +98,13 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         # Mock position
         client.get_aircraft_position.return_value = IFAircraftPosition(
             id="id-1",
-            state=int(AircraftPersistenceState.IN_FLIGHT),
+            state=int(AircraftPersistenceState.STOPPED),
             is_on_ground=False,
             latitude=26.0,
             longitude=51.0,
             altitude=40000.0,
             heading=0.0,
-            speed=400.0,
+            speed=0.0,
             vertical_speed=0.0,
             updated_at="2026-10-31T03:00:00Z",
         )
@@ -187,13 +187,12 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
 
         client.get_aircraft_position.side_effect = lambda aid: IFAircraftPosition(
             id=aid,
-            aircraft_id="content-1" if aid == "ac-bae" else "content-2",
-            user_id="user-bumy",
             latitude=25.0,
             longitude=51.0,
             altitude=0.0,
             heading=0.0,
             speed=0.0,
+            vertical_speed=0.0,
             state=1,
             is_on_ground=True,
             last_pilot_id="user-bumy",
@@ -284,13 +283,12 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
 
         client.get_aircraft_position.side_effect = lambda aid: IFAircraftPosition(
             id=aid,
-            aircraft_id="type-777" if aid == "ac-aed" else "type-787",
-            user_id="user-bumy",
             latitude=25.26 if aid == "ac-aed" else 8.11,
             longitude=51.56 if aid == "ac-aed" else 98.30,
             altitude=0.0 if aid == "ac-aed" else 38000.0,
             heading=0.0,
             speed=0.0 if aid == "ac-aed" else 499.0,
+            vertical_speed=0.0,
             state=1 if aid == "ac-aed" else 2,  # 1 = ON_GROUND, 2 = IN_FLIGHT
             is_on_ground=True if aid == "ac-aed" else False,
             last_pilot_id="user-bumy",
@@ -378,13 +376,12 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         # A7AED is departing OTHH at 180 kts (state=2 IN_FLIGHT, is_on_ground=False)
         client.get_aircraft_position.side_effect = lambda aid: IFAircraftPosition(
             id=aid,
-            aircraft_id="type-787" if aid == "ac-bcb" else "type-777",
-            user_id="user-bumy",
             latitude=15.0 if aid == "ac-bcb" else 25.26,
             longitude=80.0 if aid == "ac-bcb" else 51.56,
             altitude=38000.0 if aid == "ac-bcb" else 3000.0,
             heading=300.0 if aid == "ac-bcb" else 90.0,
             speed=499.0 if aid == "ac-bcb" else 180.0,
+            vertical_speed=0.0 if aid == "ac-bcb" else 1500.0,
             state=2,  # IN_FLIGHT
             is_on_ground=False,
             last_pilot_id="user-bumy",
@@ -434,6 +431,142 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ac_bcb.is_on_ground)
         self.assertEqual(ac_bcb.speed, 499.0)
         self.assertEqual(ac_bcb.altitude, 38000.0)
+
+    async def test_stranger_in_multiplayer_cannot_hijack_assigned_or_parked_aircraft(self):
+        """Tests that a public multiplayer flight matching a schedule callsign or registration
+        does NOT hijack an aircraft when the pilot in multiplayer is not the assigned crew or org member."""
+        from cogs.stopped_flight_monitor import _aircraft_status_text
+
+        v3_manager = MagicMock()
+        client = AsyncMock()
+        client_ctx = MagicMock()
+        client_ctx.__aenter__ = AsyncMock(return_value=client)
+        client_ctx.__aexit__ = AsyncMock(return_value=None)
+        v3_manager.get_client = AsyncMock(return_value=client_ctx)
+
+        # A7-BAJ parked at OTHH, scheduled for DeltaLimaCharlie (user-dlc)
+        client.list_organization_aircraft.return_value = [
+            IFAircraft(
+                id="ac-baj",
+                aircraft_id="type-777",
+                organization_id="org-1",
+                registration="A7-BAJ",
+                status=0,
+                visibility=1,
+            )
+        ]
+        schedules = [
+            {
+                "id": "sch-baj",
+                "aircraft_id": "ac-baj",
+                "callsign": "QR28",
+                "origin_icao": "EGCC",
+                "destination_icao": "OTHH",
+                "sequence": 1,
+                "status": 1,
+                "crew": [{"userId": "user-dlc", "username": "DeltaLimaCharlie"}],
+            }
+        ]
+        client.list_organization_schedules.return_value = SimpleNamespace(
+            items=schedules,
+            total_pages=1,
+        )
+
+        client.get_aircraft_position.return_value = IFAircraftPosition(
+            id="ac-baj",
+            latitude=25.26,
+            longitude=51.56,
+            altitude=0.0,
+            heading=0.0,
+            speed=0.0,
+            vertical_speed=0.0,
+            state=1,  # ON_GROUND
+            is_on_ground=True,
+            last_pilot_id="user-dlc",
+            last_pilot_username="DeltaLimaCharlie",
+        )
+
+        # Organization members list only includes DeltaLimaCharlie
+        client.list_organization_members.return_value = [
+            SimpleNamespace(user_id="user-dlc", username="DeltaLimaCharlie")
+        ]
+
+        # Case 1: Random stranger in multiplayer flying QR28 airborne at FL350, speed 460 kts
+        v2_api = AsyncMock()
+        v2_api.get_sessions.return_value = {"result": [{"id": "session-expert", "name": "Expert Server"}]}
+        v2_api.get_flight_route.return_value = {"result": []}
+        v2_api.get_flights.return_value = {
+            "result": [
+                {
+                    "flightId": "flight-stranger-qr28",
+                    "userId": "random-stranger-guid-1234",
+                    "callsign": "QR28",
+                    "username": "RandomStranger",
+                    "latitude": 53.36,
+                    "longitude": -2.27,
+                    "altitude": 35000.0,
+                    "speed": 460.0,
+                    "heading": 120.0,
+                    "verticalSpeed": 0.0,
+                }
+            ]
+        }
+
+        service = LiveFleetService(v3_manager, v2_api=v2_api)
+        snapshot = await service.get_live_fleet("org-1")
+
+        ac_baj = snapshot.get("A7-BAJ")
+        self.assertIsNotNone(ac_baj)
+
+        # Aircraft must NOT be hijacked by the stranger
+        self.assertFalse(ac_baj.is_in_multiplayer)
+        self.assertFalse(ac_baj.is_actively_flying)
+        self.assertTrue(ac_baj.is_parked)
+        self.assertTrue(ac_baj.is_on_ground)
+        self.assertIsNone(ac_baj.v2_flight_id)
+
+        # Status logger must remain PARKED AT OTHH, never transition to ENROUTE
+        status_text = _aircraft_status_text(
+            bot=MagicMock(),
+            position=ac_baj.to_position_dict(),
+            schedules=schedules,
+            previous_status="PARKED AT OTHH",
+        )
+        self.assertEqual(status_text, "PARKED AT OTHH")
+
+        # Case 2: Random stranger in multiplayer flying with callsign 'A7BAJ' / 'A7-BAJ'
+        service.invalidate_cache()
+        v2_api.get_flights.return_value = {
+            "result": [
+                {
+                    "flightId": "flight-stranger-reg",
+                    "userId": "random-stranger-guid-5678",
+                    "callsign": "A7-BAJ",
+                    "username": "AnotherStranger",
+                    "latitude": 40.0,
+                    "longitude": 20.0,
+                    "altitude": 38000.0,
+                    "speed": 480.0,
+                    "heading": 100.0,
+                    "verticalSpeed": 0.0,
+                }
+            ]
+        }
+
+        snapshot2 = await service.get_live_fleet("org-1")
+        ac_baj2 = snapshot2.get("A7-BAJ")
+        self.assertFalse(ac_baj2.is_in_multiplayer)
+        self.assertFalse(ac_baj2.is_actively_flying)
+        self.assertTrue(ac_baj2.is_parked)
+        self.assertIsNone(ac_baj2.v2_flight_id)
+
+        status_text2 = _aircraft_status_text(
+            bot=MagicMock(),
+            position=ac_baj2.to_position_dict(),
+            schedules=schedules,
+            previous_status="PARKED AT OTHH",
+        )
+        self.assertEqual(status_text2, "PARKED AT OTHH")
 
 
 if __name__ == "__main__":
