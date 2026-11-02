@@ -42,6 +42,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.position = {
             "state": 2,
             "is_on_ground": False,
+            "speed": 250.0,
             "latitude": 25.0,
             "longitude": 51.0,
         }
@@ -106,7 +107,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             landed_text,
             "LANDED AT EGLL · OTHH → EGLL by QRV004",
         )
-        self.assertEqual(parked_text, "PARKED")
+        self.assertEqual(parked_text, "PARKED AT EGLL")
 
     def test_landed_aircraft_taxiing_at_35_knots_does_not_flip_to_enroute(self):
         landed = {
@@ -1169,6 +1170,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         position = {
             "state": 2,
             "is_on_ground": False,
+            "speed": 250.0,
         }
 
         with patch(
