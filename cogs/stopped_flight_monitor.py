@@ -403,7 +403,7 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
     if previous_status and previous_status.startswith(("LANDED", "PARKED")) and speed < 60:
         on_ground = True
         if state == int(AircraftPersistenceState.IN_FLIGHT):
-            state = int(AircraftPersistenceState.PARKED)
+            state = int(AircraftPersistenceState.ON_GROUND)
 
     if state == int(AircraftPersistenceState.MAINTENANCE):
         return "MAINTENANCE"
