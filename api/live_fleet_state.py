@@ -17,12 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+try:
+    import airportsdata
+    _AIRPORTS_DB: Optional[Dict[str, Dict[str, Any]]] = airportsdata.load("ICAO")
+except Exception:
+    _AIRPORTS_DB = None
 
 from api.if_live_manager import AircraftPersistenceState, IFAircraft, IFAircraftPosition, ScheduledFlightStatus
 
@@ -146,6 +153,98 @@ def clean_callsign_tokens(raw: str) -> Set[str]:
                 expanded.add(f"{mapped}{flt_num}")
 
     return expanded
+
+
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate great circle distance between two points in nautical miles."""
+    r = 3440.065
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(max(0.0, min(1.0, a))))
+
+
+def _bearing_diff(b1: float, b2: float) -> float:
+    diff = abs(b1 - b2) % 360.0
+    return 360.0 - diff if diff > 180.0 else diff
+
+
+def _initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r_lat1, r_lon1, r_lat2, r_lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlon = r_lon2 - r_lon1
+    x = math.sin(dlon) * math.cos(r_lat2)
+    y = math.cos(r_lat1) * math.sin(r_lat2) - (math.sin(r_lat1) * math.cos(r_lat2) * math.cos(dlon))
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _route_corridor_score(
+    cand_lat: float,
+    cand_lon: float,
+    origin_icao: str,
+    dest_icao: str,
+    heading: Optional[float] = None,
+    speed: Optional[float] = None,
+    alt: Optional[float] = None,
+) -> float:
+    """Score bonus or penalty based on whether a flight's position aligns with the scheduled route."""
+    if not _AIRPORTS_DB or not origin_icao or not dest_icao:
+        return 0.0
+    orig = _AIRPORTS_DB.get(str(origin_icao).strip().upper())
+    dest = _AIRPORTS_DB.get(str(dest_icao).strip().upper())
+    if not orig or not dest:
+        return 0.0
+
+    try:
+        orig_lat, orig_lon = float(orig.get("lat", 0.0)), float(orig.get("lon", 0.0))
+        dest_lat, dest_lon = float(dest.get("lat", 0.0)), float(dest.get("lon", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+    dist_orig = _haversine_nm(cand_lat, cand_lon, orig_lat, orig_lon)
+    dist_dest = _haversine_nm(cand_lat, cand_lon, dest_lat, dest_lon)
+    route_len = _haversine_nm(orig_lat, orig_lon, dest_lat, dest_lon)
+
+    if route_len <= 10.0:
+        return 0.0
+
+    score = 0.0
+    bearing_to_dest = _initial_bearing(cand_lat, cand_lon, dest_lat, dest_lon)
+    h_diff = _bearing_diff(float(heading), bearing_to_dest) if heading is not None else None
+
+    # Departure bonus: flight within 120 NM of origin and at lower altitude
+    cur_alt = float(alt or 0.0)
+    cur_speed = float(speed or 0.0)
+    if dist_orig <= 120.0 and cur_alt <= 20000.0:
+        if h_diff is not None and h_diff <= 60.0:
+            score += 300.0
+        elif h_diff is not None and h_diff >= 120.0:
+            score -= 150.0
+        else:
+            score += 150.0
+
+    # Arrival bonus: flight within 120 NM of destination
+    if dist_dest <= 120.0 and cur_alt <= 20000.0:
+        if h_diff is not None and h_diff <= 60.0:
+            score += 250.0
+
+    # Corridor excess: dist(P, Origin) + dist(P, Destination) - dist(Origin, Destination)
+    excess = (dist_orig + dist_dest) - route_len
+
+    if excess <= max(100.0, route_len * 0.08):
+        score += 200.0  # Directly along scheduled route corridor
+    elif excess <= max(250.0, route_len * 0.15):
+        score += 100.0  # Reasonable corridor alignment
+    elif excess >= 500.0:
+        score -= 250.0  # Severely off-route (e.g. completely different region/corridor)
+
+    # Heading alignment toward destination while enroute
+    if cur_speed >= 100.0 and h_diff is not None:
+        if h_diff <= 45.0:
+            score += 100.0
+        elif h_diff >= 120.0:
+            score -= 150.0
+
+    return score
 
 
 @dataclass
@@ -656,8 +755,12 @@ class LiveFleetService:
                     cand_cs = str(cand.get("callsign") or "").strip().upper()
                     cand_tokens = clean_callsign_tokens(cand_cs)
                     cand_aircraft_type = str(cand.get("aircraftId") or "").strip()
+                    cand_livery_id = str(cand.get("liveryId") or "").strip()
                     cand_speed = float(cand.get("speed", 0.0) or 0.0)
                     cand_alt = float(cand.get("altitude", 0.0) or 0.0)
+                    cand_lat = float(cand.get("latitude", 0.0) or 0.0)
+                    cand_lon = float(cand.get("longitude", 0.0) or 0.0)
+                    cand_heading = float(cand["heading"]) if cand.get("heading") is not None else None
                     is_cand_airborne = cand_speed >= 50 or cand_alt >= 1000
 
                     # Find all candidate aircraft associated with this pilot
@@ -681,11 +784,12 @@ class LiveFleetService:
 
                         score = 20  # Base match for pilot ID
 
-                        # 1. Aircraft Model / Type match
-                        if cand_aircraft_type and str(ac.aircraft_id):
-                            if cand_aircraft_type == str(ac.aircraft_id):
-                                score += 150  # Strong model match
-                            else:
+                        # 1. Aircraft Model / Livery match
+                        ac_content_id = str(ac.aircraft_id or "").strip()
+                        if ac_content_id and (cand_aircraft_type or cand_livery_id):
+                            if ac_content_id in (cand_aircraft_type, cand_livery_id):
+                                score += 150  # Strong model / livery match
+                            elif cand_aircraft_type and cand_livery_id and ac_content_id not in (cand_aircraft_type, cand_livery_id):
                                 score -= 150  # Different aircraft model penalty
 
                         # 2. Airborne vs Ground match
@@ -723,6 +827,27 @@ class LiveFleetService:
                             if cand_tokens.intersection(clean_callsign_tokens(s_cs)):
                                 score += 200
                                 break
+
+                        # 5. Route corridor alignment match (origin -> destination)
+                        best_corridor_score = -999.0
+                        for sch in ac_schedules:
+                            o_icao = sch.get("origin_icao") if isinstance(sch, dict) else getattr(sch, "origin_icao", "")
+                            d_icao = sch.get("destination_icao") if isinstance(sch, dict) else getattr(sch, "destination_icao", "")
+                            if o_icao and d_icao:
+                                c_score = _route_corridor_score(
+                                    cand_lat,
+                                    cand_lon,
+                                    o_icao,
+                                    d_icao,
+                                    heading=cand_heading,
+                                    speed=cand_speed,
+                                    alt=cand_alt,
+                                )
+                                if c_score > best_corridor_score:
+                                    best_corridor_score = c_score
+
+                        if best_corridor_score != -999.0:
+                            score += best_corridor_score
 
                         if score > best_score:
                             best_score = score
