@@ -1116,53 +1116,34 @@ class LiveFleetService:
                         or int(pos.state) == int(AircraftPersistenceState.STOPPED)
                         or int(ac.status) == int(AircraftPersistenceState.STOPPED)
                     ):
-                        pos_spd = float(pos.speed or 0.0)
-                        pos_state = int(pos.state)
-                        ac_status = int(ac.status)
-                        is_truly_stopped = (
-                            ac_status == int(AircraftPersistenceState.STOPPED)
-                            or pos_state == int(AircraftPersistenceState.STOPPED)
-                            or (pos_spd < 50 and pos_state != int(AircraftPersistenceState.ON_GROUND))
-                            or (route_pt is not None and float(route_pt.get("groundSpeed", 0.0)) < 50)
-                        )
+                        # Case 2: Airborne in persistence but not reporting in active multiplayer.
+                        # IF v3 API does not reliably flag aircraft as STOPPED in pos.state (it stays IN_FLIGHT)
+                        # or pos.speed (it stays at cruise speed). When an aircraft is airborne but not
+                        # connected to any live multiplayer session, it is stopped/paused in air (e.g. AP+ holding
+                        # at TOD or sim paused) and requires a pilot to resume or land ('Stopped / Needs a pilot').
+                        state.is_stopped = True
+                        state.is_actively_flying = False
+                        state.is_parked = False
+                        state.is_on_ground = False
 
-                        if is_truly_stopped:
-                            # AP+ holding at TOD or flight paused
-                            state.is_stopped = True
-                            state.is_actively_flying = False
-                            state.is_parked = False
-                            state.is_on_ground = False
-
-                            if route_pt is not None:
-                                # True final position from v2 route breadcrumb
-                                state.route_last_point = route_pt
-                                state.stopped_at_tod = True
-                                state.latitude = float(route_pt.get("latitude", 0.0))
-                                state.longitude = float(route_pt.get("longitude", 0.0))
-                                state.altitude = float(route_pt.get("altitude", 0.0))
-                                state.speed = float(route_pt.get("groundSpeed", 0.0))
-                                state.heading = float(route_pt.get("track", 0.0))
-                                state.stopped_since = parse_utc(route_pt.get("date"))
-                            else:
-                                state.latitude = float(pos.latitude)
-                                state.longitude = float(pos.longitude)
-                                state.altitude = float(pos.altitude)
-                                state.speed = 0.0
-                                state.vertical_speed = 0.0
-                                state.heading = float(pos.heading)
-                                state.stopped_since = state.v3_updated_at
+                        if route_pt is not None:
+                            # True final position from v2 route breadcrumb
+                            state.route_last_point = route_pt
+                            state.stopped_at_tod = True
+                            state.latitude = float(route_pt.get("latitude", 0.0))
+                            state.longitude = float(route_pt.get("longitude", 0.0))
+                            state.altitude = float(route_pt.get("altitude", 0.0))
+                            state.speed = float(route_pt.get("groundSpeed", 0.0))
+                            state.heading = float(route_pt.get("track", 0.0))
+                            state.stopped_since = parse_utc(route_pt.get("date"))
                         else:
-                            # Actively cruising on AP+ in background (not stopped)
-                            state.is_stopped = False
-                            state.is_actively_flying = True
-                            state.is_parked = False
-                            state.is_on_ground = False
                             state.latitude = float(pos.latitude)
                             state.longitude = float(pos.longitude)
                             state.altitude = float(pos.altitude)
-                            state.speed = float(pos.speed)
+                            state.speed = 0.0
+                            state.vertical_speed = 0.0
                             state.heading = float(pos.heading)
-                            state.vertical_speed = float(pos.vertical_speed)
+                            state.stopped_since = state.v3_updated_at
 
                     elif pos:
                         # Case 3: Parked on the ground

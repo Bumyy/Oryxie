@@ -424,14 +424,13 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ac_aed.is_stopped)
         self.assertEqual(ac_aed.v2_flight_id, "flight-aed-multiplayer")
 
-        # Aircraft 1 (A7BCB) is cruising on AP+ via v3 telemetry:
-        # Crucially: it MUST NOT be falsely marked is_stopped ("Paused at TOD") while speed is 499 kts!
+        # Aircraft 1 (A7BCB) is stopped in air / AP+ at TOD (not in multiplayer):
+        # IF v3 API does not flag it as stopped in pos.state (it stays 2) or pos.speed (it stays 499 kts).
+        # It must be correctly recognized as is_stopped (Needs a pilot / Stopped) because it is airborne and not in multiplayer.
         self.assertFalse(ac_bcb.is_in_multiplayer)
-        self.assertTrue(ac_bcb.is_actively_flying)
-        self.assertFalse(ac_bcb.is_stopped)
+        self.assertFalse(ac_bcb.is_actively_flying)
+        self.assertTrue(ac_bcb.is_stopped)
         self.assertFalse(ac_bcb.is_on_ground)
-        self.assertEqual(ac_bcb.speed, 499.0)
-        self.assertEqual(ac_bcb.altitude, 38000.0)
 
     async def test_stranger_in_multiplayer_cannot_hijack_assigned_or_parked_aircraft(self):
         """Tests that a public multiplayer flight matching a schedule callsign or registration
