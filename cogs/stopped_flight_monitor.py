@@ -3337,6 +3337,23 @@ class StoppedFlightMonitor(commands.Cog):
             return text
         return f"~~{text}~~"
 
+    async def _reply_to_claim_message(self, channel_id, message_id, content):
+        try:
+            channel = self.bot.get_channel(int(channel_id))
+            if channel is None:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+            await message.reply(
+                str(content).strip(),
+                allowed_mentions=discord.AllowedMentions.none(),
+                mention_author=False,
+            )
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            log.warning(
+                "Could not reply to stopped-flight claim message %s", message_id,
+                exc_info=True,
+            )
+
     async def _edit_claim_message(self, channel_id, message_id, content, reply_text=None):
         try:
             channel = self.bot.get_channel(int(channel_id))
@@ -3506,18 +3523,22 @@ class StoppedFlightMonitor(commands.Cog):
             return
 
         await model.confirm_claim(schedule_id, str(member.id))
+        original_pilot_callsign = await self._original_pilot_callsign(incident)
+        claim_text = (
+            f"This flight was claimed by <@{member.id}> "
+            f"({pilot.get('callsign') or 'Pilot'})."
+        )
+        reply_text = (
+            f"This recovery flight is now claimed by <@{member.id}> "
+            f"({pilot.get('callsign') or 'Pilot'}). "
+            f"Original assigned pilot: **{original_pilot_callsign or 'Unknown'}**. "
+            "The new pilot is assigned as the First Officer when available."
+        )
         await self._expire_claim_messages(
             model,
             schedule_id,
-            (
-                f"This flight was claimed by <@{member.id}> "
-                f"({pilot.get('callsign') or 'Pilot'})."
-            ),
-            reply_text=(
-                f"This recovery flight is now claimed by <@{member.id}> "
-                f"({pilot.get('callsign') or 'Pilot'}). "
-                "The original assigned pilot should be noted for any 50/50 PIREP tracking."
-            ),
+            claim_text,
+            reply_text=reply_text,
         )
         await interaction.response.send_message(
             f"**Flight booked.** You are assigned to "
