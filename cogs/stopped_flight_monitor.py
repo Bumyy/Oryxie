@@ -3941,9 +3941,9 @@ class StoppedFlightMonitor(commands.Cog):
 
                         fpl_items = []
                         step_climbs = None
-                        if v2_flight_id and status == "ENROUTE" and position:
+                        if v2_flight_id and status in ("ENROUTE", "STOPPED") and position:
                             fpl_items = await self._get_flight_plan_items(v2_flight_id)
-                            if fpl_items:
+                            if fpl_items and status == "ENROUTE":
                                 step_climbs = _parse_step_climbs_from_flight_plan(
                                     fpl_items,
                                     float(_get(position, "altitude", 0.0) or 0.0),
@@ -3963,31 +3963,46 @@ class StoppedFlightMonitor(commands.Cog):
                         last_map_ts = int(tracker.get("last_map_ts") or 0)
                         has_map = bool(tracker.get("has_map", False))
 
+                        if status == "ENROUTE" and tracker.get("is_stopped_map"):
+                            tracker["is_stopped_map"] = False
+
                         # Regenerate flight plan map every 15 minutes (900s),
-                        # or immediately if transitioning to approach mode
+                        # or immediately if transitioning to approach mode or paused at TOD
+                        is_stopped = (status == "STOPPED")
                         should_refresh_map = (
-                            status == "ENROUTE"
-                            and position is not None
+                            position is not None
                             and (
-                                last_map_ts == 0
-                                or (is_approach and not was_approach)
-                                or (now_ts - last_map_ts >= 900)
+                                (
+                                    status == "ENROUTE"
+                                    and (
+                                        last_map_ts == 0
+                                        or (is_approach and not was_approach)
+                                        or (now_ts - last_map_ts >= 900)
+                                    )
+                                )
+                                or (
+                                    is_stopped
+                                    and not tracker.get("is_stopped_map", False)
+                                )
                             )
                         )
 
                         map_file = None
                         if should_refresh_map:
+                            focus_map = is_approach or is_stopped
                             map_file = await self._generate_flight_map_file(
                                 schedule=current_schedule or tracker,
                                 position=position,
                                 flight_plan_items=fpl_items,
                                 registration=registration,
-                                focus_approach=is_approach,
+                                focus_approach=focus_map,
                             )
                             if map_file:
                                 tracker["last_map_ts"] = now_ts
                                 tracker["has_map"] = True
-                                tracker["is_approach"] = is_approach
+                                tracker["is_approach"] = focus_map
+                                if is_stopped:
+                                    tracker["is_stopped_map"] = True
                                 has_map = True
                         elif is_approach != was_approach:
                             tracker["is_approach"] = is_approach
