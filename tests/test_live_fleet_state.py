@@ -203,6 +203,7 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         # Pilot is currently flying ONLY ONE flight in multiplayer (QR655 on A7-BAE)
         v2_api = AsyncMock()
         v2_api.get_sessions.return_value = {"result": [{"id": "session-expert", "name": "Expert Server"}]}
+        v2_api.get_flight_route.return_value = {"result": []}
         v2_api.get_flights.return_value = {
             "result": [
                 {
@@ -238,6 +239,201 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ac_bcb.is_in_multiplayer)
         self.assertFalse(ac_bcb.is_actively_flying)
         self.assertIsNone(ac_bcb.v2_flight_id)
+
+    async def test_pilot_with_multiple_aircraft_does_not_mismatch_or_steal_flight(self):
+        v3_manager = MagicMock()
+        client = AsyncMock()
+        client_ctx = MagicMock()
+        client_ctx.__aenter__ = AsyncMock(return_value=client)
+        client_ctx.__aexit__ = AsyncMock(return_value=None)
+        v3_manager.get_client = AsyncMock(return_value=client_ctx)
+
+        # A7AED (Parked at OTHH, B777) and A7BCB (Airborne, B787)
+        client.list_organization_aircraft.return_value = [
+            IFAircraft(
+                id="ac-aed",
+                aircraft_id="type-777",
+                organization_id="org-1",
+                registration="A7-AED",
+                status=0,
+                visibility=1,
+            ),
+            IFAircraft(
+                id="ac-bcb",
+                aircraft_id="type-787",
+                organization_id="org-1",
+                registration="A7-BCB",
+                status=0,
+                visibility=1,
+            ),
+        ]
+
+        # A7AED has 16 schedules, first is QR820 crewed by 'bumy', last is QR639 unassigned
+        # A7BCB has QR843 HISTORIC crewed by 'bumy'
+        aed_schedules = [
+            {"id": "sch-aed-1", "aircraft_id": "ac-aed", "callsign": "QR820 HISTORIC", "origin_icao": "OTHH", "destination_icao": "RJBB", "sequence": 1, "status": 1, "crew": [{"userId": "user-bumy"}]},
+            {"id": "sch-aed-16", "aircraft_id": "ac-aed", "callsign": "QR639 HISTORIC", "origin_icao": "WSSS", "destination_icao": "OTHH", "sequence": 16, "status": 1, "crew": []},
+        ]
+        bcb_schedules = [
+            {"id": "sch-bcb-1", "aircraft_id": "ac-bcb", "callsign": "QR843 HISTORIC", "origin_icao": "VTSP", "destination_icao": "OTHH", "sequence": 1, "status": 1, "crew": [{"userId": "user-bumy"}]},
+        ]
+        client.list_organization_schedules.return_value = SimpleNamespace(
+            items=aed_schedules + bcb_schedules,
+            total_pages=1,
+        )
+
+        client.get_aircraft_position.side_effect = lambda aid: IFAircraftPosition(
+            id=aid,
+            aircraft_id="type-777" if aid == "ac-aed" else "type-787",
+            user_id="user-bumy",
+            latitude=25.26 if aid == "ac-aed" else 8.11,
+            longitude=51.56 if aid == "ac-aed" else 98.30,
+            altitude=0.0 if aid == "ac-aed" else 38000.0,
+            heading=0.0,
+            speed=0.0 if aid == "ac-aed" else 499.0,
+            state=1 if aid == "ac-aed" else 2,  # 1 = ON_GROUND, 2 = IN_FLIGHT
+            is_on_ground=True if aid == "ac-aed" else False,
+            last_pilot_id="user-bumy",
+            last_pilot_username="bumy",
+        )
+
+        # Live multiplayer reports flight under "QR843" (without HISTORIC suffix)
+        v2_api = AsyncMock()
+        v2_api.get_sessions.return_value = {"result": [{"id": "session-expert", "name": "Expert Server"}]}
+        v2_api.get_flight_route.return_value = {"result": []}
+        v2_api.get_flights.return_value = {
+            "result": [
+                {
+                    "flightId": "flight-bcb-live",
+                    "userId": "user-bumy",
+                    "callsign": "QR843",
+                    "username": "bumy",
+                    "aircraftId": "type-787",
+                    "latitude": 8.11,
+                    "longitude": 98.30,
+                    "altitude": 38000.0,
+                    "speed": 499.0,
+                    "heading": 300.0,
+                    "verticalSpeed": 0.0,
+                }
+            ]
+        }
+
+        service = LiveFleetService(v3_manager, v2_api=v2_api)
+        snapshot = await service.get_live_fleet("org-1")
+
+        ac_bcb = snapshot.get("A7-BCB")
+        ac_aed = snapshot.get("A7-AED")
+
+        self.assertIsNotNone(ac_bcb)
+        self.assertIsNotNone(ac_aed)
+
+        # 1. A7-BCB must match the flight QR843 despite the " HISTORIC" suffix in schedule
+        self.assertTrue(ac_bcb.is_in_multiplayer)
+        self.assertTrue(ac_bcb.is_actively_flying)
+        self.assertFalse(ac_bcb.is_stopped)
+        self.assertEqual(ac_bcb.v2_flight_id, "flight-bcb-live")
+        self.assertIsNotNone(ac_bcb.active_schedule)
+        self.assertEqual(ac_bcb.active_schedule["callsign"], "QR843 HISTORIC")
+
+        # 2. A7-AED must remain parked on ground, NOT steal the flight, and NOT be stopped
+        self.assertFalse(ac_aed.is_in_multiplayer)
+        self.assertFalse(ac_aed.is_actively_flying)
+        self.assertTrue(ac_aed.is_parked)
+        self.assertTrue(ac_aed.is_on_ground)
+        self.assertFalse(ac_aed.is_stopped)
+        self.assertIsNone(ac_aed.v2_flight_id)
+
+        # 3. Check that cogs.stopped_flight_monitor._status_schedule picks QR820 (first crewed), NOT QR639 (last leg)
+        from cogs.stopped_flight_monitor import _status_schedule
+        sch = _status_schedule("ENROUTE", aed_schedules)
+        self.assertIsNotNone(sch)
+        self.assertEqual(sch["callsign"], "QR820 HISTORIC")
+
+    async def test_simultaneous_ap_plus_cruise_and_second_flight(self):
+        """Tests that a pilot cruising on AP+ with aircraft 1 while flying aircraft 2 is fully supported."""
+        v3_manager = MagicMock()
+        client = AsyncMock()
+        client_ctx = MagicMock()
+        client_ctx.__aenter__ = AsyncMock(return_value=client)
+        client_ctx.__aexit__ = AsyncMock(return_value=None)
+        v3_manager.get_client = AsyncMock(return_value=client_ctx)
+
+        # Aircraft 1: A7BCB (cruising on AP+ at FL380, 499 kts)
+        # Aircraft 2: A7AED (taking off in multiplayer at 180 kts)
+        client.list_organization_aircraft.return_value = [
+            IFAircraft(id="ac-bcb", aircraft_id="type-787", organization_id="org-1", registration="A7-BCB", status=0, visibility=1),
+            IFAircraft(id="ac-aed", aircraft_id="type-777", organization_id="org-1", registration="A7-AED", status=0, visibility=1),
+        ]
+        client.list_organization_schedules.return_value = SimpleNamespace(
+            items=[
+                {"id": "sch-bcb", "aircraft_id": "ac-bcb", "callsign": "QR843 HISTORIC", "origin_icao": "VTSP", "destination_icao": "OTHH", "sequence": 1, "status": 6, "crew": [{"userId": "user-bumy"}]},
+                {"id": "sch-aed", "aircraft_id": "ac-aed", "callsign": "QR820 HISTORIC", "origin_icao": "OTHH", "destination_icao": "RJBB", "sequence": 1, "status": 1, "crew": [{"userId": "user-bumy"}]},
+            ],
+            total_pages=1,
+        )
+
+        # In v3 positions:
+        # A7BCB is airborne cruising at 499 kts (state=2 IN_FLIGHT, is_on_ground=False)
+        # A7AED is departing OTHH at 180 kts (state=2 IN_FLIGHT, is_on_ground=False)
+        client.get_aircraft_position.side_effect = lambda aid: IFAircraftPosition(
+            id=aid,
+            aircraft_id="type-787" if aid == "ac-bcb" else "type-777",
+            user_id="user-bumy",
+            latitude=15.0 if aid == "ac-bcb" else 25.26,
+            longitude=80.0 if aid == "ac-bcb" else 51.56,
+            altitude=38000.0 if aid == "ac-bcb" else 3000.0,
+            heading=300.0 if aid == "ac-bcb" else 90.0,
+            speed=499.0 if aid == "ac-bcb" else 180.0,
+            state=2,  # IN_FLIGHT
+            is_on_ground=False,
+            last_pilot_id="user-bumy",
+            last_pilot_username="bumy",
+        )
+
+        # In multiplayer: only A7AED is actively connected to the foreground session,
+        # while A7BCB is running on AP+ in background simulation
+        v2_api = AsyncMock()
+        v2_api.get_sessions.return_value = {"result": [{"id": "session-expert", "name": "Expert Server"}]}
+        v2_api.get_flight_route.return_value = {"result": []}
+        v2_api.get_flights.return_value = {
+            "result": [
+                {
+                    "flightId": "flight-aed-multiplayer",
+                    "userId": "user-bumy",
+                    "callsign": "QR820",
+                    "username": "bumy",
+                    "aircraftId": "type-777",
+                    "latitude": 25.26,
+                    "longitude": 51.56,
+                    "altitude": 3000.0,
+                    "speed": 180.0,
+                    "heading": 90.0,
+                    "verticalSpeed": 1500.0,
+                }
+            ]
+        }
+
+        service = LiveFleetService(v3_manager, v2_api=v2_api)
+        snapshot = await service.get_live_fleet("org-1")
+
+        ac_bcb = snapshot.get("A7-BCB")
+        ac_aed = snapshot.get("A7-AED")
+
+        # Aircraft 2 (A7AED) is in multiplayer and actively flying
+        self.assertTrue(ac_aed.is_in_multiplayer)
+        self.assertTrue(ac_aed.is_actively_flying)
+        self.assertFalse(ac_aed.is_stopped)
+        self.assertEqual(ac_aed.v2_flight_id, "flight-aed-multiplayer")
+
+        # Aircraft 1 (A7BCB) is cruising on AP+ via v3 telemetry:
+        # Crucially: it MUST NOT be falsely marked is_stopped ("Paused at TOD") while speed is 499 kts!
+        self.assertFalse(ac_bcb.is_in_multiplayer)
+        self.assertTrue(ac_bcb.is_actively_flying)
+        self.assertFalse(ac_bcb.is_stopped)
+        self.assertFalse(ac_bcb.is_on_ground)
+        self.assertEqual(ac_bcb.speed, 499.0)
+        self.assertEqual(ac_bcb.altitude, 38000.0)
 
 
 if __name__ == "__main__":
