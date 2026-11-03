@@ -18,6 +18,8 @@ class InfiniteFlightAPIManager:
         self.base_url = "https://api.infiniteflight.com/public/v2"
         self._session: Optional[aiohttp.ClientSession] = None
         self._aircraft_without_livery_endpoint: set[str] = set()
+        self._cached_sessions: List[Dict[str, Any]] = []
+        self._sessions_cached_at: float = 0.0
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -107,8 +109,32 @@ class InfiniteFlightAPIManager:
     async def get_flight_route(self, flight_id: str) -> Dict:
         return await self._request('GET', f'/flight/{flight_id}/route')
 
-    async def get_flight_plan(self, flight_id: str) -> Dict:
-        return await self._request('GET', f'/flight/{flight_id}/flightplan')
+    async def get_flight_plan(self, flight_id: str, session_id: Optional[str] = None) -> Optional[Dict]:
+        """
+        Retrieve the flight plan for a specific active flight.
+        Endpoint: GET /sessions/{sessionId}/flights/{flightId}/flightplan
+        If session_id is omitted, attempts to find active sessions or try cached sessions.
+        """
+        import time
+        if session_id:
+            return await self._request('GET', f'/sessions/{session_id}/flights/{flight_id}/flightplan')
+
+        now = time.monotonic()
+        if not self._cached_sessions or (now - self._sessions_cached_at > 300):
+            sessions_data = await self.get_sessions()
+            if sessions_data and isinstance(sessions_data, dict):
+                self._cached_sessions = sessions_data.get("result", []) or []
+                self._sessions_cached_at = now
+
+        for s in self._cached_sessions:
+            sid = s.get("id") if isinstance(s, dict) else getattr(s, "id", None)
+            if not sid:
+                continue
+            plan = await self._request('GET', f'/sessions/{sid}/flights/{flight_id}/flightplan')
+            if plan and isinstance(plan, dict) and plan.get("result"):
+                return plan
+
+        return None
 
     async def get_atc_facilities(self, session_id: str) -> Dict:
         return await self._request('GET', f'/atc/{session_id}')

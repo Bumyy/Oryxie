@@ -224,7 +224,7 @@ class LiveFlights(commands.Cog):
             for flight_data in flights_data['result']:
                 flight_id = flight_data['flightId']
                 if flight_id not in self.active_flights_cache and self.callsign_pattern.match(flight_data['callsign']):
-                    plan_data = await self.bot.if_api_manager.get_flight_plan(flight_id)
+                    plan_data = await self.bot.if_api_manager.get_flight_plan(flight_id, session_id=expert_server_id)
                     if not plan_data or not plan_data.get('result') or not plan_data['result'].get('flightPlanItems') or len(plan_data['result']['flightPlanItems']) < 2:
                         continue
                     
