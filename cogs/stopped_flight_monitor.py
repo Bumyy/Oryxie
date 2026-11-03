@@ -2232,7 +2232,7 @@ class StoppedFlightMonitor(commands.Cog):
                     row = await model.get_incident(schedule_id)
                     if row is None:
                         return
-        if elapsed >= timedelta(hours=2) and not row["two_hour_sent"]:
+        if elapsed >= timedelta(hours=2) and not row["two_hour_sent"] and bool(row.get("one_hour_sent")):
             wave_sent = True
             try:
                 wave_sent = await self._send_pilot_wave(model, row, wave=2)
@@ -2257,7 +2257,7 @@ class StoppedFlightMonitor(commands.Cog):
                     {"two_hour_sent": 1},
                     expected_lifecycle="available",
                 )
-        if elapsed >= timedelta(hours=3) and not row["three_hour_sent"]:
+        if elapsed >= timedelta(hours=3) and not row["three_hour_sent"] and bool(row.get("two_hour_sent")):
             wave_sent = True
             try:
                 wave_sent = await self._send_pilot_wave(model, row, wave=3)
@@ -2282,7 +2282,7 @@ class StoppedFlightMonitor(commands.Cog):
                     {"three_hour_sent": 1},
                     expected_lifecycle="available",
                 )
-        if elapsed >= timedelta(hours=4) and not row["four_hour_sent"]:
+        if elapsed >= timedelta(hours=4) and not row["four_hour_sent"] and bool(row.get("three_hour_sent")):
             await self._send_staff_alert(row, elapsed)
             await model.update_incident(
                 schedule_id,
@@ -2567,6 +2567,28 @@ class StoppedFlightMonitor(commands.Cog):
             )
             return False
         original_pilot_callsign = await self._original_pilot_callsign(row)
+        aircraft_id = str(row.get("aircraft_id") or "").strip()
+        aircraft_name = ""
+        aircraft_map = getattr(self.bot, "aircraft_name_map", None)
+        if isinstance(aircraft_map, dict) and aircraft_map:
+            aircraft_name = str(aircraft_map.get(aircraft_id) or "").strip()
+        if not aircraft_name and aircraft_id and getattr(self.bot, "if_live_manager", None):
+            try:
+                manager = self.bot.if_live_manager
+                if hasattr(manager, "get_aircraft"):
+                    aircraft = await manager.get_aircraft(aircraft_id)
+                    aircraft_name = str(getattr(aircraft, "name", "") or "").strip()
+            except Exception:
+                log.debug(
+                    "Could not resolve aircraft model for stopped-flight asset %s",
+                    aircraft_id,
+                    exc_info=True,
+                )
+        aircraft_line = (
+            f"**Aircraft:** {row['registration']}"
+            + (f" — {aircraft_name}" if aircraft_name else "")
+            + "\n"
+        )
         try:
             channel = self.bot.get_channel(RECOVERY_ALERT_CHANNEL_ID)
             if channel is None:
@@ -2579,26 +2601,18 @@ class StoppedFlightMonitor(commands.Cog):
             embed = discord.Embed(
                 title="Stopped flight available to claim",
                 description=(
-                    f"**{row['registration']} · {row['callsign']}**\n"
+                    f"{aircraft_line}"
+                    f"**Flight:** {row['callsign']}\n"
                     f"{original_line}"
-                    f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n\n"
+                    f"**Route:** {row['origin_icao']} → {row['destination_icao']}\n\n"
                     "Stopped in the air for at least one hour. Any Fleet pilot may "
                     "claim it with the button below. Recovery assignments bypass the "
                     "normal two-aircraft limit."
                 ).strip(),
                 color=discord.Color(QATAR_MAROON),
             )
-            content = (
-                f"<@&{RECOVERY_PING_ROLE_ID}> **Stopped flight available to claim**\n"
-                f"**{row['registration']} · {row['callsign']}**\n"
-                f"{original_line if original_line else ''}"
-                f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
-                "Stopped in the air for at least one hour. Any Fleet pilot may "
-                "claim it with the button below. Recovery assignments bypass the "
-                "normal two-aircraft limit."
-            )
             message = await channel.send(
-                content,
+                f"<@&{RECOVERY_PING_ROLE_ID}>",
                 embed=embed,
                 view=self._claim_view(str(row["schedule_id"])),
                 allowed_mentions=discord.AllowedMentions(
@@ -3525,14 +3539,17 @@ class StoppedFlightMonitor(commands.Cog):
         await model.confirm_claim(schedule_id, str(member.id))
         original_pilot_callsign = await self._original_pilot_callsign(incident)
         claim_text = (
-            f"This flight was claimed by <@{member.id}> "
-            f"({pilot.get('callsign') or 'Pilot'})."
+            f"This recovery flight was claimed by <@{member.id}> "
+            f"({pilot.get('callsign') or 'Pilot'}). "
+            f"Original assigned pilot: **{original_pilot_callsign or 'Unknown'}**. "
+            "This message is for the current recovery claim only."
         )
         reply_text = (
             f"This recovery flight is now claimed by <@{member.id}> "
             f"({pilot.get('callsign') or 'Pilot'}). "
             f"Original assigned pilot: **{original_pilot_callsign or 'Unknown'}**. "
-            "The new pilot is assigned as the First Officer when available."
+            "The new pilot is assigned as the First Officer when available. "
+            "Any 50/50 PIREP tracking should use the original assigned pilot as the reference."
         )
         await self._expire_claim_messages(
             model,

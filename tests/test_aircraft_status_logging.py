@@ -736,10 +736,11 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             posted = await cog._send_public_recovery_offer(model, row)
 
         self.assertTrue(posted)
-        content = channel.send.await_args.args[0]
-        self.assertIn("<@&321>", content)
-        self.assertIn("A7BAB · QR1302", content)
-        self.assertIn("Any Fleet pilot may claim", content)
+        self.assertEqual(channel.send.await_args.args[0], "<@&321>")
+        description = channel.send.await_args.kwargs["embed"].description
+        self.assertIn("A7BAB", description)
+        self.assertIn("QR1302", description)
+        self.assertIn("Any Fleet pilot may claim", description)
         self.assertEqual(
             model.update_incident.await_args.args[1],
             {"alert_channel_id": "444", "alert_message_id": "555"},
@@ -1106,8 +1107,9 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog._send_public_recovery_offer(model, row)
 
-        self.assertIn("Original pilot: **QRV004**", channel.send.await_args.args[0])
-        self.assertIn("QRV004", channel.send.await_args.kwargs["embed"].description)
+        self.assertEqual(channel.send.await_args.args[0], "<@&321>")
+        self.assertIn("Original pilot: **QRV004**", channel.send.await_args.kwargs["embed"].description)
+        self.assertIn("A7BAB", channel.send.await_args.kwargs["embed"].description)
 
     async def test_eta_warning_uses_aircraft_registration_not_flight_number(self):
         cog, bot = self.make_cog(MagicMock())
