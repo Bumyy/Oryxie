@@ -371,6 +371,29 @@ def _nearest_airport_icao(bot, position):
     return nearest_icao if nearest_distance <= 25 else None
 
 
+def _status_priority(status_text: str) -> int:
+    """Return priority for status deduplication; active states take precedence over parked states."""
+    if not status_text:
+        return 0
+    if status_text.startswith("ENROUTE"):
+        return 100
+    if status_text.startswith("STOPPED IN AIR"):
+        return 90
+    if status_text.startswith("TAXIING"):
+        return 80
+    if status_text.startswith("LANDED"):
+        return 70
+    if status_text.startswith("PARKED AT"):
+        return 50
+    if status_text.startswith("PARKED") and "LOCATION UNKNOWN" not in status_text:
+        return 30
+    if "LOCATION UNKNOWN" in status_text:
+        return 20
+    if status_text.startswith("MAINTENANCE"):
+        return 10
+    return 5
+
+
 def _aircraft_status_text(bot, position, schedules, previous_status=None):
     try:
         state = int(_get(position, "state", -1))
@@ -398,12 +421,13 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
     except (TypeError, ValueError):
         speed = 0.0
 
-    # Hysteresis: an aircraft that has already landed or parked cannot flip back to
-    # ENROUTE on the same leg while its ground speed is under 60 kts (normal taxi speed)
-    if previous_status and previous_status.startswith(("LANDED", "PARKED")) and speed < 60:
-        on_ground = True
-        if state == int(AircraftPersistenceState.IN_FLIGHT):
-            state = int(AircraftPersistenceState.ON_GROUND)
+    # Ground check: airliners do not fly under 50 knots.
+    # An aircraft on the ground with speed < 60 kts cannot be ENROUTE.
+    if on_ground or speed < 60:
+        if speed < 60:
+            on_ground = True
+            if state == int(AircraftPersistenceState.IN_FLIGHT):
+                state = int(AircraftPersistenceState.ON_GROUND)
 
     if state == int(AircraftPersistenceState.MAINTENANCE):
         return "MAINTENANCE"
@@ -415,7 +439,9 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
         )
     if taxiing_flight:
         return _schedule_status_text("TAXIING", taxiing_flight)
-    if not on_ground or state == int(AircraftPersistenceState.IN_FLIGHT):
+    if not on_ground:
+        return _schedule_status_text("ENROUTE", current_flight)
+    if state == int(AircraftPersistenceState.IN_FLIGHT) and speed >= 60:
         return _schedule_status_text("ENROUTE", current_flight)
 
     airport = _nearest_airport_icao(bot, position)
@@ -466,6 +492,41 @@ def _aircraft_status_text(bot, position, schedules, previous_status=None):
             if prev_airport and prev_airport != "LOCATION":
                 airport = prev_airport
         return f"PARKED AT {airport}" if airport else "PARKED"
+    # Anti-flap hysteresis for stationary parked aircraft:
+    # A stationary aircraft on the ground (speed < 5 kts) cannot hop between airports
+    # without an active taxiing or enroute flight.
+    if previous_status and previous_status.startswith("PARKED"):
+        if on_ground and speed < 5.0 and not current_flight and not taxiing_flight:
+            if previous_status.startswith("PARKED AT "):
+                prev_airport = (
+                    previous_status.split("PARKED AT ", 1)[1]
+                    .split(" · ", 1)[0]
+                    .split(" ", 1)[0]
+                    .strip()
+                    .upper()
+                )
+                if prev_airport and prev_airport != "LOCATION":
+                    if not airport or airport == prev_airport:
+                        return f"PARKED AT {prev_airport}"
+                    # Allow minor GPS coordinate drift near airport perimeter (<= 35 NM)
+                    airports_db = getattr(getattr(bot, "flightdata", None), "airports_db", None) or {}
+                    prev_ap_data = airports_db.get(prev_airport)
+                    if prev_ap_data:
+                        try:
+                            d_prev = _distance_nm(
+                                float(_get(position, "latitude")),
+                                float(_get(position, "longitude")),
+                                float(prev_ap_data["latitude_deg"]),
+                                float(prev_ap_data["longitude_deg"]),
+                            )
+                            if d_prev <= 35.0:
+                                return f"PARKED AT {prev_airport}"
+                        except (KeyError, TypeError, ValueError):
+                            pass
+                    # If ground speed is 0.0 and no active movement, suppress position flapping
+                    if speed == 0.0:
+                        return f"PARKED AT {prev_airport}"
+
     if airport:
         return f"PARKED AT {airport}"
     if previous_status and previous_status.startswith("PARKED AT "):
@@ -1760,15 +1821,23 @@ class StoppedFlightMonitor(commands.Cog):
             return {}
 
         previous_statuses = await model.get_aircraft_statuses()
+        previous_by_reg = {}
+        if hasattr(model, "get_aircraft_statuses_by_reg"):
+            try:
+                previous_by_reg = await model.get_aircraft_statuses_by_reg()
+            except Exception:
+                log.exception("Could not load previous aircraft statuses by registration.")
+
         current_statuses = {}
+        reg_to_aid = {}
         positions = position_cache if position_cache is not None else {}
         expected_aircraft_ids = {
-            str(_get(aircraft, "id") or "")
+            str(_get(aircraft, "id") or _get(aircraft, "aircraft_id") or "")
             for aircraft in fleet or []
-            if _get(aircraft, "id")
+            if _get(aircraft, "id") or _get(aircraft, "aircraft_id")
         }
         for aircraft in fleet or []:
-            aircraft_id = str(_get(aircraft, "id") or "")
+            aircraft_id = str(_get(aircraft, "id") or _get(aircraft, "aircraft_id") or "")
             if not aircraft_id:
                 continue
             position = positions.get(aircraft_id)
@@ -1785,15 +1854,32 @@ class StoppedFlightMonitor(commands.Cog):
             registration = str(
                 _get(aircraft, "registration") or "Unknown aircraft"
             )
-            current_statuses[aircraft_id] = (
-                registration,
-                _aircraft_status_text(
-                    self.bot,
-                    position,
-                    schedules_by_aircraft.get(aircraft_id, []),
-                    previous_status=previous_statuses.get(aircraft_id),
-                ),
+            norm_reg = registration.replace("-", "").strip().upper()
+            prev_status = previous_statuses.get(aircraft_id)
+            if prev_status is None and norm_reg in previous_by_reg:
+                prev_status = previous_by_reg[norm_reg]
+
+            status_text = _aircraft_status_text(
+                self.bot,
+                position,
+                schedules_by_aircraft.get(aircraft_id, []),
+                previous_status=prev_status,
             )
+
+            if not norm_reg or norm_reg == "UNKNOWNAIRCRAFT":
+                current_statuses[aircraft_id] = (registration, status_text)
+                continue
+
+            if norm_reg not in reg_to_aid:
+                reg_to_aid[norm_reg] = aircraft_id
+                current_statuses[aircraft_id] = (registration, status_text)
+            else:
+                existing_aid = reg_to_aid[norm_reg]
+                _, existing_status = current_statuses[existing_aid]
+                if _status_priority(status_text) > _status_priority(existing_status):
+                    del current_statuses[existing_aid]
+                    reg_to_aid[norm_reg] = aircraft_id
+                    current_statuses[aircraft_id] = (registration, status_text)
 
         if not getattr(self, "_status_log_initialized", False):
             for aircraft_id, (registration, status_text) in current_statuses.items():
@@ -1825,12 +1911,14 @@ class StoppedFlightMonitor(commands.Cog):
                 )
             return positions
 
-        changed = [
-            (aircraft_id, registration, status_text)
-            for aircraft_id, (registration, status_text) in current_statuses.items()
-            if aircraft_id not in previous_statuses
-            or previous_statuses[aircraft_id] != status_text
-        ]
+        changed = []
+        for aircraft_id, (registration, status_text) in current_statuses.items():
+            norm_reg = registration.replace("-", "").strip().upper()
+            prev_status = previous_statuses.get(aircraft_id)
+            if prev_status is None and norm_reg in previous_by_reg:
+                prev_status = previous_by_reg[norm_reg]
+            if prev_status is None or prev_status != status_text:
+                changed.append((aircraft_id, registration, status_text))
         if not changed:
             return positions
 
@@ -1854,16 +1942,13 @@ class StoppedFlightMonitor(commands.Cog):
             )
             crew = _crew_members(schedule) if schedule else []
             pilot = None
-            if_user_ids = list(
-                dict.fromkeys(
-                    if_user_id
-                    for if_user_id in (
-                        *(_crew_user_id(member) for member in crew),
-                        str(_get(positions[aircraft_id], "last_pilot_id") or "").strip(),
-                    )
-                    if if_user_id
-                )
-            )
+            candidate_uids = [_crew_user_id(member) for member in crew]
+            # Only fall back to last_pilot_id for active flights, landings, or when an active schedule exists
+            if not candidate_uids and not status_text.startswith("PARKED"):
+                last_pid = str(_get(positions.get(aircraft_id), "last_pilot_id") or "").strip()
+                if last_pid:
+                    candidate_uids.append(last_pid)
+            if_user_ids = list(dict.fromkeys(u for u in candidate_uids if u))
             for if_user_id in if_user_ids:
                 if if_user_id not in pilot_cache:
                     try:
@@ -1891,10 +1976,21 @@ class StoppedFlightMonitor(commands.Cog):
             )
             resolved_pilots[aircraft_id] = (schedule, pilot)
 
+        # Guarantee no duplicate registration entries in the output post
+        seen_reg_norm = set()
+        unique_changed = []
+        for entry in changed:
+            aircraft_id, registration, status_text = entry
+            norm = registration.replace("-", "").strip().upper()
+            if norm in seen_reg_norm:
+                continue
+            seen_reg_norm.add(norm)
+            unique_changed.append(entry)
+
         chunks = []
         current_entries = []
         current_length = 0
-        for entry in changed:
+        for entry in unique_changed:
             aircraft_id, registration, status_text = entry
             line = rendered_lines[aircraft_id]
             if current_entries and current_length + len(line) + 1 > 1800:
