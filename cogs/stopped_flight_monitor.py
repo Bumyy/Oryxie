@@ -198,6 +198,42 @@ def _distance_nm(lat1, lon1, lat2, lon2):
     return 2 * radius_nm * math.asin(math.sqrt(min(1.0, value)))
 
 
+# OLD CODE:
+# def _flight_progress(bot, position, destination_icao):
+#     airports = getattr(getattr(bot, "flightdata", None), "airports_db", None)
+#     if not airports:
+#         return None, None
+#     airport = airports.get(str(destination_icao or "").strip().upper())
+#     if not airport:
+#         return None, None
+#     try:
+#         distance = _distance_nm(
+#             float(_get(position, "latitude")),
+#             float(_get(position, "longitude")),
+#             float(airport["latitude_deg"]),
+#             float(airport["longitude_deg"]),
+#         )
+#         speed = float(_get(position, "speed"))
+#     except (KeyError, TypeError, ValueError):
+#         return None, None
+#     if speed <= 30:
+#         return distance, None
+#     return distance, distance * 60 / speed
+
+# NEW CODE: Direction-aware and climb-aware flight progress & ETA
+def _initial_bearing(lat1, lon1, lat2, lon2):
+    r_lat1, r_lon1, r_lat2, r_lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlon = r_lon2 - r_lon1
+    x = math.sin(dlon) * math.cos(r_lat2)
+    y = math.cos(r_lat1) * math.sin(r_lat2) - (math.sin(r_lat1) * math.cos(r_lat2) * math.cos(dlon))
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _bearing_diff(b1, b2):
+    diff = abs(b1 - b2) % 360.0
+    return 360.0 - diff if diff > 180.0 else diff
+
+
 def _flight_progress(bot, position, destination_icao):
     airports = getattr(getattr(bot, "flightdata", None), "airports_db", None)
     if not airports:
@@ -206,17 +242,41 @@ def _flight_progress(bot, position, destination_icao):
     if not airport:
         return None, None
     try:
-        distance = _distance_nm(
-            float(_get(position, "latitude")),
-            float(_get(position, "longitude")),
-            float(airport["latitude_deg"]),
-            float(airport["longitude_deg"]),
-        )
+        dest_lat = float(airport["latitude_deg"])
+        dest_lon = float(airport["longitude_deg"])
+        pos_lat = float(_get(position, "latitude"))
+        pos_lon = float(_get(position, "longitude"))
+        distance = _distance_nm(pos_lat, pos_lon, dest_lat, dest_lon)
         speed = float(_get(position, "speed"))
     except (KeyError, TypeError, ValueError):
         return None, None
     if speed <= 30:
         return distance, None
+
+    # Direction check: If the aircraft has a valid heading and is flying away from
+    # the destination airport (bearing difference > 75 degrees), it is outbound/departing,
+    # not arriving.
+    heading = _get(position, "heading")
+    if heading is not None:
+        try:
+            h_val = float(heading)
+            b_val = _initial_bearing(pos_lat, pos_lon, dest_lat, dest_lon)
+            if _bearing_diff(h_val, b_val) > 75.0:
+                # Flying away from destination airport
+                return distance, None
+        except (TypeError, ValueError):
+            pass
+
+    # Climb check: If the aircraft is actively climbing (vertical speed > 300 fpm),
+    # it is departing/in climb phase, not on approach or at top of descent.
+    v_spd = _get(position, "vertical_speed")
+    if v_spd is not None:
+        try:
+            if float(v_spd) > 300.0:
+                return distance, None
+        except (TypeError, ValueError):
+            pass
+
     return distance, distance * 60 / speed
 
 
