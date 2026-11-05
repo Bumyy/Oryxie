@@ -16,6 +16,7 @@ TEST_STATUS_LOG_CHANNEL_ID = 123456789
 class AircraftStatusModel:
     def __init__(self, statuses):
         self.statuses = statuses
+        self.statuses_by_reg = {}
         self.updates = []
 
     async def has_aircraft_status_table(self):
@@ -24,9 +25,14 @@ class AircraftStatusModel:
     async def get_aircraft_statuses(self):
         return self.statuses.copy()
 
+    async def get_aircraft_statuses_by_reg(self):
+        return self.statuses_by_reg.copy()
+
     async def set_aircraft_status(self, aircraft_id, registration, status_text):
         self.updates.append((aircraft_id, registration, status_text))
         self.statuses[aircraft_id] = status_text
+        norm = registration.replace("-", "").strip().upper()
+        self.statuses_by_reg[norm] = status_text
         return 1
 
 
@@ -736,10 +742,11 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             posted = await cog._send_public_recovery_offer(model, row)
 
         self.assertTrue(posted)
-        content = channel.send.await_args.args[0]
-        self.assertIn("<@&321>", content)
-        self.assertIn("A7BAB · QR1302", content)
-        self.assertIn("Any Fleet pilot may claim", content)
+        self.assertEqual(channel.send.await_args.args[0], "<@&321>")
+        description = channel.send.await_args.kwargs["embed"].description
+        self.assertIn("A7BAB", description)
+        self.assertIn("QR1302", description)
+        self.assertIn("Any Fleet pilot may claim", description)
         self.assertEqual(
             model.update_incident.await_args.args[1],
             {"alert_channel_id": "444", "alert_message_id": "555"},
@@ -1106,8 +1113,9 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog._send_public_recovery_offer(model, row)
 
-        self.assertIn("Original pilot: **QRV004**", channel.send.await_args.args[0])
-        self.assertIn("QRV004", channel.send.await_args.kwargs["embed"].description)
+        self.assertEqual(channel.send.await_args.args[0], "<@&321>")
+        self.assertIn("Original pilot: **QRV004**", channel.send.await_args.kwargs["embed"].description)
+        self.assertIn("A7BAB", channel.send.await_args.kwargs["embed"].description)
 
     async def test_eta_warning_uses_aircraft_registration_not_flight_number(self):
         cog, bot = self.make_cog(MagicMock())
@@ -1413,6 +1421,140 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             message_text,
         )
         self.assertNotIn("Live Admin", message_text)
+
+
+
+    async def test_duplicate_registration_in_fleet_is_deduplicated_and_posted_once(self):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        cog, bot = self.make_cog(channel)
+        model = AircraftStatusModel({})
+        
+        # Two fleet objects with same registration (one with hyphen, one without)
+        ac1 = {"id": "aid-1", "registration": "A7-ANG"}
+        ac2 = {"id": "aid-2", "registration": "A7ANG"}
+        pos1 = {"state": 1, "is_on_ground": True, "speed": 0.0, "latitude": 25.0, "longitude": 51.0}
+        pos2 = {"state": 1, "is_on_ground": True, "speed": 0.0, "latitude": 25.0, "longitude": 51.0}
+
+        positions = {"aid-1": pos1, "aid-2": pos2}
+
+        with patch("cogs.stopped_flight_monitor.asyncio.sleep", new_callable=AsyncMock):
+            await cog._log_fleet_status_changes(
+                MagicMock(),
+                model,
+                [ac1, ac2],
+                {"aid-1": [], "aid-2": []},
+                position_cache=positions,
+            )
+
+        channel.send.assert_awaited_once()
+        msg = channel.send.await_args.args[0]
+        # Registration should appear exactly once in the message
+        lines = [line for line in msg.splitlines() if "A7" in line]
+        self.assertEqual(len(lines), 1, f"Expected 1 line but got: {lines}")
+
+    def test_stationary_ground_plane_with_persistence_in_flight_state_does_not_flip_to_enroute(self):
+        position = {
+            "state": 2,  # IF API persistence IN_FLIGHT
+            "is_on_ground": True,
+            "speed": 0.0,
+            "latitude": 25.0,
+            "longitude": 51.0,
+        }
+        flight = {
+            "status": 6,
+            "sequence": 1,
+            "callsign": "QR136",
+            "destination_icao": "OTHH",
+            "origin_icao": "EGCC",
+        }
+        status = _aircraft_status_text(
+            MagicMock(),
+            position,
+            [flight],
+            previous_status="PARKED AT OTHH",
+        )
+        self.assertNotIn("ENROUTE", status)
+        self.assertIn("PARKED", status)
+
+    async def test_parked_aircraft_without_crew_does_not_attribute_stale_last_pilot_id(self):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        cog, bot = self.make_cog(channel)
+        model = AircraftStatusModel({})
+        
+        ac = {"id": "aid-parked", "registration": "A7-BAJ"}
+        pos = {
+            "state": 1,
+            "is_on_ground": True,
+            "speed": 0.0,
+            "latitude": 25.0,
+            "longitude": 51.0,
+            "last_pilot_id": "old-pilot-user",
+        }
+
+        with patch("cogs.stopped_flight_monitor.asyncio.sleep", new_callable=AsyncMock):
+            await cog._log_fleet_status_changes(
+                MagicMock(),
+                model,
+                [ac],
+                {"aid-parked": []},  # No crewed schedule
+                position_cache={"aid-parked": pos},
+            )
+
+        channel.send.assert_awaited_once()
+        msg = channel.send.await_args.args[0]
+        # Parked message should not attribute a pilot who flew it in the past
+        self.assertNotIn("by <@", msg)
+
+    def test_parked_aircraft_does_not_flap_to_another_airport_when_speed_is_zero(self):
+        bot = MagicMock()
+        bot.flightdata.airports_db = {
+            "OTHH": {"latitude_deg": 25.27, "longitude_deg": 51.61},
+            "YSSY": {"latitude_deg": -33.95, "longitude_deg": 151.18},
+        }
+        # Position telemetry suddenly jumped/interpolated to Sydney coordinates,
+        # but the aircraft has ground speed 0.0 and no active flight leg.
+        position_drift = {
+            "state": 1,
+            "is_on_ground": True,
+            "speed": 0.0,
+            "latitude": -33.95,
+            "longitude": 151.18,
+        }
+        status = _aircraft_status_text(
+            bot,
+            position_drift,
+            [],
+            previous_status="PARKED AT OTHH",
+        )
+        # Should stay PARKED AT OTHH due to anti-flap hysteresis
+        self.assertEqual(status, "PARKED AT OTHH")
+
+    async def test_duplicate_registration_different_uuid_in_db_does_not_post_as_changed(self):
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        cog, bot = self.make_cog(channel)
+        # In DB, A7-ANG is already stored as PARKED AT OTHH under old UUID 'aid-1'
+        model = AircraftStatusModel({"aid-1": "PARKED AT OTHH"})
+        model.statuses_by_reg["A7ANG"] = "PARKED AT OTHH"
+
+        # Now fleet returns UUID 'aid-2' for A7-ANG
+        ac = {"id": "aid-2", "registration": "A7-ANG"}
+        pos = {"state": 1, "is_on_ground": True, "speed": 0.0, "latitude": 25.27, "longitude": 51.61}
+        bot.flightdata.airports_db = {"OTHH": {"latitude_deg": 25.27, "longitude_deg": 51.61}}
+
+        with patch("cogs.stopped_flight_monitor.asyncio.sleep", new_callable=AsyncMock):
+            await cog._log_fleet_status_changes(
+                MagicMock(),
+                model,
+                [ac],
+                {"aid-2": []},
+                position_cache={"aid-2": pos},
+            )
+
+        # Status has not changed; message must NOT be posted!
+        channel.send.assert_not_awaited()
 
 
 if __name__ == "__main__":

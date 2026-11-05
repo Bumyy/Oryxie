@@ -674,6 +674,103 @@ class LiveFleetStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(pos_dict["latitude"], 25.27)
         self.assertAlmostEqual(pos_dict["longitude"], 51.56)
 
+    async def test_multi_aircraft_pilot_prioritizes_route_corridor_and_does_not_steal_ground_aircraft(self):
+        v3_manager = MagicMock()
+        client = AsyncMock()
+        client_ctx = MagicMock()
+        client_ctx.__aenter__ = AsyncMock(return_value=client)
+        client_ctx.__aexit__ = AsyncMock(return_value=None)
+        v3_manager.get_client = AsyncMock(return_value=client_ctx)
+
+        # Pilot 'pilot-1' has 2 aircraft: A7-APE (Parked at OTHH) and A7-BCA (Airborne YSSY->OTHH)
+        client.list_organization_aircraft.return_value = [
+            IFAircraft(
+                id="ac-ape",
+                aircraft_id="type-350",
+                organization_id="org-1",
+                registration="A7-APE",
+                status=0,
+                visibility=1,
+            ),
+            IFAircraft(
+                id="ac-bca",
+                aircraft_id="type-350",
+                organization_id="org-1",
+                registration="A7-BCA",
+                status=0,
+                visibility=1,
+            ),
+        ]
+
+        ape_schedules = [
+            {"id": "sch-ape", "aircraft_id": "ac-ape", "callsign": "QR100", "origin_icao": "OTHH", "destination_icao": "EGLL", "status": 1, "crew": [{"userId": "pilot-1"}]},
+        ]
+        bca_schedules = [
+            {"id": "sch-bca", "aircraft_id": "ac-bca", "callsign": "QR909", "origin_icao": "YSSY", "destination_icao": "OTHH", "status": 6, "crew": [{"userId": "pilot-1"}]},
+        ]
+        client.list_organization_schedules.return_value = SimpleNamespace(
+            items=ape_schedules + bca_schedules,
+            total_pages=1,
+        )
+
+        client.get_aircraft_position.side_effect = lambda aid: IFAircraftPosition(
+            id=aid,
+            latitude=25.27 if aid == "ac-ape" else -15.0,
+            longitude=51.61 if aid == "ac-ape" else 110.0,
+            altitude=0.0 if aid == "ac-ape" else 37000.0,
+            heading=0.0 if aid == "ac-ape" else 300.0,
+            speed=0.0 if aid == "ac-ape" else 480.0,
+            vertical_speed=0.0,
+            state=1 if aid == "ac-ape" else 2,
+            is_on_ground=True if aid == "ac-ape" else False,
+            last_pilot_id="pilot-1",
+            last_pilot_username="PilotOne",
+        )
+
+        v2_api = AsyncMock()
+        v2_api.get_sessions.return_value = {"result": [{"id": "session-expert", "name": "Expert Server"}]}
+        v2_api.get_flight_route.return_value = {"result": []}
+        # Pilot flying multiplayer flight with callsign QRV424 (different callsign, so falls to Pass 2)
+        # Position is along the YSSY->OTHH corridor
+        v2_api.get_flights.return_value = {
+            "result": [
+                {
+                    "flightId": "flight-bca-live",
+                    "userId": "pilot-1",
+                    "callsign": "QRV424",
+                    "username": "PilotOne",
+                    "aircraftId": "type-350",
+                    "latitude": -15.0,
+                    "longitude": 110.0,
+                    "altitude": 37000.0,
+                    "speed": 480.0,
+                    "heading": 300.0,
+                    "verticalSpeed": 0.0,
+                }
+            ]
+        }
+
+        service = LiveFleetService(v3_manager, v2_api=v2_api)
+        snapshot = await service.get_live_fleet("org-1")
+
+        ac_ape = snapshot.get("A7-APE")
+        ac_bca = snapshot.get("A7-BCA")
+
+        self.assertIsNotNone(ac_ape)
+        self.assertIsNotNone(ac_bca)
+
+        # A7-BCA must match the live flight because it's airborne along the corridor
+        self.assertTrue(ac_bca.is_in_multiplayer)
+        self.assertTrue(ac_bca.is_actively_flying)
+        self.assertEqual(ac_bca.v2_flight_id, "flight-bca-live")
+
+        # A7-APE is parked on the ground at OTHH and must NOT be stolen
+        self.assertFalse(ac_ape.is_in_multiplayer)
+        self.assertFalse(ac_ape.is_actively_flying)
+        self.assertTrue(ac_ape.is_parked)
+        self.assertTrue(ac_ape.is_on_ground)
+        self.assertIsNone(ac_ape.v2_flight_id)
+
 
 if __name__ == "__main__":
     unittest.main()

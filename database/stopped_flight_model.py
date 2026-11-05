@@ -208,12 +208,32 @@ class StoppedFlightModel:
             for row in rows or []
         }
 
+    async def get_aircraft_statuses_by_reg(self) -> dict[str, str]:
+        rows = await self.db.fetch_all(
+            "SELECT registration, status_text FROM if_aircraft_status_logs"
+        )
+        return {
+            str(row["registration"]).replace("-", "").strip().upper(): str(row["status_text"])
+            for row in rows or []
+            if row.get("registration")
+        }
+
     async def set_aircraft_status(
         self,
         aircraft_id: str,
         registration: str,
         status_text: str,
     ) -> int:
+        norm_reg = registration.replace("-", "").strip().upper()
+        # Synchronize any existing duplicate rows for this normalized registration
+        await self.db.execute(
+            """
+            UPDATE if_aircraft_status_logs
+            SET status_text = %s
+            WHERE REPLACE(registration, '-', '') = %s
+            """,
+            (status_text, norm_reg),
+        )
         return await self.db.execute(
             """
             INSERT INTO if_aircraft_status_logs

@@ -1,5 +1,8 @@
 # Oryxie, the Qatari Virtual Bot Setup Guide
 
+> 📚 **Technical Documentation Hub**: Explore the complete architecture, directory breakdown, boundaries, and API guides in [docs/](./docs/README.md).
+> 🤖 **AI Agents**: Please read [AGENTS.md](./AGENTS.md) for repo-specific rules, layer boundaries, and coding standards before making changes.
+
 ---
 
 ## 1. Install Required Tools

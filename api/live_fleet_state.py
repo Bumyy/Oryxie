@@ -262,6 +262,11 @@ class LiveAircraftState:
     fleet_rank: int = 0
     is_fleet_active_slot: bool = True
 
+    @property
+    def id(self) -> str:
+        """Alias for aircraft_id to ensure compatibility with IFAircraft."""
+        return self.aircraft_id
+
     # Position telemetry (consolidated from v3 or v2)
     is_on_ground: bool = True
     latitude: float = 0.0
@@ -813,10 +818,14 @@ class LiveFleetService:
                         ac_assigned_uids.add(ac_last_pilot_uid)
 
                     flight = None
+                    ac_content_id = str(ac.aircraft_id or "").strip()
                     for token in reg_tokens:
                         for cand in v2_by_callsign.get(token, []):
                             cand_id = cand.get("flightId")
                             if not cand_id or cand_id in claimed_v2_flight_ids:
+                                continue
+                            cand_ac_type = str(cand.get("aircraftId") or "").strip()
+                            if cand_ac_type and ac_content_id and cand_ac_type != ac_content_id:
                                 continue
                             cand_uid = str(cand.get("userId") or "").strip()
                             if ac_assigned_uids and cand_uid not in ac_assigned_uids:
@@ -848,6 +857,9 @@ class LiveFleetService:
                             for cand in v2_by_callsign.get(tok, []):
                                 cand_id = cand.get("flightId")
                                 if not cand_id or cand_id in claimed_v2_flight_ids:
+                                    continue
+                                cand_ac_type = str(cand.get("aircraftId") or "").strip()
+                                if cand_ac_type and ac_content_id and cand_ac_type != ac_content_id:
                                     continue
                                 cand_uid = str(cand.get("userId") or "").strip()
                                 # If the schedule is crewed, candidate MUST be the assigned crew member!
@@ -889,11 +901,13 @@ class LiveFleetService:
                             m_uid = str(member.get("userId") if isinstance(member, dict) else getattr(member, "userId", "") or "").strip()
                             if m_uid:
                                 uids.add(m_uid)
-                    pos = v3_positions.get(ac_id)
-                    if not uids and pos and pos.last_pilot_id:
-                        p_uid = str(pos.last_pilot_id).strip()
-                        if p_uid:
-                            uids.add(p_uid)
+                    # OLD CODE:
+                    # pos = v3_positions.get(ac_id)
+                    # if not uids and pos and pos.last_pilot_id:
+                    #     p_uid = str(pos.last_pilot_id).strip()
+                    #     if p_uid:
+                    #         uids.add(p_uid)
+                    # NEW CODE: Do not fall back to last_pilot_id for unassigned aircraft in Pass 2 to prevent hijacking casual flights
                     ac_pilot_map[ac_id] = uids
 
                 for cand in unclaimed_flights:
@@ -930,36 +944,72 @@ class LiveFleetService:
                         reg = str(ac.registration or "Unknown").strip().upper()
                         reg_tokens = clean_callsign_tokens(reg)
 
-                        # Hard contradiction: callsign starts with A7 but is a different registration
+                        # OLD CODE:
+                        # # Hard contradiction: callsign starts with A7 but is a different registration
+                        # if cand_cs.startswith("A7") and not cand_tokens.intersection(reg_tokens):
+                        #     continue
+                        # NEW CODE: Strict callsign and origin validation to prevent claiming non-VA or casual flights:
                         if cand_cs.startswith("A7") and not cand_tokens.intersection(reg_tokens):
                             continue
+
+                        # Check if callsign matches registration, assigned schedule callsign, or authorized airline prefix
+                        ac_schedules = schedules_by_aircraft.get(ac_id, [])
+                        matches_schedule_cs = any(
+                            cand_tokens.intersection(clean_callsign_tokens(sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "") or ""))
+                            for sch in ac_schedules
+                        )
+                        matches_reg = bool(cand_tokens.intersection(reg_tokens))
+                        is_va_prefix = any(cand_cs.startswith(p) for p in ("QTR", "QRV", "QR", "QATAR", "A7", "IF"))
+
+                        # Disqualify flights flying under unrelated airlines (e.g. Air India 'AIC', Emirates 'UAE', etc.)
+                        if not matches_reg and not matches_schedule_cs and not is_va_prefix:
+                            continue
+
+                        # Origin airport geofence check:
+                        # An aircraft scheduled to depart from origin_icao cannot be claimed if the flight took off
+                        # far away from the origin airport (e.g. taking off in India VAAH when departing Doha OTHH).
+                        if _AIRPORTS_DB and ac_schedules:
+                            orig_mismatch = False
+                            for sch in ac_schedules:
+                                o_icao = str(sch.get("origin_icao") if isinstance(sch, dict) else getattr(sch, "origin_icao", "") or "").strip().upper()
+                                if o_icao and o_icao in _AIRPORTS_DB:
+                                    o_data = _AIRPORTS_DB[o_icao]
+                                    d_orig = _haversine_nm(cand_lat, cand_lon, float(o_data["lat"]), float(o_data["lon"]))
+                                    if cand_alt < 25000 and d_orig > 250.0:
+                                        orig_mismatch = True
+                                        break
+                            if orig_mismatch:
+                                continue
 
                         score = 20  # Base match for pilot ID
 
                         # 1. Aircraft Model / Livery match
                         ac_content_id = str(ac.aircraft_id or "").strip()
-                        if ac_content_id and (cand_aircraft_type or cand_livery_id):
-                            if ac_content_id in (cand_aircraft_type, cand_livery_id):
-                                score += 150  # Strong model / livery match
-                            elif cand_aircraft_type and cand_livery_id and ac_content_id not in (cand_aircraft_type, cand_livery_id):
-                                score -= 150  # Different aircraft model penalty
+                        if ac_content_id:
+                            if cand_aircraft_type:
+                                if ac_content_id == cand_aircraft_type:
+                                    score += 200  # Exact 3D model match
+                                else:
+                                    score -= 300  # Strong model mismatch penalty (e.g. 787 vs 350)
+                            elif cand_livery_id and ac_content_id == cand_livery_id:
+                                score += 200
 
                         # 2. Airborne vs Ground match
                         if pos:
-                            pos_is_ground = bool(pos.is_on_ground)
+                            pos_speed = float(getattr(pos, "speed", 0.0) or 0.0)
+                            pos_is_ground = bool(pos.is_on_ground) or pos_speed < 50.0
                             pos_state = int(pos.state)
-                            pos_airborne = not pos_is_ground or pos_state in {
-                                int(AircraftPersistenceState.IN_FLIGHT),
-                                int(AircraftPersistenceState.STOPPED),
-                            }
+                            pos_airborne = not pos_is_ground and pos_speed >= 50.0
                             if is_cand_airborne:
                                 if pos_airborne:
-                                    score += 100  # Both airborne
-                                elif pos_is_ground or pos_state == int(AircraftPersistenceState.ON_GROUND):
-                                    score -= 150  # Cruising flight should never match a parked ground aircraft
+                                    score += 150  # Both airborne
+                                elif pos_is_ground:
+                                    score -= 400  # Cruising flight should never steal a parked ground aircraft
                             else:
                                 if pos_is_ground:
-                                    score += 50
+                                    score += 100
+                                elif pos_airborne:
+                                    score -= 200
 
                         # 3. Schedule status and route match
                         ac_schedules = schedules_by_aircraft.get(ac_id, [])
@@ -973,19 +1023,24 @@ class LiveFleetService:
                                 score += 100
                                 break
 
-                        # 4. Schedule callsign token match
-                        for sch in ac_schedules:
-                            s_cs = sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "")
-                            if cand_tokens.intersection(clean_callsign_tokens(s_cs)):
-                                score += 200
-                                break
+                        # 4. Schedule callsign token match & Registration match
+                        if cand_tokens.intersection(reg_tokens):
+                            score += 350
+                        else:
+                            for sch in ac_schedules:
+                                s_cs = sch.get("callsign") if isinstance(sch, dict) else getattr(sch, "callsign", "")
+                                if cand_tokens.intersection(clean_callsign_tokens(s_cs)):
+                                    score += 300
+                                    break
 
                         # 5. Route corridor alignment match (origin -> destination)
                         best_corridor_score = -999.0
+                        has_route = False
                         for sch in ac_schedules:
                             o_icao = sch.get("origin_icao") if isinstance(sch, dict) else getattr(sch, "origin_icao", "")
                             d_icao = sch.get("destination_icao") if isinstance(sch, dict) else getattr(sch, "destination_icao", "")
                             if o_icao and d_icao:
+                                has_route = True
                                 c_score = _route_corridor_score(
                                     cand_lat,
                                     cand_lon,
@@ -998,8 +1053,13 @@ class LiveFleetService:
                                 if c_score > best_corridor_score:
                                     best_corridor_score = c_score
 
-                        if best_corridor_score != -999.0:
-                            score += best_corridor_score
+                        if has_route and best_corridor_score != -999.0:
+                            if best_corridor_score >= 150.0:
+                                score += 300.0  # Strong corridor match
+                            elif best_corridor_score <= -150.0:
+                                score -= 400.0  # Severely off-route penalty
+                            else:
+                                score += best_corridor_score
 
                         if score > best_score:
                             best_score = score
