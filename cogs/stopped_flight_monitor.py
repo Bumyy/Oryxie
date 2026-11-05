@@ -2335,9 +2335,10 @@ class StoppedFlightMonitor(commands.Cog):
                     max_attempts=MAX_ETA_WARNING_ATTEMPTS,
                 )
                 if attempt_started:
+                    target_ids = list(dict.fromkeys([*(crew_ids or []), *(json.loads(row.get("original_crew_json") or "[]") if isinstance(json.loads(row.get("original_crew_json") or "[]"), list) else [])]))
                     sent = await self._send_eta_warning(
                         row,
-                        crew_ids,
+                        target_ids,
                         eta,
                     )
                     if sent:
@@ -3236,6 +3237,56 @@ class StoppedFlightMonitor(commands.Cog):
         selected_hook = _weighted_pick(hook_candidates, hook_target)
         selected = selected_active + selected_hook
         random.shuffle(selected)
+
+        executive_status_sent = 0
+        for if_user_id in sorted(executive_crew_ids):
+            if str(if_user_id) in contacted:
+                continue
+            try:
+                pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(str(if_user_id))
+            except Exception:
+                log.exception(
+                    "Could not look up original Executive pilot for stopped-flight status DM, IF user %s",
+                    if_user_id,
+                )
+                continue
+            discord_id = str((pilot or {}).get("discordid") or "")
+            if not discord_id.isdigit():
+                continue
+            try:
+                user = self.bot.get_user(int(discord_id))
+                if user is None:
+                    user = await self.bot.fetch_user(int(discord_id))
+                message = await user.send(
+                    f"**Executive stopped-flight notice · {row['registration']}**\n"
+                    f"Flight: **{row['callsign']}** ({row['origin_icao']} → {row['destination_icao']})\n"
+                    "You remain assigned because you hold the Executive role. "
+                    "The bot did not unassign you and did not post the public recovery offer. "
+                    "This is a status notice for the stopped-flight recovery process."
+                )
+                executive_status_sent += 1
+                await self._record_dm_event_safely(
+                    model,
+                    schedule_id=row["schedule_id"],
+                    if_user_id=str(if_user_id),
+                    discord_user_id=discord_id,
+                    wave=wave,
+                    channel_id=str(message.channel.id),
+                    message_id=str(message.id),
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                log.warning(
+                    "Could not DM Executive pilot %s about stopped flight %s; continuing.",
+                    if_user_id,
+                    row["schedule_id"],
+                )
+            except Exception:
+                log.exception(
+                    "Unexpected error sending executive status DM for IF user %s on schedule %s",
+                    if_user_id,
+                    row["schedule_id"],
+                )
+
         delivered_recipients = []
         failed_recipients = []
         for candidate in selected:
