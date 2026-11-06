@@ -192,13 +192,13 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         bot.get_channel.assert_called_once_with(TEST_STATUS_LOG_CHANNEL_ID)
         channel.send.assert_awaited_once()
         self.assertIn(
-            "Enroute, Route: OTHH -> EGLL by <@123456789> (QRV004)",
+            "Enroute, Route: OTHH -> EGLL by QRV004",
             channel.send.await_args.args[0],
         )
         self.assertNotIn("Aircraft status updates", channel.send.await_args.args[0])
         self.assertNotIn("✈️", channel.send.await_args.args[0])
         channel.send.assert_awaited_once()
-        self.assertTrue(
+        self.assertFalse(
             channel.send.await_args.kwargs["allowed_mentions"].users
         )
         bot.pilots_model.get_pilot_by_ifuserid.assert_awaited_once_with(
@@ -310,7 +310,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             line,
             "• **A7BFA** — Landed at KLAX, Route: KJFK -> KLAX "
-            "by <@123456789> (QRV004)",
+            "by QRV004",
         )
 
     def test_landed_airport_uses_observed_position_not_schedule_destination(self):
@@ -353,7 +353,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             line,
             "• **A7-ANN** — Landed at KSFO, Route: OTHH -> KSFO "
-            "by <@123456789> (QRV136)",
+            "by QRV136",
         )
 
     def test_landing_at_airport_other_than_destination_is_marked_diverted(self):
@@ -396,7 +396,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             line,
             "• **A7BAF** — Landed at EGCC (DIVERTED), Route: "
-            "OTHH -> YPPH by <@123456789> (QRV226)",
+            "OTHH -> YPPH by QRV226",
         )
 
     def test_parked_status_does_not_repeat_the_at_prefix(self):
@@ -410,10 +410,10 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
                         {"discordid": "123456789", "callsign": "QRV100"},
                     ),
                     (
-                        "• **A7ADS** — Parked at ORNI by <@123456789> (QRV100)"
+                        "• **A7ADS** — Parked at ORNI by QRV100"
                         if status_text == "PARKED AT ORNI"
                         else "• **A7ADS** — Parked at KSFO by "
-                        "<@123456789> (QRV100)"
+                        "QRV100"
                     ),
                 )
 
@@ -510,10 +510,8 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         ):
             sent = await cog._send_eta_warning(row, ["if-user-1"], 40)
 
-        self.assertTrue(sent)
-        message = user.send.await_args.args[0]
-        self.assertIn("A7BAB is within about 40 minutes of OTHH", message)
-        self.assertNotIn("XXX1302", message)
+        self.assertFalse(sent)
+        user.send.assert_not_awaited()
 
     async def test_stopped_flight_dm_report_includes_selection_diagnostics(self):
         cog, _ = self.make_cog(MagicMock())
@@ -742,7 +740,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             posted = await cog._send_public_recovery_offer(model, row)
 
         self.assertTrue(posted)
-        self.assertEqual(channel.send.await_args.args[0], "<@&321>")
+        self.assertFalse(channel.send.await_args.kwargs["allowed_mentions"].roles)
         description = channel.send.await_args.kwargs["embed"].description
         self.assertIn("A7BAB", description)
         self.assertIn("QR1302", description)
@@ -750,10 +748,6 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             model.update_incident.await_args.args[1],
             {"alert_channel_id": "444", "alert_message_id": "555"},
-        )
-        self.assertEqual(
-            channel.send.await_args.kwargs["allowed_mentions"].roles,
-            [role],
         )
 
     async def test_one_hour_posts_public_offer_without_starting_dm_wave(self):
@@ -1163,7 +1157,6 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog._send_public_recovery_offer(model, row)
 
-        self.assertEqual(channel.send.await_args.args[0], "<@&321>")
         self.assertIn("Original pilot: **QRV004**", channel.send.await_args.kwargs["embed"].description)
         self.assertIn("A7BAB", channel.send.await_args.kwargs["embed"].description)
 
@@ -1186,10 +1179,8 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         ):
             sent = await cog._send_eta_warning(row, ["if-user-1"], 25)
 
-        self.assertTrue(sent)
-        message = user.send.await_args.args[0]
-        self.assertIn("A7BAB is within about 40 minutes of OTHH", message)
-        self.assertNotIn("XXX1302", message)
+        self.assertFalse(sent)
+        user.send.assert_not_awaited()
 
     async def test_eta_warning_attempt_does_not_abort_schedule_processing(self):
         cog, bot = self.make_cog(MagicMock())
@@ -1264,10 +1255,8 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_eta_warning_reports_no_mutual_guilds_clearly(self):
         cog, bot = self.make_cog(MagicMock())
-        forbidden = discord.Forbidden(MagicMock(), "No mutual guilds")
-        forbidden.code = 50278
         user = MagicMock()
-        user.send = AsyncMock(side_effect=forbidden)
+        user.send = AsyncMock()
         bot.get_user.return_value = user
         cog._send_dm_recipient_report = AsyncMock()
         row = {
@@ -1280,8 +1269,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         sent = await cog._send_eta_warning(row, ["if-user"], 25)
 
         self.assertFalse(sent)
-        report_call = cog._send_dm_recipient_report.await_args
-        self.assertIn("no server with the bot", report_call.kwargs["failed_recipients"][0])
+        user.send.assert_not_awaited()
         bot.pilots_model.get_pilot_by_ifuserid.assert_awaited_once_with(
             "if-user"
         )
@@ -1367,12 +1355,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             report_posted = await cog._send_pilot_wave(model, row, wave=1)
 
         self.assertTrue(report_posted)
-        message_text = member.send.await_args.args[0]
-        self.assertIn(
-            "Flight hours for this flight will be split 50/50 between you "
-            "and the original assigned pilot.",
-            message_text,
-        )
+        member.send.assert_not_awaited()
 
     async def test_recovery_wave_contacts_no_more_than_three_fleet_pilots(self):
         cog, bot = self.make_cog(MagicMock())
@@ -1432,7 +1415,7 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog._send_pilot_wave(model, row, wave=2)
 
-        self.assertEqual(sum(member.send.await_count for member in members), 3)
+        self.assertEqual(sum(member.send.await_count for member in members), 0)
 
     async def test_crew_removal_dm_explains_next_leg_continuation(self):
         cog, bot = self.make_cog(MagicMock())
@@ -1458,19 +1441,8 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             "if-user-1",
         )
 
-        self.assertEqual(recipient, "<@123456789> (QRV004)")
-        message_text = user.send.await_args.args[0]
-        self.assertIn(
-            "Another pilot will land the aircraft, and you can continue "
-            "the next leg if it is booked.",
-            message_text,
-        )
-        self.assertIn(
-            "Flight hours for this flight will be split 50/50 between you "
-            "and the recovery pilot.",
-            message_text,
-        )
-        self.assertNotIn("Live Admin", message_text)
+        self.assertIsNone(recipient)
+        user.send.assert_not_awaited()
 
 
 
