@@ -668,12 +668,17 @@ def _status_log_line(registration, status_text, schedule, pilot):
     if pilot:
         discord_id = str(pilot.get("discordid") or "").strip()
         callsign = str(pilot.get("callsign") or "").strip()
-        if discord_id:
-            description += f" by <@{discord_id}>"
-            if callsign:
-                description += f" ({callsign})"
-        elif callsign:
+        # Commented out user pings in fleet-logs to avoid spamming users
+        # if discord_id:
+        #     description += f" by <@{discord_id}>"
+        #     if callsign:
+        #         description += f" ({callsign})"
+        # elif callsign:
+        #     description += f" by {callsign}"
+        if callsign:
             description += f" by {callsign}"
+        elif discord_id:
+            description += f" by Pilot ({discord_id})"
 
     return f"• **{registration}** — {description}"
 
@@ -2010,7 +2015,8 @@ class StoppedFlightMonitor(commands.Cog):
             try:
                 await channel.send(
                     content,
-                    allowed_mentions=discord.AllowedMentions(users=True),
+                    # allowed_mentions=discord.AllowedMentions(users=True),
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
             except discord.HTTPException:
                 log.exception("Could not post aircraft status updates.")
@@ -2422,16 +2428,17 @@ class StoppedFlightMonitor(commands.Cog):
                 user = self.bot.get_user(int(discord_id))
                 if user is None:
                     user = await self.bot.fetch_user(int(discord_id))
-                await user.send(
-                    f"**{row['registration']} is within about 40 minutes of "
-                    f"{row['destination_icao']}** (estimated {max(1, round(eta))} min). "
-                    "If the aircraft is stopped in the air, it will be unassigned "
-                    "after one hour stopped."
-                )
-                sent_any = True
-                delivered_recipients.append(
-                    f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
-                )
+                # DM message commented out to avoid spamming users
+                # await user.send(
+                #     f"**{row['registration']} is within about 40 minutes of "
+                #     f"{row['destination_icao']}** (estimated {max(1, round(eta))} min). "
+                #     "If the aircraft is stopped in the air, it will be unassigned "
+                #     "after one hour stopped."
+                # )
+                # sent_any = True
+                # delivered_recipients.append(
+                #     f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
+                # )
             except discord.Forbidden as exc:
                 if getattr(exc, "code", None) == 50278:
                     reason = (
@@ -2649,19 +2656,25 @@ class StoppedFlightMonitor(commands.Cog):
     async def _send_public_recovery_offer(self, model, row):
         if row.get("alert_message_id"):
             return True
-        if not RECOVERY_ALERT_CHANNEL_ID or not RECOVERY_PING_ROLE_ID:
+        if not RECOVERY_ALERT_CHANNEL_ID:
             log.error(
-                "Public stopped-flight offers require recovery channel and role IDs."
+                "Public stopped-flight offers require recovery channel ID."
             )
             return False
-        guild = self.bot.get_guild(GUILD_ID)
-        role = guild.get_role(RECOVERY_PING_ROLE_ID) if guild else None
-        if role is None:
-            log.error(
-                "Cannot post stopped-flight offer: recovery ping role %s is unavailable.",
-                RECOVERY_PING_ROLE_ID,
-            )
-            return False
+        # Role ping commented out to prevent spam in stopped-flights
+        # if not RECOVERY_PING_ROLE_ID:
+        #     log.error(
+        #         "Public stopped-flight offers require recovery channel and role IDs."
+        #     )
+        #     return False
+        # guild = self.bot.get_guild(GUILD_ID)
+        # role = guild.get_role(RECOVERY_PING_ROLE_ID) if guild else None
+        # if role is None:
+        #     log.error(
+        #         "Cannot post stopped-flight offer: recovery ping role %s is unavailable.",
+        #         RECOVERY_PING_ROLE_ID,
+        #     )
+        #     return False
         original_pilot_callsign = await self._original_pilot_callsign(row)
         aircraft_id = str(row.get("aircraft_id") or "").strip()
         aircraft_name = ""
@@ -2707,15 +2720,12 @@ class StoppedFlightMonitor(commands.Cog):
                 ).strip(),
                 color=discord.Color(QATAR_MAROON),
             )
+            # Role ping commented out to prevent spam in stopped-flights
             message = await channel.send(
-                f"<@&{RECOVERY_PING_ROLE_ID}>",
+                # f"<@&{RECOVERY_PING_ROLE_ID}>",
                 embed=embed,
                 view=self._claim_view(str(row["schedule_id"])),
-                allowed_mentions=discord.AllowedMentions(
-                    roles=[role],
-                    users=False,
-                    everyone=False,
-                ),
+                allowed_mentions=discord.AllowedMentions.none(),
             )
             await model.update_incident(
                 row["schedule_id"],
@@ -2832,25 +2842,27 @@ class StoppedFlightMonitor(commands.Cog):
             user = self.bot.get_user(int(discord_id))
             if user is None:
                 user = await self.bot.fetch_user(int(discord_id))
-            message = await user.send(
-                f"**Stopped-flight notice · {row['registration']}**\n"
-                f"Flight: **{row['callsign']}** "
-                f"({row['origin_icao']} → {row['destination_icao']})\n"
-                "The aircraft has been stopped in the air for one hour. "
-                "Because you hold the Executive role, you will remain assigned; "
-                "the bot will not unassign you. Non-Executive crew will be removed, "
-                "and eligible recovery pilots will be notified."
-            )
-            await self._record_dm_event_safely(
-                model,
-                schedule_id=row["schedule_id"],
-                if_user_id=if_user_id,
-                discord_user_id=discord_id,
-                wave=0,
-                channel_id=str(message.channel.id),
-                message_id=str(message.id),
-            )
-            return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
+            # DM message commented out to avoid spamming users
+            # message = await user.send(
+            #     f"**Stopped-flight notice · {row['registration']}**\n"
+            #     f"Flight: **{row['callsign']}** "
+            #     f"({row['origin_icao']} → {row['destination_icao']})\n"
+            #     "The aircraft has been stopped in the air for one hour. "
+            #     "Because you hold the Executive role, you will remain assigned; "
+            #     "the bot will not unassign you. Non-Executive crew will be removed, "
+            #     "and eligible recovery pilots will be notified."
+            # )
+            # await self._record_dm_event_safely(
+            #     model,
+            #     schedule_id=row["schedule_id"],
+            #     if_user_id=if_user_id,
+            #     discord_user_id=discord_id,
+            #     wave=0,
+            #     channel_id=str(message.channel.id),
+            #     message_id=str(message.id),
+            # )
+            # return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
+            return None
         except (discord.Forbidden, discord.HTTPException):
             log.exception(
                 "Stopped-flight Executive warning DM failed for IF user %s.",
@@ -2905,28 +2917,30 @@ class StoppedFlightMonitor(commands.Cog):
             if user is None:
                 user = await self.bot.fetch_user(int(discord_id))
             original_pilot_callsign = await self._original_pilot_callsign(row)
-            message = await user.send(
-                f"Your assignment on "
-                f"**{row['registration']} · {row['callsign']}** "
-                f"({row['origin_icao']} → {row['destination_icao']}) was "
-                "removed because the aircraft remained stopped in the air "
-                "for one hour. Another pilot will land the aircraft, and you can "
-                "continue the next leg if it is booked. "
-                f"The original assigned pilot on this flight was "
-                f"**{original_pilot_callsign or 'Unknown'}**. Flight hours "
-                "for this flight will be split 50/50 between you and the "
-                "recovery pilot."
-            )
-            await self._record_dm_event_safely(
-                model,
-                schedule_id=row["schedule_id"],
-                if_user_id=if_user_id,
-                discord_user_id=discord_id,
-                wave=0,
-                channel_id=str(message.channel.id),
-                message_id=str(message.id),
-            )
-            return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
+            # DM message commented out to avoid spamming users
+            # message = await user.send(
+            #     f"Your assignment on "
+            #     f"**{row['registration']} · {row['callsign']}** "
+            #     f"({row['origin_icao']} → {row['destination_icao']}) was "
+            #     "removed because the aircraft remained stopped in the air "
+            #     "for one hour. Another pilot will land the aircraft, and you can "
+            #     "continue the next leg if it is booked. "
+            #     f"The original assigned pilot on this flight was "
+            #     f"**{original_pilot_callsign or 'Unknown'}**. Flight hours "
+            #     "for this flight will be split 50/50 between you and the "
+            #     "recovery pilot."
+            # )
+            # await self._record_dm_event_safely(
+            #     model,
+            #     schedule_id=row["schedule_id"],
+            #     if_user_id=if_user_id,
+            #     discord_user_id=discord_id,
+            #     wave=0,
+            #     channel_id=str(message.channel.id),
+            #     message_id=str(message.id),
+            # )
+            # return f"<@{discord_id}> ({pilot.get('callsign') or 'Pilot'})"
+            return None
         except (discord.Forbidden, discord.HTTPException):
             log.exception(
                 "Stopped-flight crew notice DM failed after one attempt for "
@@ -3202,33 +3216,34 @@ class StoppedFlightMonitor(commands.Cog):
                     else "The previous crew was removed. "
                 )
                 original_pilot_callsign = await self._original_pilot_callsign(row)
-                message = await member.send(
-                    f"**Stopped flight available now**\n"
-                    f"**{row['registration']} · {row['callsign']}**\n"
-                    f"Original assigned pilot: **{original_pilot_callsign or 'Unknown'}**\n"
-                    f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
-                    "The aircraft has been stopped in the air for at least one "
-                    "hour. "
-                    f"{retained_executive_text}"
-                    "Claiming this recovery "
-                    "flight does **not** count toward your normal two-aircraft "
-                    "booking limit. Flight hours for this flight will be split "
-                    "50/50 between you and the original assigned pilot.",
-                    view=self._claim_view(str(row["schedule_id"])),
-                )
-                delivered_recipients.append(
-                    f"<@{member.id}> ({candidate['pilot'].get('callsign') or 'Pilot'})"
-                )
-                await self._record_dm_event_safely(
-                    model,
-                    schedule_id=row["schedule_id"],
-                    if_user_id=candidate["if_user_id"],
-                    discord_user_id=str(member.id),
-                    wave=wave,
-                    flight_count_7d=candidate["flight_count"],
-                    channel_id=str(message.channel.id),
-                    message_id=str(message.id),
-                )
+                # Recovery DM wave commented out to avoid DM spam
+                # message = await member.send(
+                #     f"**Stopped flight available now**\n"
+                #     f"**{row['registration']} · {row['callsign']}**\n"
+                #     f"Original assigned pilot: **{original_pilot_callsign or 'Unknown'}**\n"
+                #     f"Route: **{row['origin_icao']} → {row['destination_icao']}**\n"
+                #     "The aircraft has been stopped in the air for at least one "
+                #     "hour. "
+                #     f"{retained_executive_text}"
+                #     "Claiming this recovery "
+                #     "flight does **not** count toward your normal two-aircraft "
+                #     "booking limit. Flight hours for this flight will be split "
+                #     "50/50 between you and the original assigned pilot.",
+                #     view=self._claim_view(str(row["schedule_id"])),
+                # )
+                # delivered_recipients.append(
+                #     f"<@{member.id}> ({candidate['pilot'].get('callsign') or 'Pilot'})"
+                # )
+                # await self._record_dm_event_safely(
+                #     model,
+                #     schedule_id=row["schedule_id"],
+                #     if_user_id=candidate["if_user_id"],
+                #     discord_user_id=str(member.id),
+                #     wave=wave,
+                #     flight_count_7d=candidate["flight_count"],
+                #     channel_id=str(message.channel.id),
+                #     message_id=str(message.id),
+                # )
                 try:
                     incident_state = await model.get_incident_state(row["schedule_id"])
                 except Exception:
