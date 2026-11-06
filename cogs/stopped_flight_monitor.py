@@ -198,6 +198,42 @@ def _distance_nm(lat1, lon1, lat2, lon2):
     return 2 * radius_nm * math.asin(math.sqrt(min(1.0, value)))
 
 
+# OLD CODE:
+# def _flight_progress(bot, position, destination_icao):
+#     airports = getattr(getattr(bot, "flightdata", None), "airports_db", None)
+#     if not airports:
+#         return None, None
+#     airport = airports.get(str(destination_icao or "").strip().upper())
+#     if not airport:
+#         return None, None
+#     try:
+#         distance = _distance_nm(
+#             float(_get(position, "latitude")),
+#             float(_get(position, "longitude")),
+#             float(airport["latitude_deg"]),
+#             float(airport["longitude_deg"]),
+#         )
+#         speed = float(_get(position, "speed"))
+#     except (KeyError, TypeError, ValueError):
+#         return None, None
+#     if speed <= 30:
+#         return distance, None
+#     return distance, distance * 60 / speed
+
+# NEW CODE: Direction-aware and climb-aware flight progress & ETA
+def _initial_bearing(lat1, lon1, lat2, lon2):
+    r_lat1, r_lon1, r_lat2, r_lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlon = r_lon2 - r_lon1
+    x = math.sin(dlon) * math.cos(r_lat2)
+    y = math.cos(r_lat1) * math.sin(r_lat2) - (math.sin(r_lat1) * math.cos(r_lat2) * math.cos(dlon))
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _bearing_diff(b1, b2):
+    diff = abs(b1 - b2) % 360.0
+    return 360.0 - diff if diff > 180.0 else diff
+
+
 def _flight_progress(bot, position, destination_icao):
     airports = getattr(getattr(bot, "flightdata", None), "airports_db", None)
     if not airports:
@@ -206,17 +242,41 @@ def _flight_progress(bot, position, destination_icao):
     if not airport:
         return None, None
     try:
-        distance = _distance_nm(
-            float(_get(position, "latitude")),
-            float(_get(position, "longitude")),
-            float(airport["latitude_deg"]),
-            float(airport["longitude_deg"]),
-        )
+        dest_lat = float(airport["latitude_deg"])
+        dest_lon = float(airport["longitude_deg"])
+        pos_lat = float(_get(position, "latitude"))
+        pos_lon = float(_get(position, "longitude"))
+        distance = _distance_nm(pos_lat, pos_lon, dest_lat, dest_lon)
         speed = float(_get(position, "speed"))
     except (KeyError, TypeError, ValueError):
         return None, None
     if speed <= 30:
         return distance, None
+
+    # Direction check: If the aircraft has a valid heading and is flying away from
+    # the destination airport (bearing difference > 75 degrees), it is outbound/departing,
+    # not arriving.
+    heading = _get(position, "heading")
+    if heading is not None:
+        try:
+            h_val = float(heading)
+            b_val = _initial_bearing(pos_lat, pos_lon, dest_lat, dest_lon)
+            if _bearing_diff(h_val, b_val) > 75.0:
+                # Flying away from destination airport
+                return distance, None
+        except (TypeError, ValueError):
+            pass
+
+    # Climb check: If the aircraft is actively climbing (vertical speed > 300 fpm),
+    # it is departing/in climb phase, not on approach or at top of descent.
+    v_spd = _get(position, "vertical_speed")
+    if v_spd is not None:
+        try:
+            if float(v_spd) > 300.0:
+                return distance, None
+        except (TypeError, ValueError):
+            pass
+
     return distance, distance * 60 / speed
 
 
@@ -2281,9 +2341,10 @@ class StoppedFlightMonitor(commands.Cog):
                     max_attempts=MAX_ETA_WARNING_ATTEMPTS,
                 )
                 if attempt_started:
+                    target_ids = list(dict.fromkeys([*(crew_ids or []), *(json.loads(row.get("original_crew_json") or "[]") if isinstance(json.loads(row.get("original_crew_json") or "[]"), list) else [])]))
                     sent = await self._send_eta_warning(
                         row,
-                        crew_ids,
+                        target_ids,
                         eta,
                     )
                     if sent:
@@ -3190,6 +3251,56 @@ class StoppedFlightMonitor(commands.Cog):
         selected_hook = _weighted_pick(hook_candidates, hook_target)
         selected = selected_active + selected_hook
         random.shuffle(selected)
+
+        executive_status_sent = 0
+        for if_user_id in sorted(executive_crew_ids):
+            if str(if_user_id) in contacted:
+                continue
+            try:
+                pilot = await self.bot.pilots_model.get_pilot_by_ifuserid(str(if_user_id))
+            except Exception:
+                log.exception(
+                    "Could not look up original Executive pilot for stopped-flight status DM, IF user %s",
+                    if_user_id,
+                )
+                continue
+            discord_id = str((pilot or {}).get("discordid") or "")
+            if not discord_id.isdigit():
+                continue
+            try:
+                user = self.bot.get_user(int(discord_id))
+                if user is None:
+                    user = await self.bot.fetch_user(int(discord_id))
+                message = await user.send(
+                    f"**Executive stopped-flight notice · {row['registration']}**\n"
+                    f"Flight: **{row['callsign']}** ({row['origin_icao']} → {row['destination_icao']})\n"
+                    "You remain assigned because you hold the Executive role. "
+                    "The bot did not unassign you and did not post the public recovery offer. "
+                    "This is a status notice for the stopped-flight recovery process."
+                )
+                executive_status_sent += 1
+                await self._record_dm_event_safely(
+                    model,
+                    schedule_id=row["schedule_id"],
+                    if_user_id=str(if_user_id),
+                    discord_user_id=discord_id,
+                    wave=wave,
+                    channel_id=str(message.channel.id),
+                    message_id=str(message.id),
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                log.warning(
+                    "Could not DM Executive pilot %s about stopped flight %s; continuing.",
+                    if_user_id,
+                    row["schedule_id"],
+                )
+            except Exception:
+                log.exception(
+                    "Unexpected error sending executive status DM for IF user %s on schedule %s",
+                    if_user_id,
+                    row["schedule_id"],
+                )
+
         delivered_recipients = []
         failed_recipients = []
         for candidate in selected:

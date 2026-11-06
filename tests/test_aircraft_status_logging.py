@@ -897,6 +897,56 @@ class AircraftStatusLoggingTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_recovery_wave_dms_original_executives_without_public_offer(self):
+        cog, bot = self.make_cog(MagicMock())
+        fleet_role = MagicMock()
+        member = MagicMock()
+        member.bot = False
+        member.status = discord.Status.online
+        member.display_name = "Executive Pilot"
+        member.nick = "QRV777"
+        member.id = 123456789
+        fleet_role.members = [member]
+        guild = MagicMock()
+        guild.get_role.return_value = fleet_role
+        bot.get_guild.return_value = guild
+
+        user = MagicMock()
+        user.send = AsyncMock(return_value=MagicMock(channel=MagicMock(id=999), id=444))
+        bot.get_user.return_value = user
+        bot.pilots_model.get_pilot_by_ifuserid = AsyncMock(
+            return_value={"discordid": "123456789", "ifuserid": "if-executive", "callsign": "QRV777"}
+        )
+        bot.pilots_model.sync_callsign_by_discord_id = AsyncMock(return_value="updated")
+
+        row = {
+            "schedule_id": "schedule-1",
+            "registration": "A7BAB",
+            "callsign": "QR1302",
+            "origin_icao": "HECA",
+            "destination_icao": "OTHH",
+            "original_crew_json": '["if-executive"]',
+        }
+        model = MagicMock()
+        model.get_dm_events = AsyncMock(return_value=[])
+        model.get_recent_recovery_dm_counts = AsyncMock(return_value={})
+        model.get_active_pilots = AsyncMock(
+            return_value=[{"discordid": "123456789", "ifuserid": "if-executive", "callsign": "QRV777"}]
+        )
+        model.get_incident_state = AsyncMock(return_value={"lifecycle": "available", "claim_user_id": None})
+        model.update_incident = AsyncMock()
+
+        with (
+            patch.object(cog, "_executive_crew_ids", AsyncMock(return_value={"if-executive"})),
+            patch.object(cog, "_recent_live_flight_activity", AsyncMock(return_value=(5, 12))),
+            patch.object(cog, "_record_dm_event_safely", AsyncMock(return_value=True)),
+        ):
+            await cog._send_pilot_wave(model, row, wave=2)
+
+        user.send.assert_awaited_once()
+        self.assertIn("Executive stopped-flight notice", user.send.await_args.args[0])
+        self.assertNotIn("Claiming this recovery", user.send.await_args.args[0])
+
     async def test_recovery_role_reaction_adds_role_only_on_configured_panel(self):
         from types import SimpleNamespace
 
